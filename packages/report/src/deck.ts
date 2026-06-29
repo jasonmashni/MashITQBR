@@ -63,6 +63,13 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     s.addTable(rows as any, { x: 0.6, y: 1.2, w: 12, fontSize: 12, border: { type: 'solid', color: 'DDDDDD' } });
   }
 
+  // Client-authored custom sections
+  for (const cs of model.customSections) {
+    const s = pptx.addSlide();
+    s.addText(cs.title, { x: 0.6, y: 0.4, fontSize: 22, color: PRIMARY, bold: true });
+    s.addText(cs.body, { x: 0.6, y: 1.2, w: 12, fontSize: 13, color: '222222' });
+  }
+
   // Recommendations
   if (model.recommendations.length) {
     const s = pptx.addSlide();
@@ -71,6 +78,20 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
       model.recommendations.map((t) => ({ text: t, options: { bullet: true } })) as any,
       { x: 0.6, y: 1.2, w: 12, fontSize: 14, color: '222222' },
     );
+  }
+
+  // Discussion & responses captured during the review
+  if (model.discussion.length || model.notes) {
+    const s = pptx.addSlide();
+    s.addText('Discussion & Responses', { x: 0.6, y: 0.4, fontSize: 22, color: PRIMARY, bold: true });
+    if (model.discussion.length) {
+      const rows = [
+        ['Discussion / Decision', 'Client response & notes', 'Disposition'],
+        ...model.discussion.map((d) => [d.topic, d.response ?? '', d.disposition ?? '']),
+      ];
+      s.addTable(rows as any, { x: 0.6, y: 1.2, w: 12, fontSize: 12, border: { type: 'solid', color: 'DDDDDD' } });
+    }
+    if (model.notes) s.addText(model.notes, { x: 0.6, y: 5.6, w: 12, fontSize: 12, color: '444444', italic: true });
   }
 
   const out = await pptx.write({ outputType: 'nodebuffer' });

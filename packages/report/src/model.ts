@@ -4,13 +4,17 @@ import {
   indexTrends,
   parsePeriod,
   type Client,
+  type CustomSection,
+  type DiscussionItem,
   type MaturityScorecard,
   type MetricCategory,
   type MetricSnapshot,
   type MetricTrend,
   type MetricValue,
+  type ReportConfig,
 } from '@mashit/core';
 import type { NarrativeOutput } from '@mashit/narrative';
+import { resolveBrand, type BrandTokens } from './brand.js';
 
 export interface ReportSectionRow {
   metric: MetricValue;
@@ -30,10 +34,18 @@ export interface ReportModel {
   /** Caller-supplied display date (kept out of the builder to stay deterministic). */
   generatedLabel?: string;
   heldBy?: string;
+  /** Resolved branding (Mash IT defaults merged with any per-client override). */
+  brand: BrandTokens;
   executive: { headline?: string; paragraphs: string[]; highlights: string[] };
   scorecard: MaturityScorecard;
   trends: MetricTrend[];
   sections: ReportSection[];
+  /** Client-authored free-text sections. */
+  customSections: CustomSection[];
+  /** Captured discussion points / client responses from the review. */
+  discussion: DiscussionItem[];
+  /** General meeting notes. */
+  notes?: string;
   recommendations: string[];
 }
 
@@ -54,15 +66,22 @@ export function buildReportModel(args: {
   narrative?: NarrativeOutput;
   heldBy?: string;
   generatedLabel?: string;
+  /** Per-client customization: hidden sections, custom sections, branding. */
+  config?: ReportConfig;
+  /** Captured review discussion + responses. */
+  discussion?: DiscussionItem[];
+  notes?: string;
 }): ReportModel {
-  const { client, current, previous, narrative } = args;
+  const { client, current, previous, narrative, config } = args;
   const period = parsePeriod(current.period);
   const trends = computeTrends(current, previous);
   const trendIndex = indexTrends(trends);
   const scorecard = computeScorecard(current);
 
+  const hidden = new Set(config?.hiddenSections ?? []);
   const sections: ReportSection[] = [];
   for (const { category, title } of SECTION_ORDER) {
+    if (hidden.has(category)) continue;
     const rows = current.metrics
       .filter((m) => m.category === category)
       .map((metric) => ({ metric, trend: trendIndex.get(metric.key) }));
@@ -85,6 +104,7 @@ export function buildReportModel(args: {
     previousPeriod: previous ? { id: parsePeriod(previous.period).id, label: parsePeriod(previous.period).label } : undefined,
     generatedLabel: args.generatedLabel,
     heldBy: args.heldBy,
+    brand: resolveBrand(config?.brand),
     executive: {
       headline: narrative?.headline,
       paragraphs: narrative?.summary_paragraphs ?? [],
@@ -93,6 +113,9 @@ export function buildReportModel(args: {
     scorecard,
     trends,
     sections,
+    customSections: config?.customSections ?? [],
+    discussion: args.discussion ?? [],
+    notes: args.notes,
     recommendations,
   };
 }

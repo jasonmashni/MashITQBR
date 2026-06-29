@@ -46,4 +46,25 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
   it('throws for an unknown client', async () => {
     await expect(buildQbrReport(seedDataSource, 'nope', '2026-Q1')).rejects.toThrow(/Unknown client/);
   });
+
+  it('threads per-client config + discussion into the report', async () => {
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      config: {
+        clientId: 'anp',
+        hiddenSections: ['spend'],
+        brand: { name: 'Acme MSP', primary: '#123456' },
+        customSections: [{ id: 's1', title: 'Roadmap', body: 'Next steps.' }],
+      },
+      discussion: [{ id: 'd1', topic: 'OpenVPN removal?', response: 'Approved', disposition: 'create_ticket', owner: 'Jason' }],
+      notes: 'Good meeting.',
+    });
+    expect(report.model.brand.name).toBe('Acme MSP');
+    expect(report.model.sections.some((s) => s.category === 'spend')).toBe(false);
+    expect(report.model.customSections[0]!.title).toBe('Roadmap');
+    expect(report.model.discussion[0]!.response).toBe('Approved');
+
+    const html = renderQbrHtml(report);
+    expect(html).toContain('Acme MSP');
+    expect(html).toContain('OpenVPN removal?');
+  });
 });

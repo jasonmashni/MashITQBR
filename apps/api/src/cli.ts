@@ -12,6 +12,7 @@ import { createClaudeNarrativeModel } from '@mashit/narrative';
 import { renderPdf } from '@mashit/report';
 import { seedDataSource } from './dataSource.js';
 import { buildQbrReport, renderQbrHtml } from './service.js';
+import { loadReportInputs } from './store.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
     narrativeModel: useAi ? createClaudeNarrativeModel() : undefined,
     heldBy: 'Jason Mashni',
     generatedLabel: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
+    ...loadReportInputs(clientId, period),
   });
 
   mkdirSync(outDir, { recursive: true });

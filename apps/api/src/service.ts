@@ -1,4 +1,4 @@
-import { previousPeriod } from '@mashit/core';
+import { previousPeriod, type DiscussionItem, type ReportConfig } from '@mashit/core';
 import {
   buildAllowedNumbers,
   buildNarrativeInput,
@@ -16,6 +16,11 @@ export interface BuildQbrOptions {
   narrativeModel?: NarrativeModel;
   heldBy?: string;
   generatedLabel?: string;
+  /** Per-client report customization (branding + sections). */
+  config?: ReportConfig;
+  /** Captured review discussion + notes. */
+  discussion?: DiscussionItem[];
+  notes?: string;
 }
 
 export interface QbrReport {
@@ -63,6 +68,9 @@ export async function buildQbrReport(
     narrative: narrative.output,
     heldBy: opts.heldBy,
     generatedLabel: opts.generatedLabel,
+    config: opts.config,
+    discussion: opts.discussion,
+    notes: opts.notes,
   });
 
   const warnings: string[] = [];

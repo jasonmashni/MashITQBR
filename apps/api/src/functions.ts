@@ -1,9 +1,10 @@
 import { app, type HttpRequest, type HttpResponseInit, type InvocationContext } from '@azure/functions';
-import { periodFor } from '@mashit/core';
+import { periodFor, type QbrDiscussion, type ReportConfig } from '@mashit/core';
 import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
 import { renderDeck, renderPdf } from '@mashit/report';
 import { seedDataSource } from './dataSource.js';
 import { buildQbrReport, renderQbrHtml } from './service.js';
+import { getConfig, getDiscussion, loadReportInputs, putConfig, putDiscussion } from './store.js';
 
 /** Use Claude only when explicitly requested AND a key is configured. */
 function narrativeModelFor(req: HttpRequest): NarrativeModel | undefined {
@@ -32,6 +33,7 @@ app.http('getQbr', {
     try {
       const report = await buildQbrReport(seedDataSource, clientId!, period!, {
         narrativeModel: narrativeModelFor(req),
+        ...loadReportInputs(clientId!, period!),
       });
       return json(200, { model: report.model, warnings: report.warnings, verification: report.narrative.verification.ok });
     } catch (err) {
@@ -47,7 +49,7 @@ app.http('getQbrHtml', {
   authLevel: 'anonymous',
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
     const { clientId, period } = req.params;
-    const report = await buildQbrReport(seedDataSource, clientId!, period!, { narrativeModel: narrativeModelFor(req) });
+    const report = await buildQbrReport(seedDataSource, clientId!, period!, { narrativeModel: narrativeModelFor(req), ...loadReportInputs(clientId!, period!) });
     return { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: renderQbrHtml(report) };
   },
 });
@@ -58,7 +60,7 @@ app.http('getQbrPdf', {
   authLevel: 'anonymous',
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
     const { clientId, period } = req.params;
-    const report = await buildQbrReport(seedDataSource, clientId!, period!, { narrativeModel: narrativeModelFor(req) });
+    const report = await buildQbrReport(seedDataSource, clientId!, period!, { narrativeModel: narrativeModelFor(req), ...loadReportInputs(clientId!, period!) });
     try {
       const pdf = await renderPdf(renderQbrHtml(report), {
         executablePath: process.env['PLAYWRIGHT_CHROMIUM_PATH'],
@@ -80,7 +82,7 @@ app.http('getQbrDeck', {
   authLevel: 'anonymous',
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
     const { clientId, period } = req.params;
-    const report = await buildQbrReport(seedDataSource, clientId!, period!, { narrativeModel: narrativeModelFor(req) });
+    const report = await buildQbrReport(seedDataSource, clientId!, period!, { narrativeModel: narrativeModelFor(req), ...loadReportInputs(clientId!, period!) });
     try {
       const deck = await renderDeck(report.model);
       return {
@@ -94,6 +96,50 @@ app.http('getQbrDeck', {
     } catch (err) {
       return json(501, { error: err instanceof Error ? err.message : 'Deck rendering unavailable' });
     }
+  },
+});
+
+// ── Per-client report config (branding + sections) ──
+app.http('getConfig', {
+  route: 'clients/{clientId}/config',
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
+    const { clientId } = req.params;
+    return json(200, getConfig(clientId!) ?? { clientId });
+  },
+});
+
+app.http('putConfig', {
+  route: 'clients/{clientId}/config',
+  methods: ['PUT'],
+  authLevel: 'anonymous',
+  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
+    const { clientId } = req.params;
+    const body = (await req.json()) as Partial<ReportConfig>;
+    return json(200, putConfig({ ...body, clientId: clientId! }));
+  },
+});
+
+// ── Per-QBR discussion + notes capture ──
+app.http('getDiscussion', {
+  route: 'clients/{clientId}/qbr/{period}/discussion',
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
+    const { clientId, period } = req.params;
+    return json(200, getDiscussion(clientId!, period!) ?? { clientId, period, items: [] });
+  },
+});
+
+app.http('putDiscussion', {
+  route: 'clients/{clientId}/qbr/{period}/discussion',
+  methods: ['PUT'],
+  authLevel: 'anonymous',
+  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
+    const { clientId, period } = req.params;
+    const body = (await req.json()) as Partial<QbrDiscussion>;
+    return json(200, putDiscussion({ clientId: clientId!, period: period!, items: body.items ?? [], notes: body.notes }));
   },
 });
 

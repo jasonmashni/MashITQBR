@@ -10,6 +10,10 @@ build/
 # Generated QBR artifacts (CLI default output dir)
 out/
 
+# Local JSON store (dev persistence for config/discussion)
+.data/
+apps/api/.data/
+
 # Azure Functions local
 apps/api/local.settings.json
 bin/

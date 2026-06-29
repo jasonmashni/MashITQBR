@@ -177,6 +177,55 @@ export interface ClientContact {
   role?: string;
 }
 
+/** Report branding. All fields optional; unset fields fall back to Mash IT defaults. */
+export interface Brand {
+  name?: string;
+  /** Logo as a data: URI so it embeds in the self-contained HTML/PDF. */
+  logoDataUri?: string;
+  primary?: string;
+  accent?: string;
+  ink?: string;
+  font?: string;
+}
+
+/** A client-authored free-text section added to the report. */
+export interface CustomSection {
+  id: string;
+  title: string;
+  /** Plain text; blank lines separate paragraphs. */
+  body: string;
+  placement?: 'after-summary' | 'in-body' | 'end';
+}
+
+/** Per-client report customization (sections + branding). */
+export interface ReportConfig {
+  clientId: string;
+  /** Standard metric sections to omit for this client. */
+  hiddenSections?: MetricCategory[];
+  customSections?: CustomSection[];
+  brand?: Brand;
+}
+
+/** One captured discussion point from the QBR review (question/decision + response). */
+export interface DiscussionItem {
+  id: string;
+  /** The talking point, question, or decision raised. */
+  topic: string;
+  /** The client's response / notes captured live (the "- Anne to…" capture). */
+  response?: string;
+  disposition?: ActionDisposition;
+  owner?: string;
+}
+
+/** The review-time discussion + notes for a client's QBR. */
+export interface QbrDiscussion {
+  clientId: string;
+  period: string;
+  items: DiscussionItem[];
+  /** General meeting notes not tied to a specific item. */
+  notes?: string;
+}
+
 export interface Client {
   id: string;
   name: string;

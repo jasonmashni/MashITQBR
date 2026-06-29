@@ -47,6 +47,21 @@ and the offline narrative drafter. Set `ANTHROPIC_API_KEY` and request `?ai=1`
 to use Claude (`claude-opus-4-8`) for the narrative; install `playwright` +
 `pptxgenjs` to enable PDF/deck export.
 
+## Customize & capture
+
+The web app has three tabs:
+- **Report** — the AI summary, maturity score, and the live report/PDF/deck.
+- **Branding & Sections** — upload a logo, set brand colors, show/hide standard
+  sections, and add free-text custom sections — saved per client.
+- **Discussion & Responses** — capture talking points, client responses, a
+  disposition (→ ticket/opportunity), and an owner *during* the review, plus
+  general notes. These render into the report (and PDF/deck).
+
+Persistence is a local JSON store in dev (`.data/store.json`, override with
+`QBR_DATA_DIR`); in Azure this moves to SQL (config/discussion) + Blob (logos).
+API: `GET/PUT /api/clients/:id/config` and
+`GET/PUT /api/clients/:id/qbr/:period/discussion`.
+
 ## Grounding & safety
 
 - The AI never does arithmetic — all totals, percentages, and QoQ deltas are
