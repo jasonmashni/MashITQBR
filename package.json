@@ -1,0 +1,25 @@
+{
+  "name": "mashit-qbr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mash IT QBR tool — aggregate MSP-stack data and generate impactful, AI-drafted quarterly business reviews.",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.pnp.*
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Azure Functions local
+apps/api/local.settings.json
+bin/
+obj/
+
+# Vite / web build
+apps/web/dist/
+
+# Test / coverage
+coverage/
+.vitest/
+
+# Env & secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.pfx
+local.settings.json
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.log
+
+# Playwright
+playwright-report/
+test-results/
+.cache/
