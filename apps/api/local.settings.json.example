@@ -1,0 +1,9 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "ANTHROPIC_API_KEY": "",
+    "PLAYWRIGHT_CHROMIUM_PATH": ""
+  }
+}

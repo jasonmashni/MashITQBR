@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "rootDir": ".",
+    "paths": {
+      "@mashit/core": ["../../packages/core/src/index.ts"],
+      "@mashit/integrations": ["../../packages/integrations/src/index.ts"],
+      "@mashit/narrative": ["../../packages/narrative/src/index.ts"],
+      "@mashit/report": ["../../packages/report/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

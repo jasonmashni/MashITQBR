@@ -1,0 +1,19 @@
+{
+  "name": "@mashit/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/functions.js",
+  "dependencies": {
+    "@azure/functions": "^4.5.0",
+    "@mashit/core": "*",
+    "@mashit/integrations": "*",
+    "@mashit/narrative": "*",
+    "@mashit/report": "*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "func start",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

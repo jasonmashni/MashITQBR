@@ -4,3 +4,4 @@ export * from './verify.js';
 export * from './input.js';
 export * from './prompt.js';
 export * from './client.js';
+export * from './offline.js';
