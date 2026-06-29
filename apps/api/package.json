@@ -12,7 +12,7 @@
     "@mashit/report": "*"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "esbuild src/functions.ts src/cli.ts src/devserver.ts --bundle --platform=node --format=esm --target=node20 --outdir=dist --external:@azure/functions --external:@anthropic-ai/sdk --external:playwright --external:pptxgenjs",
     "start": "func start",
     "typecheck": "tsc -p tsconfig.json"
   }

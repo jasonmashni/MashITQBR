@@ -14,11 +14,15 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
+    "build:api": "npm run build -w @mashit/api",
+    "gen": "node apps/api/dist/cli.js",
+    "dev:api": "node apps/api/dist/devserver.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "esbuild": "^0.24.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
   }
