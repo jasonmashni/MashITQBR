@@ -1,0 +1,67 @@
+name: Deploy
+
+# Manual by default; flip to push-on-main once secrets are configured.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC federated login — no stored cloud secret
+  contents: read
+
+env:
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+
+jobs:
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: What-if
+        run: az deployment group what-if -g "$RESOURCE_GROUP" -f infra/main.bicep -p namePrefix=mashqbr env=prod sqlAdminLogin="${{ vars.SQL_ADMIN_LOGIN }}" sqlAdminObjectId="${{ vars.SQL_ADMIN_OBJECT_ID }}"
+      - name: Deploy infrastructure
+        run: az deployment group create -g "$RESOURCE_GROUP" -f infra/main.bicep -p namePrefix=mashqbr env=prod sqlAdminLogin="${{ vars.SQL_ADMIN_LOGIN }}" sqlAdminObjectId="${{ vars.SQL_ADMIN_OBJECT_ID }}"
+
+  api:
+    needs: infra
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Build API
+        run: npm run build -w @mashit/api
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ vars.FUNCTION_APP_NAME }}
+          package: apps/api
+
+  web:
+    needs: infra
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Build web
+        run: npm run build -w @mashit/web
+      - name: Deploy Static Web App
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.SWA_DEPLOYMENT_TOKEN }}
+          action: upload
+          app_location: apps/web/dist
+          skip_app_build: true
+          skip_api_build: true
