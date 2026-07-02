@@ -1,6 +1,7 @@
 import { parsePeriod, type Client, type MetricSnapshot } from '@mashit/core';
 import {
   assembleSnapshot,
+  basicAuthHeader,
   collectCheckpoint,
   collectHalo,
   collectHuntress,
@@ -57,6 +58,60 @@ function byType(conns: Connection[]): Map<string, Connection> {
   const m = new Map<string, Connection>();
   for (const c of conns) if (!m.has(c.type)) m.set(c.type, c);
   return m;
+}
+
+export interface TestOutcome {
+  ok: boolean;
+  message?: string;
+  /** Set when no live probe exists for the type. */
+  note?: string;
+}
+
+/**
+ * Probe a connection with a cheap authenticated read so the portal's "Test"
+ * button reflects reality. Types without a safe probe report as saved-only.
+ */
+export async function testConnection(intg: Integrations, conn: Connection): Promise<TestOutcome> {
+  const http = intg.http ?? new FetchHttpTransport();
+  try {
+    switch (conn.type) {
+      case 'mcp': {
+        if (!intg.mcp) return { ok: false, message: 'MCP connection missing URL' };
+        await intg.mcp.callTool('halo_list_clients', {});
+        return { ok: true, message: 'MASH MCP reachable' };
+      }
+      case 'huntress': {
+        // Convention: baseUrl includes /v1 (matches collectHuntress).
+        const base = conn.config['baseUrl'] ?? 'https://api.huntress.io/v1';
+        const apiKey = (await resolveSecret(intg.secrets, conn, 'apiKey')) ?? '';
+        const apiSecret = (await resolveSecret(intg.secrets, conn, 'apiSecret')) ?? '';
+        const res = await http.request({
+          method: 'GET',
+          url: `${base}/account`,
+          headers: { Authorization: basicAuthHeader(apiKey, apiSecret), Accept: 'application/json' },
+        });
+        return res.status >= 200 && res.status < 300
+          ? { ok: true, message: 'Huntress reachable' }
+          : { ok: false, message: `Huntress responded ${res.status}` };
+      }
+      case 'zomentum': {
+        const base = conn.config['baseUrl'] ?? 'https://api.zomentum.com';
+        const token = (await resolveSecret(intg.secrets, conn, 'token')) ?? '';
+        const res = await http.request({
+          method: 'GET',
+          url: `${base}/v1/opportunities`,
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        });
+        return res.status >= 200 && res.status < 300
+          ? { ok: true, message: 'Zomentum reachable' }
+          : { ok: false, message: `Zomentum responded ${res.status}` };
+      }
+      default:
+        return { ok: true, note: 'Saved. Live test runs on next sync.' };
+    }
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : 'connection failed' };
+  }
 }
 
 /**

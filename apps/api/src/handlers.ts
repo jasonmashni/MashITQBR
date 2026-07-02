@@ -16,7 +16,7 @@ import {
   toConnectionView,
 } from './store/index.js';
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
-import { importHaloClients, syncClientMetrics, type Integrations } from './integrationsService.js';
+import { importHaloClients, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
 import { pushAction, type PushInput } from './actions.js';
 import { HttpMcpTransport } from './mcpClient.js';
 
@@ -173,19 +173,19 @@ export async function deleteIntegration(id: string): Promise<ApiResult> {
   return ok({ deleted: id });
 }
 export async function testIntegration(id: string): Promise<ApiResult> {
-  const conn = await getDataStore().getConnection(id);
+  const store = getDataStore();
+  const conn = await store.getConnection(id);
   if (!conn) return err(404, 'Unknown connection');
-  if (conn.type === 'mcp') {
-    try {
-      const mcp = await resolveMcp();
-      if (!mcp) return err(400, 'MCP connection missing URL');
-      await mcp.callTool('halo_list_clients', {});
-      return ok({ ok: true });
-    } catch (e) {
-      return ok({ ok: false, error: e instanceof Error ? e.message : 'connection failed' });
-    }
-  }
-  return ok({ ok: true, note: 'Saved. Live test runs on next sync.' });
+
+  const outcome = await testConnection(await buildIntegrations(), conn);
+  // Persist the result so the Integrations cards show real state, not 'unknown'.
+  await store.upsertConnection({
+    ...conn,
+    status: outcome.ok ? 'ok' : 'error',
+    statusMessage: outcome.message ?? outcome.note,
+    updatedAt: new Date().toISOString(),
+  });
+  return ok({ ok: outcome.ok, error: outcome.ok ? undefined : outcome.message, note: outcome.note });
 }
 
 // ── Live pipeline + workflow ─────────────────────────────────────────────────
