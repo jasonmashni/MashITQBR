@@ -13,6 +13,8 @@ import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
 import type { PushInput } from './actions.js';
+import { actorFrom, principalFrom } from './auth.js';
+import { runWithActor } from './requestContext.js';
 import { resolveStaticFile, SECURITY_HEADERS } from './static.js';
 
 const PORT = Number(process.env['PORT'] ?? 7071);
@@ -35,10 +37,12 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   }
 }
 
+type HeaderGet = (name: string) => string | undefined;
+
 interface Route {
   method: string;
   re: RegExp;
-  run: (m: RegExpMatchArray, body: Record<string, unknown>, url: URL) => Promise<ApiResult> | ApiResult;
+  run: (m: RegExpMatchArray, body: Record<string, unknown>, url: URL, header: HeaderGet) => Promise<ApiResult> | ApiResult;
 }
 
 const routes: Route[] = [
@@ -66,6 +70,8 @@ const routes: Route[] = [
   { method: 'GET', re: /^\/api\/system$/, run: () => h.getSystem() },
   { method: 'GET', re: /^\/api\/overview$/, run: (_m, _b, url) => h.getOverview(url.searchParams.get('current')) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/periods$/, run: (m, _b, url) => h.getPeriods(m[1]!, url.searchParams.get('current')) },
+  { method: 'GET', re: /^\/api\/audit$/, run: (_m, _b, url) => h.getAudit(url.searchParams.get('limit')) },
+  { method: 'GET', re: /^\/api\/me$/, run: (_m, _b, _url, header) => h.getMe(principalFrom(header)) },
 ];
 
 const server = createServer(async (req, res) => {
@@ -82,12 +88,16 @@ const server = createServer(async (req, res) => {
       res.writeHead(204, cors);
       return res.end();
     }
+    const header: HeaderGet = (name) => {
+      const v = req.headers[name.toLowerCase()];
+      return Array.isArray(v) ? v[0] : v;
+    };
     for (const rt of routes) {
       if (req.method !== rt.method) continue;
       const m = path.match(rt.re);
       if (!m) continue;
       const b = req.method === 'PUT' || req.method === 'POST' ? await readJson(req) : {};
-      const result = await rt.run(m, b, url);
+      const result = await runWithActor(actorFrom(header), async () => rt.run(m, b, url, header));
       if (result.html !== undefined) { res.writeHead(result.status, { 'Content-Type': 'text/html; charset=utf-8', ...cors }); return res.end(result.html); }
       if (result.pdf !== undefined) { res.writeHead(result.status, { 'Content-Type': 'application/pdf', ...cors }); return res.end(result.pdf); }
       if (result.pptx !== undefined) { res.writeHead(result.status, { 'Content-Type': PPTX, 'Content-Disposition': 'attachment', ...cors }); return res.end(result.pptx); }

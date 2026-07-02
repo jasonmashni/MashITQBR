@@ -109,6 +109,24 @@ export interface Discussion {
   notes?: string;
 }
 
+/** The signed-in user reported by GET /api/me. */
+export interface Me {
+  name: string;
+  email?: string;
+  roles?: string[];
+  dev?: boolean;
+}
+
+/** One compliance audit entry. */
+export interface AuditEvent {
+  id: string;
+  at: string;
+  actor: string;
+  action: string;
+  target: string;
+  detail?: string;
+}
+
 /** Runtime capabilities reported by GET /api/system. */
 export interface SystemInfo {
   dataStore: 'table' | 'json';

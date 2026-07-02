@@ -79,6 +79,20 @@ export interface NarrativeRecord {
   updatedAt: string;
 }
 
+/** One compliance audit entry (who did what to what, when). */
+export interface AuditEvent {
+  id: string;
+  /** ISO-8601 timestamp. */
+  at: string;
+  /** Signed-in user (email/name) or 'system'. */
+  actor: string;
+  /** Dotted verb, e.g. `integration.save`, `qbr.sync`, `action.push`. */
+  action: string;
+  /** What it acted on, e.g. `client:anp`, `integration:huntress/abc`. */
+  target: string;
+  detail?: string;
+}
+
 /**
  * Persistence for all app data. Async so a Table Storage implementation fits;
  * the local JSON implementation just resolves immediately.
@@ -116,6 +130,10 @@ export interface DataStore {
   // cached AI narratives
   getNarrative(clientId: string, period: string): Promise<NarrativeRecord | undefined>;
   putNarrative(record: NarrativeRecord): Promise<NarrativeRecord>;
+
+  // compliance audit trail
+  appendAudit(event: AuditEvent): Promise<void>;
+  listAudit(limit: number): Promise<AuditEvent[]>;
 }
 
 /** Non-secret view of a connection for API responses. */

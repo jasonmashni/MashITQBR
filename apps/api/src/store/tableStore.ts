@@ -1,6 +1,6 @@
 import { TableClient, odata, type TableEntity } from '@azure/data-tables';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { ClientConnectionMap, Connection, DataStore, NarrativeRecord, QbrRecord } from './types.js';
+import type { AuditEvent, ClientConnectionMap, Connection, DataStore, NarrativeRecord, QbrRecord } from './types.js';
 
 const TABLES = {
   clients: 'qbrClients',
@@ -11,6 +11,7 @@ const TABLES = {
   discussions: 'qbrDiscussions',
   snapshots: 'qbrSnapshots',
   narratives: 'qbrNarratives',
+  audit: 'qbrAudit',
 } as const;
 
 interface Row extends TableEntity {
@@ -107,6 +108,28 @@ export class TableDataStore implements DataStore {
   // cached AI narratives
   getNarrative = (clientId: string, period: string) => this.get<NarrativeRecord>(TABLES.narratives, clientId, period);
   putNarrative = (n: NarrativeRecord) => this.put(TABLES.narratives, n.clientId, n.period, n);
+
+  // compliance audit trail — a fixed partition with descending-time rowKeys
+  // makes "latest N" a single-partition, single-page range read.
+  async appendAudit(event: AuditEvent): Promise<void> {
+    const rowKey = `${String(9999999999999 - Date.parse(event.at)).padStart(13, '0')}-${event.id}`;
+    await this.put(TABLES.audit, 'audit', rowKey, event);
+  }
+  async listAudit(limit: number): Promise<AuditEvent[]> {
+    const table = this.table(TABLES.audit);
+    await ensureTable(table);
+    const out: AuditEvent[] = [];
+    const pages = table
+      .listEntities<Row>({ queryOptions: { filter: odata`PartitionKey eq ${'audit'}` } })
+      .byPage({ maxPageSize: limit });
+    for await (const page of pages) {
+      for (const row of page) {
+        if (typeof row.data === 'string') out.push(JSON.parse(row.data) as AuditEvent);
+      }
+      break; // newest-first keys mean the first page IS the latest N
+    }
+    return out;
+  }
 }
 
 const ensured = new Set<string>();

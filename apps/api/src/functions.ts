@@ -1,5 +1,7 @@
 import { app, type HttpMethod, type HttpRequest, type HttpResponseInit } from '@azure/functions';
 import { SECURITY_HEADERS } from './static.js';
+import { actorFrom, principalFrom } from './auth.js';
+import { runWithActor } from './requestContext.js';
 import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
@@ -18,8 +20,15 @@ function toResponse(r: ApiResult): HttpResponseInit {
 
 const ai = (req: HttpRequest) => req.query.get('ai');
 const body = async (req: HttpRequest) => ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
+const headerGet = (req: HttpRequest) => (name: string) => req.headers.get(name);
 const route = (name: string, method: HttpMethod, r: string, fn: (req: HttpRequest) => Promise<ApiResult> | ApiResult) =>
-  app.http(name, { route: r, methods: [method], authLevel: 'anonymous', handler: async (req) => toResponse(await fn(req)) });
+  app.http(name, {
+    route: r,
+    methods: [method],
+    authLevel: 'anonymous',
+    // Actor context lets handlers attribute audit entries to the Easy Auth user.
+    handler: async (req) => runWithActor(actorFrom(headerGet(req)), async () => toResponse(await fn(req))),
+  });
 
 // Clients + report
 route('listClients', 'GET', 'api/clients', () => h.listClients());
@@ -53,6 +62,8 @@ route('currentPeriod', 'GET', 'api/period/current', () => h.currentPeriod());
 route('system', 'GET', 'api/system', () => h.getSystem());
 route('overview', 'GET', 'api/overview', (req) => h.getOverview(req.query.get('current')));
 route('clientPeriods', 'GET', 'api/clients/{clientId}/periods', (req) => h.getPeriods(req.params['clientId']!, req.query.get('current')));
+route('me', 'GET', 'api/me', (req) => h.getMe(principalFrom(headerGet(req))));
+route('audit', 'GET', 'api/audit', (req) => h.getAudit(req.query.get('limit')));
 
 // Keeps a worker warm on the Consumption plan (softens cold starts; timers
 // ride the existing AzureWebJobsStorage and run singleton across instances).

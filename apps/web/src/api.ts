@@ -1,9 +1,11 @@
 // Thin typed fetch wrapper over the QBR API. All calls are relative to the
 // serving origin (the Function App also serves this SPA; Vite proxies /api in dev).
 import type {
+  AuditEvent,
   Client,
   ConnectionView,
   Discussion,
+  Me,
   OverviewRow,
   PeriodInfo,
   QbrResponse,
@@ -40,6 +42,8 @@ let _system: Promise<SystemInfo> | undefined;
 export const api = {
   // System capabilities (memoized)
   system: () => (_system ??= send('GET', '/api/system').then(json<SystemInfo>)),
+  me: () => send('GET', '/api/me').then(json<Me>),
+  audit: (limit = 100) => send('GET', `/api/audit?limit=${limit}`).then(json<{ events: AuditEvent[] }>),
 
   // Clients
   listClients: () => send('GET', '/api/clients').then(json<{ clients: Client[] }>),

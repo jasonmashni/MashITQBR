@@ -16,6 +16,8 @@ import {
   toConnectionView,
 } from './store/index.js';
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
+import { currentActor } from './requestContext.js';
+import type { Principal } from './auth.js';
 import { importHaloClients, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
 import { pushAction, type PushInput } from './actions.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
@@ -34,6 +36,20 @@ const err = (status: number, message: string): ApiResult => ({ status, json: { e
 export function mapBuildError(e: unknown): ApiResult {
   const message = e instanceof Error ? e.message : 'Report build failed';
   return err(/^(Unknown client|No metric snapshot)/.test(message) ? 404 : 500, message);
+}
+
+/** Fire-and-forget compliance audit entry — a storage hiccup never fails the mutation. */
+function audit(action: string, target: string, detail?: string): void {
+  void getDataStore()
+    .appendAudit({
+      id: Math.random().toString(36).slice(2, 10),
+      at: new Date().toISOString(),
+      actor: currentActor(),
+      action,
+      target,
+      detail,
+    })
+    .catch(() => undefined);
 }
 
 function aiModel(aiParam: string | null): NarrativeModel | undefined {
@@ -85,6 +101,7 @@ export async function updateClient(id: string, patch: Record<string, unknown>): 
   );
   const merged = { ...existing, ...allowed, id };
   await store.upsertClient(merged as typeof existing);
+  audit('client.update', `client:${id}`, Object.keys(allowed).join(','));
   return ok(merged);
 }
 
@@ -147,7 +164,9 @@ export async function getConfig(clientId: string): Promise<ApiResult> {
   return ok((await getDataStore().getReportConfig(clientId)) ?? { clientId });
 }
 export async function putConfig(clientId: string, body: Record<string, unknown>): Promise<ApiResult> {
-  return ok(await getDataStore().putReportConfig({ ...body, clientId } as never));
+  const saved = await getDataStore().putReportConfig({ ...body, clientId } as never);
+  audit('config.save', `client:${clientId}`);
+  return ok(saved);
 }
 export async function getDiscussion(clientId: string, period: string): Promise<ApiResult> {
   return ok((await getDataStore().getDiscussion(clientId, period)) ?? { clientId, period, items: [] });
@@ -156,6 +175,7 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   const store = getDataStore();
   const items = Array.isArray(body['items']) ? (body['items'] as never[]) : [];
   const saved = await store.putDiscussion({ clientId, period, items, notes: body['notes'] as string | undefined });
+  audit('discussion.save', `qbr:${clientId}/${period}`, `${saved.items.length} item(s)`);
 
   // Any captured non-pending disposition moves the QBR forward to 'dispositioned'.
   const dispositioned = saved.items.some((i) => i.disposition && i.disposition !== 'pending');
@@ -177,10 +197,12 @@ export async function saveIntegration(body: ConnectionInput): Promise<ApiResult>
   if (!body.type || !body.label) return err(400, 'type and label are required');
   if (!isConnectionType(body.type)) return err(400, `Unknown integration type: ${String(body.type)}`);
   const conn = await saveConnection(getDataStore(), getSecretStore(), body);
+  audit('integration.save', `integration:${conn.type}/${conn.id}`, conn.label);
   return ok(toConnectionView(conn));
 }
 export async function deleteIntegration(id: string): Promise<ApiResult> {
   await removeConnection(getDataStore(), getSecretStore(), id);
+  audit('integration.delete', `integration:${id}`, 'secrets purged');
   return ok({ deleted: id });
 }
 export async function testIntegration(id: string): Promise<ApiResult> {
@@ -196,6 +218,7 @@ export async function testIntegration(id: string): Promise<ApiResult> {
     statusMessage: outcome.message ?? outcome.note,
     updatedAt: new Date().toISOString(),
   });
+  audit('integration.test', `integration:${conn.type}/${conn.id}`, outcome.ok ? 'ok' : outcome.message);
   return ok({ ok: outcome.ok, error: outcome.ok ? undefined : outcome.message, note: outcome.note });
 }
 
@@ -203,6 +226,7 @@ export async function testIntegration(id: string): Promise<ApiResult> {
 export async function importHalo(): Promise<ApiResult> {
   try {
     const clients = await importHaloClients(await buildIntegrations());
+    audit('client.import', 'halo', `${clients.length} client(s)`);
     return ok({ imported: clients.length, clients });
   } catch (e) {
     return err(400, e instanceof Error ? e.message : 'Import failed');
@@ -217,6 +241,7 @@ export async function syncQbr(clientId: string, period: string): Promise<ApiResu
     // Forward-only: a re-sync must not demote a scheduled/completed QBR.
     const status = advanceStatus(existing?.status, 'data_synced');
     await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() });
+    audit('qbr.sync', `qbr:${clientId}/${period}`, `${snapshot.metrics.length} metric(s)`);
     return ok({ metrics: snapshot.metrics.length, warnings });
   } catch (e) {
     return err(400, e instanceof Error ? e.message : 'Sync failed');
@@ -228,7 +253,9 @@ export async function putStatus(clientId: string, period: string, status: unknow
   if (!isQbrStatus(status)) return err(400, `Invalid status: ${String(status)}`);
   const store = getDataStore();
   const existing = await store.getQbr(clientId, period);
-  return ok(await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() }));
+  const saved = await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() });
+  audit('qbr.status', `qbr:${clientId}/${period}`, status);
+  return ok(saved);
 }
 
 export async function putSchedule(clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }): Promise<ApiResult> {
@@ -237,7 +264,9 @@ export async function putSchedule(clientId: string, period: string, body: { sche
   const meeting = { ...existing?.meeting, scheduledAt: body.scheduledAt, joinUrl: body.joinUrl };
   // Booking a meeting advances data_synced/draft to scheduled without demoting later stages.
   const status = advanceStatus(existing?.status, 'scheduled');
-  return ok(await store.upsertQbr({ clientId, period, status, meeting, updatedAt: new Date().toISOString() }));
+  const saved = await store.upsertQbr({ clientId, period, status, meeting, updatedAt: new Date().toISOString() });
+  audit('qbr.schedule', `qbr:${clientId}/${period}`, body.scheduledAt);
+  return ok(saved);
 }
 
 export async function pushQbrAction(
@@ -264,6 +293,8 @@ export async function pushQbrAction(
       item.externalRef = { system: result.system, id: result.id, status: result.status };
       await store.putDiscussion(disc);
     }
+
+    audit('action.push', `qbr:${clientId}/${period}`, `${result.system} #${result.id}`);
 
     // A successful push is the workflow's last mile — advance the QBR.
     const existing = await store.getQbr(clientId, period);
@@ -357,4 +388,18 @@ export async function getSystem(): Promise<ApiResult> {
     ai: !!process.env['ANTHROPIC_API_KEY'],
     pdfAvailable: await pdfAvailable(),
   });
+}
+
+/** The signed-in user (Easy Auth). Local dev (JSON store) gets a fallback identity. */
+export async function getMe(principal: Principal | undefined): Promise<ApiResult> {
+  if (principal) return ok(principal);
+  if (dataStoreKind() === 'json') return ok({ name: 'Local Dev', roles: [], dev: true });
+  // In production Easy Auth fronts every request — never fabricate identity.
+  return err(401, 'Not signed in');
+}
+
+/** Latest audit entries, newest first. */
+export async function getAudit(limitParam: string | null): Promise<ApiResult> {
+  const limit = Math.min(500, Math.max(1, Number(limitParam) || 100));
+  return ok({ events: await getDataStore().listAudit(limit) });
 }
