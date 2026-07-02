@@ -43,9 +43,17 @@ const TYPES: TypeDef[] = [
   {
     value: 'mcp',
     label: 'MASH MCP',
-    hint: 'HaloPSA, NinjaOne & Hudu read tools',
-    config: [{ key: 'url', label: 'MCP HTTPS URL', placeholder: 'https://mash-mcp.example.com/mcp' }],
-    secrets: [{ key: 'token', label: 'Bearer token' }],
+    hint: 'HaloPSA, NinjaOne & Hudu read tools. Create an MCP Client on your MCP Setup page and paste its Client ID + Secret.',
+    config: [
+      { key: 'url', label: 'MCP HTTPS URL', placeholder: 'https://mcpserver.mashit.net/mcp' },
+      { key: 'clientId', label: 'Client ID', placeholder: 'mcp-…' },
+      { key: 'tokenUrl', label: 'Token URL (optional — auto-discovered when blank)', placeholder: 'https://mcpserver.mashit.net/token' },
+      { key: 'tokenAuthMethod', label: "Token auth method (optional: 'basic' or 'post')", placeholder: 'basic' },
+    ],
+    secrets: [
+      { key: 'clientSecret', label: 'Client Secret' },
+      { key: 'token', label: 'Static bearer token (legacy — leave blank when using Client ID/Secret)' },
+    ],
   },
   {
     value: 'huntress',

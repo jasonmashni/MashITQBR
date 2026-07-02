@@ -18,7 +18,7 @@ import {
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
 import { importHaloClients, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
 import { pushAction, type PushInput } from './actions.js';
-import { HttpMcpTransport } from './mcpClient.js';
+import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 
 export interface ApiResult {
   status: number;
@@ -48,8 +48,19 @@ async function resolveMcp(): Promise<McpTransport | undefined> {
   if (!conn) return undefined;
   const url = conn.config['url'] ?? conn.config['baseUrl'];
   if (!url) return undefined;
-  const token = await resolveSecret(getSecretStore(), conn, 'token');
-  return new HttpMcpTransport(url, token);
+  const secrets = getSecretStore();
+  const clientSecret = await resolveSecret(secrets, conn, 'clientSecret');
+  const token = await resolveSecret(secrets, conn, 'token');
+  // Memoized per connection version so the OAuth token cache survives requests.
+  return memoizedMcpTransport(`${conn.id}@${conn.updatedAt}`, () =>
+    new HttpMcpTransport(url, {
+      token,
+      clientId: conn.config['clientId'],
+      clientSecret,
+      tokenUrl: conn.config['tokenUrl'],
+      tokenAuthMethod: conn.config['tokenAuthMethod'] === 'post' ? 'post' : conn.config['tokenAuthMethod'] === 'basic' ? 'basic' : undefined,
+    }),
+  );
 }
 
 async function buildIntegrations(): Promise<Integrations> {
