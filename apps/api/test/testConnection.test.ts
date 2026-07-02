@@ -105,13 +105,13 @@ describe('listOrgs', () => {
       secrets: { apiKey: 'k', apiSecret: 's' },
     });
     const pages: Record<string, unknown> = {
-      '1': { organizations: [{ id: 1, name: 'ANP' }], pagination: { next_page: 2 } },
-      '2': { organizations: [{ id: 2, name: 'KPCA' }], pagination: { next_page: null } },
+      first: { organizations: [{ id: 1, name: 'ANP' }], pagination: { next_page_token: 'tok2' } },
+      tok2: { organizations: [{ id: 2, name: 'KPCA' }], pagination: {} },
     };
     const http = {
       async request(req: HttpRequest): Promise<HttpResponse> {
-        const page = new URL(req.url).searchParams.get('page') ?? '1';
-        return { status: 200, json: pages[page] ?? { organizations: [] } };
+        const token = new URL(req.url).searchParams.get('page_token') ?? 'first';
+        return { status: 200, json: pages[token] ?? { organizations: [] } };
       },
     };
     const orgs = await listOrgs({ store, secrets, http }, conn);

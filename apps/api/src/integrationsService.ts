@@ -115,14 +115,18 @@ export async function listOrgs(intg: Integrations, conn: Connection): Promise<Ex
       Accept: 'application/json',
     };
     const out: ExternalOrg[] = [];
-    // Page-based listing; cap defensively (rate limit is 60 req/min).
-    for (let page = 1; page <= 20; page++) {
-      const res = await http.request({ method: 'GET', url: `${base}/organizations?page=${page}&limit=100`, headers });
+    // Huntress paginates via page_token/next_page_token; cap defensively
+    // (account rate limit is 60 req/min).
+    let token: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const url = `${base}/organizations?limit=500${token ? `&page_token=${encodeURIComponent(token)}` : ''}`;
+      const res = await http.request({ method: 'GET', url, headers });
       if (res.status < 200 || res.status >= 300) throw new Error(`Huntress responded ${res.status}`);
       const rows = toArray<{ id?: number | string; name?: string }>(res.json, ['organizations']);
       for (const r of rows) if (r.id !== undefined) out.push({ id: String(r.id), name: r.name ?? `Org ${String(r.id)}` });
-      const pag = (res.json as { pagination?: { next_page?: number | null } } | null)?.pagination;
-      if (!pag?.next_page || rows.length === 0) break;
+      const next = (res.json as { pagination?: { next_page_token?: string | null } } | null)?.pagination?.next_page_token;
+      if (!next || rows.length === 0) break;
+      token = String(next);
     }
     return out;
   }

@@ -46,8 +46,9 @@ describe('syncClientMetrics', () => {
     );
     const http = {
       async request(req: HttpRequest): Promise<HttpResponse> {
-        if (req.url.includes('/organizations/')) return { status: 200, json: { stats: { edr: { agents_total: 26 } } } };
-        return { status: 200, json: { incident_reports: [] } };
+        if (req.url.includes('/reports?')) return { status: 200, json: { reports: [{ agents_count: 26 }], pagination: {} } };
+        if (req.url.includes('/organizations/')) return { status: 200, json: { organization: { actual_usages: {} } } };
+        return { status: 200, json: { identities: [], pagination: {} } };
       },
     };
 
