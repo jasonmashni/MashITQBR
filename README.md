@@ -50,25 +50,38 @@ the offline narrative drafter, and a local JSON store + secret file. Set
 
 ## Using the app
 
-The Mantine UI has four areas:
-- **Dashboard** — client count, integrations, current quarter, and a
-  security-maturity bar across clients.
-- **Clients** — table of clients with **Import from Halo** (via the MASH MCP);
-  edit each client's tool mappings (per-tool external ids the sync reads).
-- **Integrations** — add/edit/rotate/test connections (MASH MCP, Huntress,
-  Check Point, Zomentum). Secret fields (tokens, API keys) are written to **Key
-  Vault**; only references are stored — API responses expose `secretFields`, never
-  values.
-- **QBR workspace** (`/clients/:id`) — pick a quarter, **Sync** live metrics, and
-  work four tabs:
-  - *Report* — executive summary, maturity ring + radar, QoQ chart, and the live
-    HTML report / PDF / deck.
+The header shows **who's signed in** (Easy Auth / Entra) with sign-out; every
+mutation is written to the **Audit log** page (who / what / when) for compliance.
+
+- **Dashboard** — one-call rollup of your **QBR-enabled** clients: maturity bar,
+  per-client score + workflow status, current quarter.
+- **Clients** — all clients with a **QBR toggle** (you don't review everyone —
+  imports from Halo arrive with QBR off; enable just the ones you do).
+- **Integrations** — add/edit/rotate/test connections. The **MASH MCP** connects
+  with a Client ID + Secret from your MCP server's setup page (OAuth token
+  exchange is automatic; a Token URL override exists for nonstandard setups).
+  Each connection has **Map clients**: it lists the orgs found inside the tool
+  (Halo clients, Huntress organizations) so you pick who's who from a dropdown.
+  Secrets go to **Key Vault**; only references are stored.
+- **QBR workspace** (`/clients/:id`) — quarter picker (marks quarters with data),
+  **Sync**, and five tabs:
+  - *Report* — executive summary with an **Edit narrative** editor (save wording
+    changes instantly with no AI call; **Regenerate** re-drafts; **Approve**
+    advances the workflow), maturity ring + radar, QoQ chart, report/PDF/deck,
+    **Email report** (sends from your own M365 mailbox, deck attached).
+  - *Data* — everything Sync pulled, grouped by source, **reviewed before it
+    enters the QBR**: untick metrics to exclude them everywhere (report,
+    scorecard, AI input), and add **manual metrics** for the API gaps
+    (Synology, SAT, canaries).
   - *Branding & Sections* — logo, brand colors, section show/hide, custom sections.
-  - *Discussion & Responses* — capture talking points, responses, dispositions,
-    and owners live during the review.
-  - *Schedule & Actions* — set the meeting date/time + Teams link + status, and
-    push dispositioned items to **Halo tickets/opportunities** or **Zomentum
-    opportunities** (status chips reflect the created external id).
+  - *Discussion & Responses* — talking points, client responses, dispositions.
+  - *Schedule & Actions* — **Create Teams meeting** (books your M365 calendar,
+    invites attendees, stores the join link) or paste a link; push dispositioned
+    items to **Halo tickets/opportunities** or **Zomentum opportunities**.
+
+The QBR status advances itself (sync → schedule → approve → disposition → push,
+never backwards), and every AI narrative is cached per client/quarter — only a
+data change or explicit Regenerate calls Claude again.
 
 Persistence is a local JSON store + secret file in dev (`.data/`, gitignored;
 override the dir with `QBR_DATA_DIR`); in Azure it uses **Azure Table Storage**
@@ -100,11 +113,36 @@ enable system-assigned **managed identity**, put `ANTHROPIC_API_KEY` in **Key
 Vault**, and add the app setting `ANTHROPIC_API_KEY=@Microsoft.KeyVault(SecretUri=…)`.
 For the portal-managed integrations, grant the identity **Key Vault Secrets
 Officer** (write, so the app can store connection secrets) and add the app
-setting `KEY_VAULT_URL=https://<vault>.vault.azure.net/`. App data uses the
+setting `KEY_VAULT_URL=https://<vault>.vault.azure.net/` — **without this the
+app falls back to a local secret file, which is dev-only**. App data uses the
 Function App's existing `AzureWebJobsStorage` (Table Storage) — no new resource.
-Optionally turn on **Entra Easy Auth** to lock the app to Mash IT logins. Full
-click-by-click steps are in the plan file (Addenda 2–3). PDF export is deferred
-on Consumption (print the HTML report from the browser); the report + PPTX deck work.
+Turn on **Entra Easy Auth** to lock the app to Mash IT logins (it also powers
+the account menu and audit actor). PDF export is deferred on Consumption (print
+the HTML report from the browser); the report + PPTX deck work. A 5-minute
+keep-warm timer softens cold starts.
+
+### Microsoft 365 email + Teams scheduling (one-time)
+
+The app sends QBR emails and books Teams meetings **as the signed-in user** via
+the Easy Auth token store — no extra login. Configure once:
+
+1. **App registration** (the one Easy Auth created): *API permissions → Add →
+   Microsoft Graph → Delegated* → `User.Read`, `Mail.Send`, `Calendars.ReadWrite`
+   → **Grant admin consent**.
+2. **Function App → Authentication**: ensure the **token store** is enabled.
+3. Request the Graph scopes at login (the portal has no field for this — use az):
+
+   ```bash
+   az extension add --name authV2
+   auth=$(az webapp auth show -g <rg> -n <app> | jq '.properties')
+   auth=$(echo "$auth" | jq '.identityProviders.azureActiveDirectory.login += {"loginParameters":["scope=openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Calendars.ReadWrite"]}')
+   az webapp auth set -g <rg> -n <app> --body "$auth"
+   ```
+
+4. **Sign out and back in** once so your session carries a Graph token.
+
+Until then the Email/Meeting buttons explain what's missing instead of failing
+silently. Tokens refresh transparently via `/.auth/refresh`.
 
 > Locally, once the web is built, `npm run dev:api` also serves the SPA at
 > http://localhost:7071 — the same single-app behavior as production.
@@ -127,9 +165,10 @@ Function App (the old separate Static-Web-Apps deploy is gone).
 
 ## Status
 
-Phase 2 — modern Mantine UI, portal-managed integrations (secrets → Key Vault),
-live client import + metric sync via the MASH MCP, Azure Table Storage app data,
-and the QBR workflow (schedule → disposition → push to Zomentum/Halo). Next:
-Microsoft Graph auto-scheduling (Teams meeting + attendance), CIPP/Domotz/Dropsuite
-collectors, scheduled snapshot sync, and the client-facing portal — see the build
-plan for the phased roadmap.
+Phase 3 — MCP OAuth (Client ID/Secret token exchange), signed-in identity +
+compliance audit log, native M365 (email QBRs from your mailbox, create Teams
+meetings), per-client QBR scoping with integration-centric org mapping, a Data
+review tab (exclusions + manual metrics), a no-regenerate narrative editor, and
+one-call dashboard loading with a keep-warm timer. Next: meeting attendance
+completion, CIPP/Domotz/Dropsuite collectors, scheduled snapshot sync, and the
+client-facing portal — see the build plan for the phased roadmap.
