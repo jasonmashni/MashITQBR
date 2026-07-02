@@ -9,6 +9,7 @@ import {
   getSecretStore,
   isConnectionType,
   loadReportInputs,
+  narrativeCacheFor,
   storeDataSource,
   toConnectionView,
 } from './store/index.js';
@@ -76,10 +77,7 @@ export async function updateClient(id: string, patch: Record<string, unknown>): 
 
 export async function getQbr(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
   try {
-    const report = await buildQbrReport(storeDataSource(), clientId, period, {
-      narrativeModel: aiModel(ai),
-      ...(await loadReportInputs(getDataStore(), clientId, period)),
-    });
+    const report = await buildReportFor(clientId, period, ai);
     const meta = (await getDataStore().getQbr(clientId, period)) ?? { clientId, period, status: 'draft' as QbrStatus };
     return ok({ model: report.model, warnings: report.warnings, verification: report.narrative.verification.ok, meta });
   } catch (e) {
@@ -88,9 +86,11 @@ export async function getQbr(clientId: string, period: string, ai: string | null
 }
 
 async function buildReportFor(clientId: string, period: string, ai: string | null) {
+  const store = getDataStore();
   return buildQbrReport(storeDataSource(), clientId, period, {
     narrativeModel: aiModel(ai),
-    ...(await loadReportInputs(getDataStore(), clientId, period)),
+    narrativeCache: narrativeCacheFor(store, clientId, period),
+    ...(await loadReportInputs(store, clientId, period)),
   });
 }
 

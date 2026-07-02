@@ -1,5 +1,6 @@
 import { SEED_CLIENTS, SEED_SNAPSHOTS, findSeedSnapshot, type DiscussionItem, type ReportConfig } from '@mashit/core';
 import type { QbrDataSource } from '../dataSource.js';
+import type { NarrativeCache } from '../service.js';
 import { JsonDataStore } from './jsonStore.js';
 import { TableDataStore } from './tableStore.js';
 import { KeyVaultSecretStore, LocalSecretStore, type SecretStore } from './secretStore.js';
@@ -70,4 +71,21 @@ export async function loadReportInputs(store: DataStore, clientId: string, perio
   const config = await store.getReportConfig(clientId);
   const d = await store.getDiscussion(clientId, period);
   return { config, discussion: d?.items, notes: d?.notes };
+}
+
+/**
+ * NarrativeCache backed by the DataStore — one record per client/period; a
+ * hash mismatch (data re-synced, model changed) reads as a miss and the fresh
+ * result overwrites the old record.
+ */
+export function narrativeCacheFor(store: DataStore, clientId: string, period: string): NarrativeCache {
+  return {
+    async get(hash) {
+      const rec = await store.getNarrative(clientId, period);
+      return rec?.inputHash === hash ? rec.result : undefined;
+    },
+    async put(hash, result) {
+      await store.putNarrative({ clientId, period, inputHash: hash, result, updatedAt: new Date().toISOString() });
+    },
+  };
 }

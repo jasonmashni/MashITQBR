@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import { previousPeriod, type DiscussionItem, type ReportConfig } from '@mashit/core';
 import {
   buildAllowedNumbers,
   buildNarrativeInput,
   draftOfflineNarrative,
   generateNarrative,
+  NARRATIVE_MODEL_ID,
   verifyFigures,
   type NarrativeModel,
   type NarrativeResult,
@@ -11,9 +13,21 @@ import {
 import { buildReportModel, renderReportHtml, type ReportModel } from '@mashit/report';
 import type { QbrDataSource } from './dataSource.js';
 
+/**
+ * Persistent cache for AI narratives, keyed by an input hash. The hash covers
+ * the full narrative input plus the model id, so a data re-sync or a model
+ * upgrade regenerates rather than serving stale prose.
+ */
+export interface NarrativeCache {
+  get(hash: string): Promise<NarrativeResult | undefined>;
+  put(hash: string, result: NarrativeResult): Promise<void>;
+}
+
 export interface BuildQbrOptions {
   /** Provide to use Claude; omit to use the deterministic offline drafter. */
   narrativeModel?: NarrativeModel;
+  /** Optional persistent cache — consulted only when `narrativeModel` is set. */
+  narrativeCache?: NarrativeCache;
   heldBy?: string;
   generatedLabel?: string;
   /** Per-client report customization (branding + sections). */
@@ -54,7 +68,22 @@ export async function buildQbrReport(
 
   let narrative: NarrativeResult;
   if (opts.narrativeModel) {
-    narrative = await generateNarrative(input, opts.narrativeModel);
+    // Cache Claude runs on a fingerprint of exactly what the narrative depends
+    // on. Cache failures must never fail a build; concurrent misses may both
+    // call the model (last write wins) — acceptable for this traffic.
+    const hash = createHash('sha256')
+      .update(JSON.stringify({ v: 1, model: NARRATIVE_MODEL_ID, input }))
+      .digest('hex');
+    const cached = await opts.narrativeCache?.get(hash).catch(() => undefined);
+    if (cached) {
+      narrative = cached;
+    } else {
+      narrative = await generateNarrative(input, opts.narrativeModel);
+      // Only pin verified narratives — a failed one should retry next build.
+      if (narrative.verification.ok) {
+        await opts.narrativeCache?.put(hash, narrative).catch(() => undefined);
+      }
+    }
   } else {
     const output = draftOfflineNarrative(input);
     const verification = verifyFigures(output.figures_referenced, buildAllowedNumbers(input));

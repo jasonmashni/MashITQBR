@@ -11,7 +11,7 @@ import { resolve } from 'node:path';
 import { createClaudeNarrativeModel } from '@mashit/narrative';
 import { renderPdf } from '@mashit/report';
 import { buildQbrReport, renderQbrHtml } from './service.js';
-import { getDataStore, loadReportInputs, storeDataSource } from './store/index.js';
+import { getDataStore, loadReportInputs, narrativeCacheFor, storeDataSource } from './store/index.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -25,6 +25,7 @@ async function main(): Promise<void> {
 
   const report = await buildQbrReport(storeDataSource(), clientId, period, {
     narrativeModel: useAi ? createClaudeNarrativeModel() : undefined,
+    narrativeCache: narrativeCacheFor(getDataStore(), clientId, period),
     heldBy: 'Jason Mashni',
     generatedLabel: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
     ...(await loadReportInputs(getDataStore(), clientId, period)),

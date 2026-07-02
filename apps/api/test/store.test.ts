@@ -39,6 +39,23 @@ describe('JsonDataStore', () => {
     await s.deleteConnection('del');
     expect(await s.getConnection('del')).toBeUndefined();
   });
+
+  it('round-trips narrative records (and tolerates legacy files without the key)', async () => {
+    const s = store();
+    // The store file written by earlier tests predates `narratives` — reading must not blow up.
+    expect(await s.getNarrative('c1', '2026-Q1')).toBeUndefined();
+
+    const result = {
+      output: { headline: 'H', summary_paragraphs: [], highlights: [], recommendations: [], figures_referenced: [] },
+      verification: { ok: true, checks: [], failures: [] },
+      attempts: 1,
+    };
+    await s.putNarrative({ clientId: 'c1', period: '2026-Q1', inputHash: 'abc123', result, updatedAt: 't' });
+
+    const rec = await store().getNarrative('c1', '2026-Q1');
+    expect(rec?.inputHash).toBe('abc123');
+    expect(rec?.result.output.headline).toBe('H');
+  });
 });
 
 describe('LocalSecretStore', () => {

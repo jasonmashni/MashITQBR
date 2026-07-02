@@ -6,6 +6,7 @@ import type {
   QbrStatus,
   ReportConfig,
 } from '@mashit/core';
+import type { NarrativeResult } from '@mashit/narrative';
 
 /** Kind of integration a connection represents. */
 export type ConnectionType = IntegrationId | 'mcp' | 'zomentum';
@@ -66,6 +67,19 @@ export interface QbrRecord {
 }
 
 /**
+ * A cached AI narrative for a client/period. `inputHash` fingerprints the
+ * exact metric bundle (and model) the narrative was generated from — any data
+ * re-sync changes the hash and naturally invalidates the cache.
+ */
+export interface NarrativeRecord {
+  clientId: string;
+  period: string;
+  inputHash: string;
+  result: NarrativeResult;
+  updatedAt: string;
+}
+
+/**
  * Persistence for all app data. Async so a Table Storage implementation fits;
  * the local JSON implementation just resolves immediately.
  */
@@ -98,6 +112,10 @@ export interface DataStore {
   // metric snapshots (from live syncs)
   getSnapshot(clientId: string, period: string): Promise<MetricSnapshot | undefined>;
   putSnapshot(snapshot: MetricSnapshot): Promise<MetricSnapshot>;
+
+  // cached AI narratives
+  getNarrative(clientId: string, period: string): Promise<NarrativeRecord | undefined>;
+  putNarrative(record: NarrativeRecord): Promise<NarrativeRecord>;
 }
 
 /** Non-secret view of a connection for API responses. */

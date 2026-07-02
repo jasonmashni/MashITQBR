@@ -1,6 +1,6 @@
 import { TableClient, odata, type TableEntity } from '@azure/data-tables';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { ClientConnectionMap, Connection, DataStore, QbrRecord } from './types.js';
+import type { ClientConnectionMap, Connection, DataStore, NarrativeRecord, QbrRecord } from './types.js';
 
 const TABLES = {
   clients: 'qbrClients',
@@ -10,6 +10,7 @@ const TABLES = {
   configs: 'qbrConfigs',
   discussions: 'qbrDiscussions',
   snapshots: 'qbrSnapshots',
+  narratives: 'qbrNarratives',
 } as const;
 
 interface Row extends TableEntity {
@@ -102,6 +103,10 @@ export class TableDataStore implements DataStore {
   // snapshots
   getSnapshot = (clientId: string, period: string) => this.get<MetricSnapshot>(TABLES.snapshots, clientId, period);
   putSnapshot = (s: MetricSnapshot) => this.put(TABLES.snapshots, s.clientId, s.period, s);
+
+  // cached AI narratives
+  getNarrative = (clientId: string, period: string) => this.get<NarrativeRecord>(TABLES.narratives, clientId, period);
+  putNarrative = (n: NarrativeRecord) => this.put(TABLES.narratives, n.clientId, n.period, n);
 }
 
 const ensured = new Set<string>();

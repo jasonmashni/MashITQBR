@@ -47,6 +47,88 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     await expect(buildQbrReport(seedDataSource, 'nope', '2026-Q1')).rejects.toThrow(/Unknown client/);
   });
 
+  it('caches verified AI narratives and skips the model on a repeat build', async () => {
+    let calls = 0;
+    const model = async () => {
+      calls++;
+      return {
+        headline: 'Cached headline',
+        summary_paragraphs: ['Patch compliance held at 89%.'],
+        highlights: [],
+        recommendations: [],
+        figures_referenced: [{ label: 'patch', value: '89%' }],
+      };
+    };
+    const backing = new Map<string, never>();
+    const cache = {
+      get: async (hash: string) => backing.get(hash),
+      put: async (hash: string, result: never) => void backing.set(hash, result),
+    };
+
+    const first = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', { narrativeModel: model, narrativeCache: cache });
+    expect(calls).toBe(1);
+    expect(first.narrative.verification.ok).toBe(true);
+    expect(backing.size).toBe(1);
+
+    const second = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', { narrativeModel: model, narrativeCache: cache });
+    expect(calls).toBe(1); // served from cache
+    expect(second.model.executive.headline).toBe('Cached headline');
+  });
+
+  it('does not cache narratives that fail figure verification', async () => {
+    const backing = new Map<string, never>();
+    const cache = {
+      get: async (hash: string) => backing.get(hash),
+      put: async (hash: string, result: never) => void backing.set(hash, result),
+    };
+    await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => ({
+        headline: 'Made up',
+        summary_paragraphs: [],
+        highlights: [],
+        recommendations: [],
+        figures_referenced: [{ label: 'phantom', value: '123456' }],
+      }),
+      narrativeCache: cache,
+    });
+    expect(backing.size).toBe(0);
+  });
+
+  it('never consults the cache for the offline drafter', async () => {
+    let gets = 0;
+    await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      narrativeCache: {
+        get: async () => {
+          gets++;
+          return undefined;
+        },
+        put: async () => undefined,
+      },
+    });
+    expect(gets).toBe(0);
+  });
+
+  it('survives a broken cache (falls back to the model)', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => ({
+        headline: 'Resilient',
+        summary_paragraphs: [],
+        highlights: [],
+        recommendations: [],
+        figures_referenced: [],
+      }),
+      narrativeCache: {
+        get: async () => {
+          throw new Error('table offline');
+        },
+        put: async () => {
+          throw new Error('table offline');
+        },
+      },
+    });
+    expect(report.model.executive.headline).toBe('Resilient');
+  });
+
   it('threads per-client config + discussion into the report', async () => {
     const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
       config: {

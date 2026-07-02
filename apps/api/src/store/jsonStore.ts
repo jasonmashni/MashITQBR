@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { ClientConnectionMap, Connection, DataStore, QbrRecord } from './types.js';
+import type { ClientConnectionMap, Connection, DataStore, NarrativeRecord, QbrRecord } from './types.js';
 
 interface JsonShape {
   clients: Record<string, Client>;
@@ -11,9 +11,10 @@ interface JsonShape {
   configs: Record<string, ReportConfig>;
   discussions: Record<string, QbrDiscussion>;
   snapshots: Record<string, MetricSnapshot>;
+  narratives: Record<string, NarrativeRecord>;
 }
 
-const EMPTY: JsonShape = { clients: {}, connections: {}, maps: {}, qbrs: {}, configs: {}, discussions: {}, snapshots: {} };
+const EMPTY: JsonShape = { clients: {}, connections: {}, maps: {}, qbrs: {}, configs: {}, discussions: {}, snapshots: {}, narratives: {} };
 const pk = (a: string, b: string) => `${a}:${b}`;
 
 /** File-backed DataStore for local development. */
@@ -119,5 +120,15 @@ export class JsonDataStore implements DataStore {
     s.snapshots[pk(snapshot.clientId, snapshot.period)] = snapshot;
     this.write(s);
     return snapshot;
+  }
+
+  async getNarrative(clientId: string, period: string): Promise<NarrativeRecord | undefined> {
+    return this.read().narratives[pk(clientId, period)];
+  }
+  async putNarrative(record: NarrativeRecord): Promise<NarrativeRecord> {
+    const s = this.read();
+    s.narratives[pk(record.clientId, record.period)] = record;
+    this.write(s);
+    return record;
   }
 }
