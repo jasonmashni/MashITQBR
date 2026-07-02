@@ -215,6 +215,8 @@ export interface DiscussionItem {
   response?: string;
   disposition?: ActionDisposition;
   owner?: string;
+  /** Set once pushed to an external system (Halo ticket / Zomentum opportunity). */
+  externalRef?: { system: 'halo' | 'zomentum'; id: string; status?: string };
 }
 
 /** The review-time discussion + notes for a client's QBR. */

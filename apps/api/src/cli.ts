@@ -10,9 +10,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createClaudeNarrativeModel } from '@mashit/narrative';
 import { renderPdf } from '@mashit/report';
-import { seedDataSource } from './dataSource.js';
 import { buildQbrReport, renderQbrHtml } from './service.js';
-import { loadReportInputs } from './store.js';
+import { getDataStore, loadReportInputs, storeDataSource } from './store/index.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -24,11 +23,11 @@ async function main(): Promise<void> {
   const outDir = resolve(pos[2] ?? 'out');
   const useAi = flags.has('--ai') && !!process.env['ANTHROPIC_API_KEY'];
 
-  const report = await buildQbrReport(seedDataSource, clientId, period, {
+  const report = await buildQbrReport(storeDataSource(), clientId, period, {
     narrativeModel: useAi ? createClaudeNarrativeModel() : undefined,
     heldBy: 'Jason Mashni',
     generatedLabel: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
-    ...loadReportInputs(clientId, period),
+    ...(await loadReportInputs(getDataStore(), clientId, period)),
   });
 
   mkdirSync(outDir, { recursive: true });

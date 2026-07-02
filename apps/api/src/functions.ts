@@ -1,153 +1,51 @@
-import { app, type HttpRequest, type HttpResponseInit, type InvocationContext } from '@azure/functions';
-import { periodFor, type QbrDiscussion, type ReportConfig } from '@mashit/core';
-import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
-import { renderDeck, renderPdf } from '@mashit/report';
-import { seedDataSource } from './dataSource.js';
-import { buildQbrReport, renderQbrHtml } from './service.js';
-import { getConfig, getDiscussion, loadReportInputs, putConfig, putDiscussion } from './store.js';
+import { app, type HttpMethod, type HttpRequest, type HttpResponseInit } from '@azure/functions';
+import type { QbrStatus } from '@mashit/core';
+import * as h from './handlers.js';
+import type { ApiResult } from './handlers.js';
+import type { ConnectionInput } from './connections.js';
+import type { PushInput } from './actions.js';
 import './spa.js'; // registers the catch-all route that serves the React SPA
 
-/** Use Claude when a key is configured and the request didn't opt out (?ai=0). */
-function narrativeModelFor(req: HttpRequest): NarrativeModel | undefined {
-  const aiOff = req.query.get('ai') === '0';
-  if (!aiOff && process.env['ANTHROPIC_API_KEY']) return createClaudeNarrativeModel();
-  return undefined;
+const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+
+function toResponse(r: ApiResult): HttpResponseInit {
+  if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: r.html };
+  if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf' }, body: r.pdf };
+  if (r.pptx !== undefined) return { status: r.status, headers: { 'Content-Type': PPTX, 'Content-Disposition': 'attachment' }, body: r.pptx };
+  return { status: r.status, jsonBody: r.json };
 }
 
-function json(status: number, body: unknown): HttpResponseInit {
-  return { status, jsonBody: body };
-}
+const ai = (req: HttpRequest) => req.query.get('ai');
+const body = async (req: HttpRequest) => ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
+const route = (name: string, method: HttpMethod, r: string, fn: (req: HttpRequest) => Promise<ApiResult> | ApiResult) =>
+  app.http(name, { route: r, methods: [method], authLevel: 'anonymous', handler: async (req) => toResponse(await fn(req)) });
 
-app.http('listClients', {
-  route: 'api/clients',
-  methods: ['GET'],
-  authLevel: 'anonymous', // Static Web Apps Easy Auth gates access in front of the API
-  handler: async (): Promise<HttpResponseInit> => json(200, { clients: seedDataSource.listClients() }),
-});
+// Clients + report
+route('listClients', 'GET', 'api/clients', () => h.listClients());
+route('updateClient', 'PUT', 'api/clients/{clientId}', async (req) => h.updateClient(req.params['clientId']!, await body(req)));
+route('importHalo', 'POST', 'api/clients/import/halo', () => h.importHalo());
+route('getQbr', 'GET', 'api/clients/{clientId}/qbr/{period}', (req) => h.getQbr(req.params['clientId']!, req.params['period']!, ai(req)));
+route('getReportHtml', 'GET', 'api/clients/{clientId}/qbr/{period}/report.html', (req) => h.getReportHtml(req.params['clientId']!, req.params['period']!, ai(req)));
+route('getReportPdf', 'GET', 'api/clients/{clientId}/qbr/{period}/report.pdf', (req) => h.getReportPdf(req.params['clientId']!, req.params['period']!, ai(req)));
+route('getReportDeck', 'GET', 'api/clients/{clientId}/qbr/{period}/deck.pptx', (req) => h.getReportDeck(req.params['clientId']!, req.params['period']!, ai(req)));
 
-app.http('getQbr', {
-  route: 'api/clients/{clientId}/qbr/{period}',
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    const { clientId, period } = req.params;
-    try {
-      const report = await buildQbrReport(seedDataSource, clientId!, period!, {
-        narrativeModel: narrativeModelFor(req),
-        ...loadReportInputs(clientId!, period!),
-      });
-      return json(200, { model: report.model, warnings: report.warnings, verification: report.narrative.verification.ok });
-    } catch (err) {
-      ctx.error(err);
-      return json(404, { error: err instanceof Error ? err.message : 'Not found' });
-    }
-  },
-});
+// Config + discussion
+route('getConfig', 'GET', 'api/clients/{clientId}/config', (req) => h.getConfig(req.params['clientId']!));
+route('putConfig', 'PUT', 'api/clients/{clientId}/config', async (req) => h.putConfig(req.params['clientId']!, await body(req)));
+route('getDiscussion', 'GET', 'api/clients/{clientId}/qbr/{period}/discussion', (req) => h.getDiscussion(req.params['clientId']!, req.params['period']!));
+route('putDiscussion', 'PUT', 'api/clients/{clientId}/qbr/{period}/discussion', async (req) => h.putDiscussion(req.params['clientId']!, req.params['period']!, await body(req)));
 
-app.http('getQbrHtml', {
-  route: 'api/clients/{clientId}/qbr/{period}/report.html',
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
-    const { clientId, period } = req.params;
-    const report = await buildQbrReport(seedDataSource, clientId!, period!, { narrativeModel: narrativeModelFor(req), ...loadReportInputs(clientId!, period!) });
-    return { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: renderQbrHtml(report) };
-  },
-});
+// Live pipeline + workflow
+route('syncQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/sync', (req) => h.syncQbr(req.params['clientId']!, req.params['period']!));
+route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) => h.putStatus(req.params['clientId']!, req.params['period']!, ((await body(req))['status'] as QbrStatus) ?? 'draft'));
+route('putSchedule', 'PUT', 'api/clients/{clientId}/qbr/{period}/schedule', async (req) => h.putSchedule(req.params['clientId']!, req.params['period']!, (await body(req)) as { scheduledAt?: string; joinUrl?: string }));
+route('pushAction', 'POST', 'api/clients/{clientId}/qbr/{period}/actions/push', async (req) => h.pushQbrAction(req.params['clientId']!, req.params['period']!, (await body(req)) as { actionId?: string; target: PushInput['target'] }));
 
-app.http('getQbrPdf', {
-  route: 'api/clients/{clientId}/qbr/{period}/report.pdf',
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
-    const { clientId, period } = req.params;
-    const report = await buildQbrReport(seedDataSource, clientId!, period!, { narrativeModel: narrativeModelFor(req), ...loadReportInputs(clientId!, period!) });
-    try {
-      const pdf = await renderPdf(renderQbrHtml(report), {
-        executablePath: process.env['PLAYWRIGHT_CHROMIUM_PATH'],
-      });
-      return {
-        status: 200,
-        headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${clientId}-${period}-QBR.pdf"` },
-        body: pdf,
-      };
-    } catch (err) {
-      return json(501, { error: err instanceof Error ? err.message : 'PDF rendering unavailable' });
-    }
-  },
-});
+// Integrations
+route('listIntegrations', 'GET', 'api/integrations', () => h.listIntegrations());
+route('createIntegration', 'POST', 'api/integrations', async (req) => h.saveIntegration((await body(req)) as unknown as ConnectionInput));
+route('updateIntegration', 'PUT', 'api/integrations/{id}', async (req) => h.saveIntegration({ ...((await body(req)) as unknown as ConnectionInput), id: req.params['id']! }));
+route('deleteIntegration', 'DELETE', 'api/integrations/{id}', (req) => h.deleteIntegration(req.params['id']!));
+route('testIntegration', 'POST', 'api/integrations/{id}/test', (req) => h.testIntegration(req.params['id']!));
 
-app.http('getQbrDeck', {
-  route: 'api/clients/{clientId}/qbr/{period}/deck.pptx',
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
-    const { clientId, period } = req.params;
-    const report = await buildQbrReport(seedDataSource, clientId!, period!, { narrativeModel: narrativeModelFor(req), ...loadReportInputs(clientId!, period!) });
-    try {
-      const deck = await renderDeck(report.model);
-      return {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-          'Content-Disposition': `attachment; filename="${clientId}-${period}-QBR.pptx"`,
-        },
-        body: deck,
-      };
-    } catch (err) {
-      return json(501, { error: err instanceof Error ? err.message : 'Deck rendering unavailable' });
-    }
-  },
-});
-
-// ── Per-client report config (branding + sections) ──
-app.http('getConfig', {
-  route: 'api/clients/{clientId}/config',
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
-    const { clientId } = req.params;
-    return json(200, getConfig(clientId!) ?? { clientId });
-  },
-});
-
-app.http('putConfig', {
-  route: 'api/clients/{clientId}/config',
-  methods: ['PUT'],
-  authLevel: 'anonymous',
-  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
-    const { clientId } = req.params;
-    const body = (await req.json()) as Partial<ReportConfig>;
-    return json(200, putConfig({ ...body, clientId: clientId! }));
-  },
-});
-
-// ── Per-QBR discussion + notes capture ──
-app.http('getDiscussion', {
-  route: 'api/clients/{clientId}/qbr/{period}/discussion',
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
-    const { clientId, period } = req.params;
-    return json(200, getDiscussion(clientId!, period!) ?? { clientId, period, items: [] });
-  },
-});
-
-app.http('putDiscussion', {
-  route: 'api/clients/{clientId}/qbr/{period}/discussion',
-  methods: ['PUT'],
-  authLevel: 'anonymous',
-  handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
-    const { clientId, period } = req.params;
-    const body = (await req.json()) as Partial<QbrDiscussion>;
-    return json(200, putDiscussion({ clientId: clientId!, period: period!, items: body.items ?? [], notes: body.notes }));
-  },
-});
-
-/** Convenience: current quarter id for the UI's default selection. */
-app.http('currentPeriod', {
-  route: 'api/period/current',
-  methods: ['GET'],
-  authLevel: 'anonymous',
-  handler: async (): Promise<HttpResponseInit> => json(200, { period: periodFor(new Date()).id }),
-});
+route('currentPeriod', 'GET', 'api/period/current', () => h.currentPeriod());

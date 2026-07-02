@@ -1,123 +1,107 @@
 /**
- * Local development API server — mirrors the Azure Functions routes using the
- * same service layer, so the React app runs without Azure Functions Core Tools.
- *
- *   node apps/api/dist/devserver.js   (listens on :7071)
+ * Local development API server — same routes as the Azure Functions app, over
+ * the shared handlers, plus SPA static serving. Lets the React app run without
+ * Azure Functions Core Tools. Uses Table Storage/Key Vault when configured, else
+ * the local JSON store + local secret file.
  */
 import { createServer, type IncomingMessage } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { periodFor, type QbrDiscussion, type ReportConfig } from '@mashit/core';
-import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
-import { renderDeck, renderPdf } from '@mashit/report';
-import { seedDataSource } from './dataSource.js';
-import { buildQbrReport, renderQbrHtml } from './service.js';
-import { getConfig, getDiscussion, loadReportInputs, putConfig, putDiscussion } from './store.js';
+import * as h from './handlers.js';
+import type { ApiResult } from './handlers.js';
+import type { ConnectionInput } from './connections.js';
+import type { PushInput } from './actions.js';
+import type { QbrStatus } from '@mashit/core';
 import { resolveStaticFile } from './static.js';
 
 const PORT = Number(process.env['PORT'] ?? 7071);
+const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
-// Serve the built SPA if present (so :7071 alone mirrors the single-app deploy).
-// Falls back gracefully — for pure API dev, use the Vite dev server on :5173.
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WWW = [resolve(HERE, '..', 'www'), resolve(process.cwd(), 'apps/web/dist'), resolve(process.cwd(), 'apps/api/www')].find(
   (d) => existsSync(join(d, 'index.html')),
 );
 
-function modelFor(url: URL): NarrativeModel | undefined {
-  const aiOff = url.searchParams.get('ai') === '0';
-  return process.env['ANTHROPIC_API_KEY'] && !aiOff ? createClaudeNarrativeModel() : undefined;
-}
-
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
   const text = Buffer.concat(chunks).toString('utf8');
-  return text ? JSON.parse(text) : {};
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
+
+interface Route {
+  method: string;
+  re: RegExp;
+  run: (m: RegExpMatchArray, body: Record<string, unknown>, url: URL) => Promise<ApiResult> | ApiResult;
+}
+
+const routes: Route[] = [
+  { method: 'GET', re: /^\/api\/clients$/, run: () => h.listClients() },
+  { method: 'POST', re: /^\/api\/clients\/import\/halo$/, run: () => h.importHalo() },
+  { method: 'PUT', re: /^\/api\/clients\/([^/]+)$/, run: (m, b) => h.updateClient(m[1]!, b) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/config$/, run: (m) => h.getConfig(m[1]!) },
+  { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/config$/, run: (m, b) => h.putConfig(m[1]!, b) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)$/, run: (m, _b, url) => h.getQbr(m[1]!, m[2]!, url.searchParams.get('ai')) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/report\.html$/, run: (m, _b, url) => h.getReportHtml(m[1]!, m[2]!, url.searchParams.get('ai')) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/report\.pdf$/, run: (m, _b, url) => h.getReportPdf(m[1]!, m[2]!, url.searchParams.get('ai')) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/deck\.pptx$/, run: (m, _b, url) => h.getReportDeck(m[1]!, m[2]!, url.searchParams.get('ai')) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m) => h.getDiscussion(m[1]!, m[2]!) },
+  { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m, b) => h.putDiscussion(m[1]!, m[2]!, b) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/sync$/, run: (m) => h.syncQbr(m[1]!, m[2]!) },
+  { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/status$/, run: (m, b) => h.putStatus(m[1]!, m[2]!, (b['status'] as QbrStatus) ?? 'draft') },
+  { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/schedule$/, run: (m, b) => h.putSchedule(m[1]!, m[2]!, b as { scheduledAt?: string; joinUrl?: string }) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/actions\/push$/, run: (m, b) => h.pushQbrAction(m[1]!, m[2]!, b as { actionId?: string; target: PushInput['target'] }) },
+  { method: 'GET', re: /^\/api\/integrations$/, run: () => h.listIntegrations() },
+  { method: 'POST', re: /^\/api\/integrations$/, run: (_m, b) => h.saveIntegration(b as unknown as ConnectionInput) },
+  { method: 'PUT', re: /^\/api\/integrations\/([^/]+)$/, run: (m, b) => h.saveIntegration({ ...(b as unknown as ConnectionInput), id: m[1]! }) },
+  { method: 'DELETE', re: /^\/api\/integrations\/([^/]+)$/, run: (m) => h.deleteIntegration(m[1]!) },
+  { method: 'POST', re: /^\/api\/integrations\/([^/]+)\/test$/, run: (m) => h.testIntegration(m[1]!) },
+  { method: 'GET', re: /^\/api\/period\/current$/, run: () => h.currentPeriod() },
+];
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
-  const path = url.pathname.replace(/\/+$/, '');
-  const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,PUT,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
-  const send = (status: number, type: string, body: string | Buffer) => {
-    res.writeHead(status, { 'Content-Type': type, ...cors });
-    res.end(body);
-  };
-  const json = (status: number, obj: unknown) => send(status, 'application/json', JSON.stringify(obj));
-
+  const path = url.pathname.replace(/\/+$/, '') || '/';
+  const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
   try {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, cors);
       return res.end();
     }
+    for (const rt of routes) {
+      if (req.method !== rt.method) continue;
+      const m = path.match(rt.re);
+      if (!m) continue;
+      const b = req.method === 'PUT' || req.method === 'POST' ? await readJson(req) : {};
+      const result = await rt.run(m, b, url);
+      if (result.html !== undefined) { res.writeHead(result.status, { 'Content-Type': 'text/html; charset=utf-8', ...cors }); return res.end(result.html); }
+      if (result.pdf !== undefined) { res.writeHead(result.status, { 'Content-Type': 'application/pdf', ...cors }); return res.end(result.pdf); }
+      if (result.pptx !== undefined) { res.writeHead(result.status, { 'Content-Type': PPTX, ...cors }); return res.end(result.pptx); }
+      res.writeHead(result.status, { 'Content-Type': 'application/json', ...cors });
+      return res.end(JSON.stringify(result.json));
+    }
 
-    // ── Reads ──
-    if (req.method === 'GET') {
-      if (path === '/api/clients') return json(200, { clients: seedDataSource.listClients() });
-      if (path === '/api/period/current') return json(200, { period: periodFor(new Date()).id });
-
-      const cfg = path.match(/^\/api\/clients\/([^/]+)\/config$/);
-      if (cfg) return json(200, getConfig(cfg[1]!) ?? { clientId: cfg[1]! });
-
-      const disc = path.match(/^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/);
-      if (disc) return json(200, getDiscussion(disc[1]!, disc[2]!) ?? { clientId: disc[1]!, period: disc[2]!, items: [] });
-
-      const m = path.match(/^\/api\/clients\/([^/]+)\/qbr\/([^/]+)(\/report\.html|\/report\.pdf|\/deck\.pptx)?$/);
-      if (m) {
-        const clientId = m[1]!;
-        const period = m[2]!;
-        const kind = m[3];
-        const report = await buildQbrReport(seedDataSource, clientId, period, {
-          narrativeModel: modelFor(url),
-          ...loadReportInputs(clientId, period),
-        });
-        if (kind === '/report.html') return send(200, 'text/html; charset=utf-8', renderQbrHtml(report));
-        if (kind === '/report.pdf') {
-          try {
-            return send(200, 'application/pdf', await renderPdf(renderQbrHtml(report), { executablePath: process.env['PLAYWRIGHT_CHROMIUM_PATH'] }));
-          } catch (err) {
-            return json(501, { error: err instanceof Error ? err.message : 'PDF rendering unavailable' });
-          }
-        }
-        if (kind === '/deck.pptx') {
-          try {
-            return send(200, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', await renderDeck(report.model));
-          } catch (err) {
-            return json(501, { error: err instanceof Error ? err.message : 'Deck rendering unavailable' });
-          }
-        }
-        return json(200, { model: report.model, warnings: report.warnings, verification: report.narrative.verification.ok });
-      }
-
-      // Static SPA (if a web build is present) — mirrors the single-app deploy.
-      if (WWW && !path.startsWith('/api/')) {
-        const match = resolveStaticFile(WWW, path);
-        if (match) return send(200, match.contentType, await readFile(match.file));
+    // Static SPA (if a web build is present)
+    if (req.method === 'GET' && WWW && !path.startsWith('/api/')) {
+      const match = resolveStaticFile(WWW, path);
+      if (match) {
+        res.writeHead(200, { 'Content-Type': match.contentType, ...cors });
+        return res.end(await readFile(match.file));
       }
     }
 
-    // ── Writes ──
-    if (req.method === 'PUT') {
-      const cfg = path.match(/^\/api\/clients\/([^/]+)\/config$/);
-      if (cfg) {
-        const body = (await readJson(req)) as Partial<ReportConfig>;
-        return json(200, putConfig({ ...body, clientId: cfg[1]! }));
-      }
-      const disc = path.match(/^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/);
-      if (disc) {
-        const body = (await readJson(req)) as Partial<QbrDiscussion>;
-        return json(200, putDiscussion({ clientId: disc[1]!, period: disc[2]!, items: body.items ?? [], notes: body.notes }));
-      }
-    }
-
-    return json(404, { error: 'Not found' });
-  } catch (err) {
-    json(err instanceof Error && /Unknown client|No metric snapshot/.test(err.message) ? 404 : 500, {
-      error: err instanceof Error ? err.message : 'Server error',
-    });
+    res.writeHead(404, { 'Content-Type': 'application/json', ...cors });
+    res.end(JSON.stringify({ error: 'Not found' }));
+  } catch (e) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: e instanceof Error ? e.message : 'Server error' }));
   }
 });
 
