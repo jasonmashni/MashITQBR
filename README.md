@@ -61,8 +61,23 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
   with a Client ID + Secret from your MCP server's setup page (OAuth token
   exchange is automatic; a Token URL override exists for nonstandard setups).
   Each connection has **Map clients**: it lists the orgs found inside the tool
-  (Halo clients, Huntress organizations) so you pick who's who from a dropdown.
-  Secrets go to **Key Vault**; only references are stored.
+  (Halo clients, NinjaOne organizations, Huntress organizations) so you pick
+  who's who from a dropdown. Add the zero-credential **NinjaOne (via MASH MCP)**
+  connection to get the Ninja mapping dropdown. Secrets go to **Key Vault**;
+  only references are stored.
+
+  > **How the MCP data flows:** the MASH MCP tools return formatted text
+  > (built for LLM chat), and the QBR tool parses it — client/org lists,
+  > device rows, and the JSON-per-line query batches. If the MCP server ever
+  > adds `structuredContent` (or JSON text) to its tool results, the QBR tool
+  > prefers it automatically — a worthwhile 3-line change per tool in the MCP
+  > server repo. Two current data limits surface as sync warnings: Halo
+  > quarterly ticket volumes need the Halo API key's **reports scope**
+  > (403 today) or a date-filtered MCP ticket tool, and NinjaOne warranty
+  > fields aren't exposed by the text output (track as manual metrics).
+  > Huntress pulls its rich **quarterly summary report** per organization
+  > (incidents, signals, canaries, recon, firewall, ITDR, SIEM) plus live MFA
+  > coverage from identities.
 - **QBR workspace** (`/clients/:id`) — quarter picker (marks quarters with data),
   **Sync**, and five tabs:
   - *Report* — executive summary with an **Edit narrative** editor (save wording

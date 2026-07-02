@@ -56,6 +56,13 @@ const TYPES: TypeDef[] = [
     ],
   },
   {
+    value: 'ninja',
+    label: 'NinjaOne (via MASH MCP)',
+    hint: 'Rides your MASH MCP connection — add this just to map clients to NinjaOne organizations from a dropdown. No credentials needed.',
+    config: [],
+    secrets: [],
+  },
+  {
     value: 'huntress',
     label: 'Huntress',
     hint: 'EDR / ITDR / SAT posture',
@@ -109,7 +116,14 @@ function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved
         if (!live) return;
         const qbrClients = c.clients.filter((x) => x.qbrEnabled !== false);
         setClients(qbrClients);
-        setOrgs(o.orgs);
+        // An empty org list means the tool answered but nothing was readable —
+        // fall back to free-text ids rather than show unusable empty dropdowns.
+        if (o.orgs && o.orgs.length === 0) {
+          setOrgs(null);
+          setOrgError('The tool responded but no organizations could be read — enter each client’s id manually.');
+        } else {
+          setOrgs(o.orgs);
+        }
         setRefs(Object.fromEntries(qbrClients.map((x) => [x.id, x.integrationRefs?.[refKey] ?? ''])));
       })
       .finally(() => live && setLoading(false));
@@ -132,6 +146,10 @@ function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved
   }
 
   const orgOptions = (orgs ?? []).map((o) => ({ value: o.id, label: `${o.name} (${o.id})` }));
+  // Keep previously saved ids visible even if they aren't in the tool's list.
+  for (const v of Object.values(refs)) {
+    if (v && !orgOptions.some((o) => o.value === v)) orgOptions.push({ value: v, label: `${v} (saved)` });
+  }
 
   return (
     <Modal opened onClose={() => onClose(false)} title={`Map clients — ${conn.label}`} size="lg">
