@@ -39,6 +39,10 @@ route('getReportHtml', 'GET', 'api/clients/{clientId}/qbr/{period}/report.html',
 route('getReportPdf', 'GET', 'api/clients/{clientId}/qbr/{period}/report.pdf', (req) => h.getReportPdf(req.params['clientId']!, req.params['period']!, ai(req)));
 route('getReportDeck', 'GET', 'api/clients/{clientId}/qbr/{period}/deck.pptx', (req) => h.getReportDeck(req.params['clientId']!, req.params['period']!, ai(req)));
 
+// Data review
+route('getMetrics', 'GET', 'api/clients/{clientId}/qbr/{period}/metrics', (req) => h.getMetrics(req.params['clientId']!, req.params['period']!));
+route('putMetrics', 'PUT', 'api/clients/{clientId}/qbr/{period}/metrics', async (req) => h.putManualMetrics(req.params['clientId']!, req.params['period']!, await body(req)));
+
 // Config + discussion
 route('getConfig', 'GET', 'api/clients/{clientId}/config', (req) => h.getConfig(req.params['clientId']!));
 route('putConfig', 'PUT', 'api/clients/{clientId}/config', async (req) => h.putConfig(req.params['clientId']!, await body(req)));

@@ -13,6 +13,24 @@ export interface Client {
   integrationRefs?: Record<string, string>;
 }
 
+/** A collected metric (mirrors the server's MetricValue). */
+export interface MetricRow {
+  key: string;
+  label: string;
+  value: number | string | boolean | null;
+  unit?: string;
+  source: string;
+  category: string;
+  higherIsBetter?: boolean;
+}
+
+export interface SnapshotView {
+  clientId: string;
+  period: string;
+  capturedAt: string;
+  metrics: MetricRow[];
+}
+
 /** One row of GET /api/overview. */
 export interface OverviewRow {
   clientId: string;

@@ -60,9 +60,17 @@ export async function buildQbrReport(
 ): Promise<QbrReport> {
   const client = await ds.getClient(clientId);
   if (!client) throw new Error(`Unknown client: ${clientId}`);
-  const current = await ds.getSnapshot(clientId, periodId);
-  if (!current) throw new Error(`No metric snapshot for ${clientId} ${periodId}`);
-  const previous = await ds.getSnapshot(clientId, previousPeriod(periodId).id);
+  const currentRaw = await ds.getSnapshot(clientId, periodId);
+  if (!currentRaw) throw new Error(`No metric snapshot for ${clientId} ${periodId}`);
+  const previousRaw = await ds.getSnapshot(clientId, previousPeriod(periodId).id);
+
+  // Reviewed-out metrics vanish everywhere (sections, scorecard, trends, AI
+  // input) — and since the narrative input changes, the AI cache invalidates.
+  const excluded = new Set(opts.config?.excludedMetrics ?? []);
+  const filter = <T extends { metrics: { key: string }[] }>(s: T): T =>
+    excluded.size ? { ...s, metrics: s.metrics.filter((m) => !excluded.has(m.key)) } : s;
+  const current = filter(currentRaw);
+  const previous = previousRaw ? filter(previousRaw) : undefined;
 
   const input = buildNarrativeInput({ client, current, previous });
 

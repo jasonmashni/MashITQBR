@@ -1,4 +1,13 @@
-import { advanceStatus, computeScorecard, isQbrStatus, lastPeriods, periodFor, type QbrStatus } from '@mashit/core';
+import {
+  advanceStatus,
+  computeScorecard,
+  isQbrStatus,
+  lastPeriods,
+  periodFor,
+  type MetricCategory,
+  type MetricValue,
+  type QbrStatus,
+} from '@mashit/core';
 import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
 import { renderDeck, renderPdf } from '@mashit/report';
 import { FetchHttpTransport, type McpTransport } from '@mashit/integrations';
@@ -187,6 +196,60 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
     }
   }
   return ok(saved);
+}
+
+// ── Data review (raw snapshot + manual metrics) ──────────────────────────────
+export async function getMetrics(clientId: string, period: string): Promise<ApiResult> {
+  const store = getDataStore();
+  const snapshot = await storeDataSource(store).getSnapshot(clientId, period);
+  if (!snapshot) return err(404, `No metric snapshot for ${clientId} ${period} — run a Sync first.`);
+  const config = await store.getReportConfig(clientId);
+  return ok({ snapshot, excluded: config?.excludedMetrics ?? [] });
+}
+
+const METRIC_CATEGORIES: readonly MetricCategory[] = ['operations', 'security', 'identity', 'backup', 'infrastructure', 'spend'];
+
+/** Replace the snapshot's manual metrics with the submitted set (add/edit/delete). */
+export async function putManualMetrics(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const store = getDataStore();
+  // Seed snapshots materialize into the store on first manual edit.
+  const base = (await storeDataSource(store).getSnapshot(clientId, period)) ?? {
+    clientId,
+    period,
+    capturedAt: new Date().toISOString(),
+    metrics: [] as MetricValue[],
+  };
+
+  const manual: MetricValue[] = [];
+  for (const raw of Array.isArray(body['metrics']) ? (body['metrics'] as Array<Record<string, unknown>>) : []) {
+    const label = typeof raw['label'] === 'string' ? raw['label'].trim() : '';
+    const value = raw['value'];
+    const category = raw['category'];
+    if (!label || (typeof value !== 'number' && typeof value !== 'string' && typeof value !== 'boolean')) {
+      return err(400, 'Each manual metric needs a label and a value.');
+    }
+    if (!METRIC_CATEGORIES.includes(category as MetricCategory)) {
+      return err(400, `Unknown category: ${String(category)}`);
+    }
+    const key = typeof raw['key'] === 'string' && raw['key'].startsWith('manual.')
+      ? raw['key']
+      : `manual.${label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}`;
+    manual.push({
+      key,
+      label,
+      value,
+      unit: typeof raw['unit'] === 'string' && raw['unit'] ? raw['unit'] : undefined,
+      source: 'manual',
+      category: category as MetricCategory,
+      higherIsBetter: typeof raw['higherIsBetter'] === 'boolean' ? raw['higherIsBetter'] : undefined,
+    });
+  }
+
+  const kept = base.metrics.filter((m) => m.source !== 'manual');
+  const updated = { ...base, clientId, period, metrics: [...kept, ...manual] };
+  await store.putSnapshot(updated);
+  audit('metrics.manual', `qbr:${clientId}/${period}`, `${manual.length} manual metric(s)`);
+  return ok({ metrics: updated.metrics.length, manual: manual.length });
 }
 
 // ── Integrations ─────────────────────────────────────────────────────────────

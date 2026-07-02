@@ -26,6 +26,7 @@ import {
   Image,
   Divider,
   Tooltip,
+  Table,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { RadarChart, BarChart } from '@mantine/charts';
@@ -45,7 +46,7 @@ import {
 } from '@tabler/icons-react';
 import { api, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
-import type { Client, Discussion, QbrResponse, ReportConfig, SystemInfo } from '../types.js';
+import type { Client, Discussion, MetricRow, QbrResponse, ReportConfig, SnapshotView, SystemInfo } from '../types.js';
 import { RatingBadge, StatusBadge, uid } from '../ui.js';
 
 const SECTIONS: Array<[string, string]> = [
@@ -176,6 +177,7 @@ export function Workspace() {
       <Tabs defaultValue="report" keepMounted={false}>
         <Tabs.List mb="md">
           <Tabs.Tab value="report">Report</Tabs.Tab>
+          <Tabs.Tab value="data">Data</Tabs.Tab>
           <Tabs.Tab value="branding">Branding &amp; Sections</Tabs.Tab>
           <Tabs.Tab value="discussion">Discussion &amp; Responses</Tabs.Tab>
           <Tabs.Tab value="workflow">Schedule &amp; Actions</Tabs.Tab>
@@ -188,6 +190,12 @@ export function Workspace() {
             <ReportTab qbr={qbr} urls={urls} pdfAvailable={system?.pdfAvailable ?? false} refresh={refresh} />
           ) : (
             <Text c="dimmed">No report.</Text>
+          )}
+        </Tabs.Panel>
+
+        <Tabs.Panel value="data">
+          {period && config && (
+            <DataTab clientId={clientId} period={period} config={config} setConfig={setConfig} refresh={refresh} onSaved={() => setRefresh((n) => n + 1)} />
           )}
         </Tabs.Panel>
 
@@ -340,6 +348,187 @@ function ReportTab({
           <List size="sm" spacing={4}>{model.recommendations.map((r, i) => <List.Item key={i}>{r}</List.Item>)}</List>
         </Card>
       )}
+    </Stack>
+  );
+}
+
+// ── Data review tab ───────────────────────────────────────────────────────────
+function DataTab({
+  clientId,
+  period,
+  config,
+  setConfig,
+  refresh,
+  onSaved,
+}: {
+  clientId: string;
+  period: string;
+  config: ReportConfig;
+  setConfig: (c: ReportConfig) => void;
+  refresh: number;
+  onSaved: () => void;
+}) {
+  const [snapshot, setSnapshot] = useState<SnapshotView | null>(null);
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [manual, setManual] = useState<MetricRow[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState({ label: '', value: '', unit: '', category: 'security' });
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    api
+      .getMetrics(clientId, period)
+      .then((d) => {
+        if (!live) return;
+        setSnapshot(d.snapshot);
+        setExcluded(new Set(d.excluded));
+        setManual(d.snapshot.metrics.filter((m) => m.source === 'manual'));
+        setLoadError(null);
+      })
+      .catch((e) => live && setLoadError(e instanceof Error ? e.message : 'No data'))
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [clientId, period, refresh]);
+
+  function addManual() {
+    if (!draft.label.trim() || draft.value === '') {
+      notifications.show({ color: 'red', message: 'Manual metrics need a label and a value.' });
+      return;
+    }
+    const numeric = Number(draft.value);
+    setManual([
+      ...manual,
+      {
+        key: `manual.${draft.label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}`,
+        label: draft.label.trim(),
+        value: Number.isFinite(numeric) && draft.value.trim() !== '' ? numeric : draft.value,
+        unit: draft.unit || undefined,
+        source: 'manual',
+        category: draft.category,
+      },
+    ]);
+    setDraft({ label: '', value: '', unit: '', category: draft.category });
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.putManualMetrics(clientId, period, manual);
+      const nextConfig = { ...config, clientId, excludedMetrics: [...excluded] };
+      await api.putConfig(clientId, nextConfig);
+      setConfig(nextConfig);
+      notifications.show({ color: 'teal', message: 'Data review saved — the report reflects it immediately.' });
+      onSaved();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <Center h={200}><Loader /></Center>;
+  if (loadError || !snapshot) {
+    return (
+      <Alert color="blue" title="No data pulled yet">
+        {loadError ?? 'No snapshot for this quarter.'} Use <b>Sync</b> to pull from the mapped tools — everything lands here for review
+        before it appears in the QBR. You can also add manual metrics below after the first sync.
+      </Alert>
+    );
+  }
+
+  const collected = snapshot.metrics.filter((m) => m.source !== 'manual');
+  const sources = [...new Set(collected.map((m) => m.source))];
+  const fmt = (m: MetricRow) => `${m.value === null ? '—' : String(m.value)}${m.unit && m.unit !== 'count' ? ` ${m.unit}` : ''}`;
+
+  return (
+    <Stack gap="lg" maw={900}>
+      <Group justify="space-between">
+        <Text size="sm" c="dimmed">
+          Pulled {new Date(snapshot.capturedAt).toLocaleString()} · {collected.length} metric(s) from {sources.length} source(s).
+          Untick anything you don't want in the QBR — the report, scorecard, and AI summary all respect it.
+        </Text>
+        <Button loading={saving} onClick={save}>Save review</Button>
+      </Group>
+
+      {sources.map((source) => (
+        <Card key={source} withBorder radius="md" padding="lg">
+          <Group mb="sm" gap="xs">
+            <Badge variant="light" color="navy">{source}</Badge>
+            <Text size="xs" c="dimmed">{collected.filter((m) => m.source === source).length} metric(s)</Text>
+          </Group>
+          <Table verticalSpacing={6}>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th w={70}>Include</Table.Th>
+                <Table.Th>Metric</Table.Th>
+                <Table.Th>Value</Table.Th>
+                <Table.Th>Category</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {collected
+                .filter((m) => m.source === source)
+                .map((m) => (
+                  <Table.Tr key={m.key} opacity={excluded.has(m.key) ? 0.45 : 1}>
+                    <Table.Td>
+                      <Checkbox
+                        aria-label={`Include ${m.label}`}
+                        checked={!excluded.has(m.key)}
+                        onChange={(e) => {
+                          const next = new Set(excluded);
+                          if (e.currentTarget.checked) next.delete(m.key);
+                          else next.add(m.key);
+                          setExcluded(next);
+                        }}
+                      />
+                    </Table.Td>
+                    <Table.Td><Text size="sm">{m.label}</Text></Table.Td>
+                    <Table.Td><Text size="sm" fw={600}>{fmt(m)}</Text></Table.Td>
+                    <Table.Td><Text size="sm" c="dimmed">{m.category}</Text></Table.Td>
+                  </Table.Tr>
+                ))}
+            </Table.Tbody>
+          </Table>
+        </Card>
+      ))}
+
+      <Card withBorder radius="md" padding="lg">
+        <Group mb="sm" gap="xs">
+          <Badge variant="light" color="teal">manual</Badge>
+          <Text size="xs" c="dimmed">Numbers the APIs can't provide (Synology backups, SAT completion, canaries…)</Text>
+        </Group>
+        <Stack gap="xs">
+          {manual.map((m, i) => (
+            <Group key={m.key + i} wrap="nowrap">
+              <Text size="sm" style={{ flex: 1 }}>{m.label}</Text>
+              <Text size="sm" fw={600}>{fmt(m)}</Text>
+              <Text size="sm" c="dimmed">{m.category}</Text>
+              <ActionIcon color="red" variant="subtle" aria-label={`Remove ${m.label}`} onClick={() => setManual(manual.filter((_, j) => j !== i))}>
+                <IconTrash size={16} />
+              </ActionIcon>
+            </Group>
+          ))}
+          <Group align="flex-end" wrap="nowrap">
+            <TextInput label="Label" placeholder="Synology backup success" style={{ flex: 1 }} value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.currentTarget.value })} />
+            <TextInput label="Value" w={110} value={draft.value} onChange={(e) => setDraft({ ...draft, value: e.currentTarget.value })} />
+            <TextInput label="Unit" w={90} placeholder="%" value={draft.unit} onChange={(e) => setDraft({ ...draft, unit: e.currentTarget.value })} />
+            <Select
+              label="Category"
+              w={150}
+              data={SECTIONS.map(([key]) => key)}
+              value={draft.category}
+              onChange={(v) => v && setDraft({ ...draft, category: v })}
+              allowDeselect={false}
+            />
+            <Button variant="light" leftSection={<IconPlus size={14} />} onClick={addManual}>Add</Button>
+          </Group>
+        </Stack>
+      </Card>
     </Stack>
   );
 }

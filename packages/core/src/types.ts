@@ -202,6 +202,8 @@ export interface ReportConfig {
   clientId: string;
   /** Standard metric sections to omit for this client. */
   hiddenSections?: MetricCategory[];
+  /** Individual metric keys reviewed out of the report (Data tab). */
+  excludedMetrics?: string[];
   customSections?: CustomSection[];
   brand?: Brand;
 }

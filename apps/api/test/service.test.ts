@@ -129,6 +129,24 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     expect(report.model.executive.headline).toBe('Resilient');
   });
 
+  it('excludedMetrics vanish from sections, trends, and the AI input', async () => {
+    const base = await buildQbrReport(seedDataSource, 'anp', '2026-Q1');
+    const someKey = base.model.sections[0]!.rows[0]!.metric.key;
+
+    let modelSawExcluded = false;
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      config: { clientId: 'anp', excludedMetrics: [someKey] },
+      narrativeModel: async (messages) => {
+        modelSawExcluded = messages.some((m) => m.content.includes(someKey));
+        return { headline: 'X', summary_paragraphs: [], highlights: [], recommendations: [], figures_referenced: [] };
+      },
+    });
+    const keys = report.model.sections.flatMap((s) => s.rows.map((r) => r.metric.key));
+    expect(keys).not.toContain(someKey);
+    expect(report.model.trends.map((t) => t.key)).not.toContain(someKey);
+    expect(modelSawExcluded).toBe(false);
+  });
+
   it('threads per-client config + discussion into the report', async () => {
     const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
       config: {

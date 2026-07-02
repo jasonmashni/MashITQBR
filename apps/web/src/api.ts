@@ -6,10 +6,12 @@ import type {
   ConnectionView,
   Discussion,
   Me,
+  MetricRow,
   OverviewRow,
   PeriodInfo,
   QbrResponse,
   ReportConfig,
+  SnapshotView,
   SystemInfo,
 } from './types.js';
 
@@ -57,6 +59,12 @@ export const api = {
   overview: () => send('GET', '/api/overview').then(json<{ currentPeriod: string; clients: OverviewRow[] }>),
   periods: (clientId: string) =>
     send('GET', `/api/clients/${clientId}/periods`).then(json<{ currentPeriod: string; periods: PeriodInfo[] }>),
+
+  // Data review
+  getMetrics: (clientId: string, period: string) =>
+    send('GET', `/api/clients/${clientId}/qbr/${period}/metrics`).then(json<{ snapshot: SnapshotView; excluded: string[] }>),
+  putManualMetrics: (clientId: string, period: string, metrics: MetricRow[]) =>
+    send('PUT', `/api/clients/${clientId}/qbr/${period}/metrics`, { metrics }).then(json<{ metrics: number; manual: number }>),
 
   // Config + discussion
   getConfig: (clientId: string) => send('GET', `/api/clients/${clientId}/config`).then(json<ReportConfig>),
