@@ -1,6 +1,7 @@
 import type { MetricValue } from '@mashit/core';
 import { metric, type CollectorContext, type CollectResult, type McpTransport } from './types.js';
 import { toArray, unwrapMcp } from './util.js';
+import { headerCount } from './mcpText.js';
 
 export interface HaloTicket {
   id?: number | string;
@@ -37,18 +38,43 @@ export function normalizeHaloTickets(tickets: HaloTicket[]): MetricValue[] {
   ];
 }
 
-/** Collect Halo ticket metrics via the MASH MCP server. */
+/**
+ * Collect Halo ticket metrics via the MASH MCP server.
+ *
+ * The live MASH MCP returns formatted text ("Found N ticket(s): #id — …") with
+ * no date filter, `open_only` defaulting true, and a 200-row cap — so the
+ * honest text-mode metric is the open-ticket snapshot. If the server ever
+ * returns structured JSON (structuredContent or a JSON ticket array), the
+ * richer by-type normalization is used automatically.
+ */
 export async function collectHalo(ctx: CollectorContext, mcp: McpTransport): Promise<CollectResult> {
   if (!ctx.externalRef) {
     return { source: 'halo', metrics: [], warnings: ['No Halo client mapped for this client.'] };
   }
+  const clientId = Number(ctx.externalRef);
   const result = await mcp.callTool('halo_list_tickets', {
-    client_id: ctx.externalRef,
-    start_date: ctx.period.start,
-    end_date: ctx.period.end,
-    datesearch: 'dateoccurred',
-    pageinate: false,
+    client_id: Number.isFinite(clientId) ? clientId : ctx.externalRef,
+    open_only: true,
+    count: 200,
   });
-  const tickets = toArray<HaloTicket>(unwrapMcp(result), ['tickets']);
+  const payload = unwrapMcp(result);
+
+  if (typeof payload === 'string') {
+    const rows = payload.match(/^\s*#\w+\s/gm)?.length ?? 0;
+    const count = headerCount(payload) ?? rows;
+    const warnings = [
+      'Halo ticket history is limited to an open-ticket snapshot: the MCP ticket tool has no date filter, and the Halo reports scope returned 403 — grant it (or add a date-filtered MCP tool) for quarterly volumes.',
+    ];
+    if (count >= 200) warnings.push('Open-ticket count capped at 200 by the MCP tool.');
+    return {
+      source: 'halo',
+      metrics: [
+        metric('tickets.open', 'Open tickets', count, { category: 'operations', source: 'halo', unit: 'count', higherIsBetter: false }),
+      ],
+      warnings,
+    };
+  }
+
+  const tickets = toArray<HaloTicket>(payload, ['tickets']);
   return { source: 'halo', metrics: normalizeHaloTickets(tickets), warnings: [] };
 }

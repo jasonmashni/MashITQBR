@@ -41,4 +41,25 @@ describe('collectHalo', () => {
     expect(result.metrics).toHaveLength(0);
     expect(result.warnings[0]).toMatch(/No Halo client mapped/);
   });
+
+  it('parses the live formatted-text output into an open-ticket snapshot', async () => {
+    // Verbatim shape from the real MASH MCP server.
+    const TEXT = `Found 2 ticket(s):
+
+  #69691 — Device display name: ANP-CoryGobel-11 - System has not rebooted
+    Client: ANP Enertech
+
+  #69690 — Device 'Matts-Air-2.home' registered.
+    Client: Unknown`;
+    const mcp = functionMcpTransport(async (name, args) => {
+      expect(name).toBe('halo_list_tickets');
+      expect(args['client_id']).toBe(42);
+      expect(args['open_only']).toBe(true);
+      return { content: [{ type: 'text', text: TEXT }] };
+    });
+    const result = await collectHalo({ clientId: 'anp', period: makePeriod(2026, 1), externalRef: '42' }, mcp);
+    const by = Object.fromEntries(result.metrics.map((m) => [m.key, m.value]));
+    expect(by['tickets.open']).toBe(2);
+    expect(result.warnings.some((w) => /open-ticket snapshot/.test(w))).toBe(true);
+  });
 });

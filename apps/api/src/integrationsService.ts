@@ -7,6 +7,7 @@ import {
   collectHuntress,
   collectNinja,
   FetchHttpTransport,
+  parseIdNameList,
   runCollectors,
   toArray,
   unwrapMcp,
@@ -33,11 +34,22 @@ interface HaloClientRow {
   sector_name?: string;
 }
 
+/**
+ * Rows from halo_list_clients: JSON when the server returns structured output,
+ * else parsed from the formatted-text list (`[id] Name` lines).
+ */
+async function fetchHaloClients(mcp: McpTransport): Promise<HaloClientRow[]> {
+  const payload = unwrapMcp(await mcp.callTool('halo_list_clients', { count: 500 }));
+  if (typeof payload === 'string') {
+    return parseIdNameList(payload).map((r) => ({ id: r.id, name: r.name }));
+  }
+  return toArray<HaloClientRow>(payload, ['clients']);
+}
+
 /** Import clients from Halo via MCP and upsert them into the store. */
 export async function importHaloClients(intg: Integrations): Promise<Client[]> {
   if (!intg.mcp) throw new Error('No MASH MCP connection configured — add one under Integrations.');
-  const result = await intg.mcp.callTool('halo_list_clients', {});
-  const rows = toArray<HaloClientRow>(unwrapMcp(result), ['clients']);
+  const rows = await fetchHaloClients(intg.mcp);
   const clients: Client[] = [];
   for (const r of rows) {
     if (r.id === undefined) continue;
@@ -78,10 +90,20 @@ export async function listOrgs(intg: Integrations, conn: Connection): Promise<Ex
   const http = intg.http ?? new FetchHttpTransport();
   if (conn.type === 'mcp') {
     if (!intg.mcp) throw new Error('No MASH MCP transport available.');
-    const rows = toArray<HaloClientRow>(unwrapMcp(await intg.mcp.callTool('halo_list_clients', {})), ['clients']);
+    const rows = await fetchHaloClients(intg.mcp);
     return rows
       .filter((r) => r.id !== undefined)
       .map((r) => ({ id: String(r.id), name: r.name ?? r.client_name ?? `Client ${String(r.id)}` }));
+  }
+  if (conn.type === 'ninja') {
+    // NinjaOne rides the MASH MCP transport; a 'ninja' connection exists just
+    // so the org-mapping dropdown can target refs.ninja.
+    if (!intg.mcp) throw new Error('NinjaOne mapping needs the MASH MCP connection configured.');
+    const payload = unwrapMcp(await intg.mcp.callTool('ninja_list_organizations', {}));
+    if (typeof payload === 'string') return parseIdNameList(payload);
+    return toArray<{ id?: number | string; name?: string }>(payload, ['organizations'])
+      .filter((r) => r.id !== undefined)
+      .map((r) => ({ id: String(r.id), name: r.name ?? `Org ${String(r.id)}` }));
   }
   if (conn.type === 'huntress') {
     const base = conn.config['baseUrl'] ?? 'https://api.huntress.io/v1';
@@ -124,8 +146,13 @@ export async function testConnection(intg: Integrations, conn: Connection): Prom
     switch (conn.type) {
       case 'mcp': {
         if (!intg.mcp) return { ok: false, message: 'MCP connection missing URL' };
-        await intg.mcp.callTool('halo_list_clients', {});
+        await intg.mcp.callTool('halo_list_clients', { count: 1 });
         return { ok: true, message: 'MASH MCP reachable' };
+      }
+      case 'ninja': {
+        if (!intg.mcp) return { ok: false, message: 'NinjaOne rides the MASH MCP — configure the MCP connection first.' };
+        await intg.mcp.callTool('ninja_list_organizations', {});
+        return { ok: true, message: 'NinjaOne reachable via MASH MCP' };
       }
       case 'huntress': {
         // Convention: baseUrl includes /v1 (matches collectHuntress).
