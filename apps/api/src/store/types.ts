@@ -62,7 +62,7 @@ export interface QbrRecord {
   clientId: string;
   period: string;
   status: QbrStatus;
-  meeting?: { scheduledAt?: string; joinUrl?: string; heldAt?: string; attendees?: string[] };
+  meeting?: { scheduledAt?: string; joinUrl?: string; heldAt?: string; attendees?: string[]; eventId?: string };
   updatedAt: string;
 }
 

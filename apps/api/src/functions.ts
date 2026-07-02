@@ -59,6 +59,8 @@ route('syncQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/sync', (req) => h.
 route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) => h.putStatus(req.params['clientId']!, req.params['period']!, (await body(req))['status']));
 route('putSchedule', 'PUT', 'api/clients/{clientId}/qbr/{period}/schedule', async (req) => h.putSchedule(req.params['clientId']!, req.params['period']!, (await body(req)) as { scheduledAt?: string; joinUrl?: string }));
 route('pushAction', 'POST', 'api/clients/{clientId}/qbr/{period}/actions/push', async (req) => h.pushQbrAction(req.params['clientId']!, req.params['period']!, (await body(req)) as { actionId?: string; target: PushInput['target'] }));
+route('emailQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/email', async (req) => h.emailQbr(req.params['clientId']!, req.params['period']!, (await body(req)) as never, headerGet(req)));
+route('createMeeting', 'POST', 'api/clients/{clientId}/qbr/{period}/meeting', async (req) => h.createMeeting(req.params['clientId']!, req.params['period']!, (await body(req)) as never, headerGet(req)));
 
 // Integrations
 route('listIntegrations', 'GET', 'api/integrations', () => h.listIntegrations());

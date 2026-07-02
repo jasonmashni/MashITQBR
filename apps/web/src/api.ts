@@ -38,6 +38,20 @@ export interface ConnectionInput {
   secrets?: Record<string, string>;
 }
 
+// Easy Auth Graph tokens expire hourly; /.auth/refresh renews them using the
+// browser session, then the original call is retried once.
+async function withAuthRefresh<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (e) {
+    if (e instanceof Error && e.message === 'token_expired') {
+      await fetch('/.auth/refresh').catch(() => {});
+      return run();
+    }
+    throw e;
+  }
+}
+
 // Capabilities don't change while the app is open — fetch once, share everywhere.
 let _system: Promise<SystemInfo> | undefined;
 
@@ -99,6 +113,14 @@ export const api = {
     period: string,
     body: { actionId?: string; target: string; title?: string; detail?: string },
   ) => send('POST', `/api/clients/${clientId}/qbr/${period}/actions/push`, body).then(json<{ system: string; id: string; status?: string }>),
+
+  // Microsoft 365 (delegated Graph via Easy Auth — token refreshed transparently)
+  emailQbr: (clientId: string, period: string, payload: { to: string[]; subject?: string; bodyHtml?: string; attachDeck?: boolean }) =>
+    withAuthRefresh(() => send('POST', `/api/clients/${clientId}/qbr/${period}/email`, payload).then(json<{ sent: boolean; to: string[] }>)),
+  createMeeting: (clientId: string, period: string, payload: { start: string; end?: string; attendees?: string[]; subject?: string }) =>
+    withAuthRefresh(() =>
+      send('POST', `/api/clients/${clientId}/qbr/${period}/meeting`, payload).then(json<{ scheduledAt: string; joinUrl?: string; eventId?: string }>),
+    ),
 
   // Integrations
   listIntegrations: () => send('GET', '/api/integrations').then(json<{ integrations: ConnectionView[] }>),

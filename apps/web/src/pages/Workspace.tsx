@@ -27,6 +27,7 @@ import {
   Divider,
   Tooltip,
   Table,
+  Modal,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { RadarChart, BarChart } from '@mantine/charts';
@@ -44,6 +45,8 @@ import {
   IconCalendarEvent,
   IconEye,
   IconPencil,
+  IconMail,
+  IconVideo,
 } from '@tabler/icons-react';
 import { api, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
@@ -196,6 +199,7 @@ export function Workspace() {
               clientId={clientId}
               period={period}
               aiEnabled={system?.ai ?? false}
+              contactEmail={client?.primaryContact?.email}
               onChanged={() => setRefresh((n) => n + 1)}
             />
           ) : (
@@ -234,6 +238,7 @@ function ReportTab({
   clientId,
   period,
   aiEnabled,
+  contactEmail,
   onChanged,
 }: {
   qbr: QbrResponse;
@@ -243,10 +248,12 @@ function ReportTab({
   clientId: string;
   period: string;
   aiEnabled: boolean;
+  contactEmail?: string;
   onChanged: () => void;
 }) {
   const [preview, setPreview] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [emailing, setEmailing] = useState(false);
   const { model } = qbr;
   const score = model.scorecard.overall.score ?? 0;
   const radar = model.scorecard.functions.map((f) => ({ function: f.function, score: f.score ?? 0 }));
@@ -293,10 +300,22 @@ function ReportTab({
           </Tooltip>
         )}
         <Button component="a" href={urls.deck} download variant="default" leftSection={<IconPresentation size={16} />}>Deck</Button>
+        <Button variant="default" leftSection={<IconMail size={16} />} onClick={() => setEmailing(true)}>Email report</Button>
         <Button variant="subtle" leftSection={<IconEye size={16} />} onClick={() => setPreview((p) => !p)}>
           {preview ? 'Hide preview' : 'Preview'}
         </Button>
       </Group>
+
+      {emailing && (
+        <EmailModal
+          clientId={clientId}
+          period={period}
+          clientName={model.client.name}
+          contactEmail={contactEmail}
+          summary={model.executive.paragraphs}
+          onClose={() => setEmailing(false)}
+        />
+      )}
 
       {preview && (
         <Card withBorder radius="md" padding={0}>
@@ -387,6 +406,76 @@ function ReportTab({
         </Card>
       )}
     </Stack>
+  );
+}
+
+// ── Email modal (Graph sendMail as the signed-in user) ────────────────────────
+function EmailModal({
+  clientId,
+  period,
+  clientName,
+  contactEmail,
+  summary,
+  onClose,
+}: {
+  clientId: string;
+  period: string;
+  clientName: string;
+  contactEmail?: string;
+  summary: string[];
+  onClose: () => void;
+}) {
+  const [to, setTo] = useState(contactEmail ?? '');
+  const [subject, setSubject] = useState(`Mash IT QBR — ${clientName} ${period}`);
+  const [bodyText, setBodyText] = useState(summary.join('\n\n'));
+  const [attachDeck, setAttachDeck] = useState(true);
+  const [sending, setSending] = useState(false);
+
+  async function sendEmail() {
+    const recipients = to.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (!recipients.length) {
+      notifications.show({ color: 'red', message: 'Add at least one recipient.' });
+      return;
+    }
+    setSending(true);
+    try {
+      const bodyHtml = bodyText
+        .split(/\n{2,}/)
+        .map((p) => `<p>${p.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br/>')}</p>`)
+        .join('');
+      await api.emailQbr(clientId, period, { to: recipients, subject, bodyHtml, attachDeck });
+      notifications.show({ color: 'teal', title: 'Sent', message: `Emailed ${recipients.join(', ')} from your mailbox.` });
+      onClose();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      notifications.show({
+        color: 'red',
+        title: 'Email failed',
+        message:
+          msg === 'graph_token_missing'
+            ? 'Microsoft 365 sending isn’t configured yet — the app needs the Graph mail permission + token store (see the setup steps in the README).'
+            : msg,
+        autoClose: 8000,
+      });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Modal opened onClose={onClose} title="Email report" size="lg">
+      <Stack>
+        <TextInput label="To (comma-separated)" placeholder="anne@client.com" value={to} onChange={(e) => setTo(e.currentTarget.value)} />
+        <TextInput label="Subject" value={subject} onChange={(e) => setSubject(e.currentTarget.value)} />
+        <Textarea label="Message" autosize minRows={5} value={bodyText} onChange={(e) => setBodyText(e.currentTarget.value)} />
+        <Checkbox label="Attach the PowerPoint deck" checked={attachDeck} onChange={(e) => setAttachDeck(e.currentTarget.checked)} />
+        <Text size="xs" c="dimmed">Sends from your Microsoft 365 mailbox (saved to Sent Items).</Text>
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button loading={sending} leftSection={<IconMail size={16} />} onClick={sendEmail}>Send</Button>
+        </Group>
+      </Stack>
+    </Modal>
   );
 }
 
@@ -871,7 +960,9 @@ function WorkflowTab({
   const [scheduledAt, setScheduledAt] = useState<Date | null>(meta?.meeting?.scheduledAt ? new Date(meta.meeting.scheduledAt) : null);
   const [joinUrl, setJoinUrl] = useState(meta?.meeting?.joinUrl ?? '');
   const [status, setStatus] = useState(meta?.status ?? 'draft');
+  const [attendees, setAttendees] = useState('');
   const [savingSched, setSavingSched] = useState(false);
+  const [creatingMeeting, setCreatingMeeting] = useState(false);
   const [pushing, setPushing] = useState<string | null>(null);
 
   useEffect(() => {
@@ -891,6 +982,33 @@ function WorkflowTab({
       notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
     } finally {
       setSavingSched(false);
+    }
+  }
+
+  async function createTeamsMeeting() {
+    if (!scheduledAt) return;
+    setCreatingMeeting(true);
+    try {
+      const r = await api.createMeeting(clientId, period, {
+        start: scheduledAt.toISOString(),
+        attendees: attendees.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean),
+      });
+      if (r.joinUrl) setJoinUrl(r.joinUrl);
+      notifications.show({ color: 'teal', title: 'Meeting created', message: 'Booked on your calendar with a Teams link — invites are on the way.' });
+      onChanged();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      notifications.show({
+        color: 'red',
+        title: 'Could not create the meeting',
+        message:
+          msg === 'graph_token_missing'
+            ? 'Microsoft 365 scheduling isn’t configured yet — the app needs the Graph calendar permission + token store (see the setup steps in the README).'
+            : msg,
+        autoClose: 8000,
+      });
+    } finally {
+      setCreatingMeeting(false);
     }
   }
 
@@ -926,8 +1044,29 @@ function WorkflowTab({
             <Select label="Status" data={STATUSES.map((s) => ({ value: s, label: s.replace(/_/g, ' ') }))} value={status} onChange={(v) => v && setStatus(v)} allowDeselect={false} />
           </Group>
           <TextInput label="Teams meeting link" placeholder="https://teams.microsoft.com/l/meetup-join/..." value={joinUrl} onChange={(e) => setJoinUrl(e.currentTarget.value)} />
-          <Text size="xs" c="dimmed">Automatic Teams-meeting creation via Microsoft Graph is a fast-follow; for now paste the link.</Text>
-          <Group><Button loading={savingSched} onClick={saveSchedule}>Save schedule</Button></Group>
+          <TextInput
+            label="Attendees (comma-separated, for Create Teams meeting)"
+            placeholder="anne@client.com, cfo@client.com"
+            value={attendees}
+            onChange={(e) => setAttendees(e.currentTarget.value)}
+          />
+          <Group>
+            <Button loading={savingSched} onClick={saveSchedule}>Save schedule</Button>
+            <Button
+              variant="light"
+              color="grape"
+              leftSection={<IconVideo size={16} />}
+              loading={creatingMeeting}
+              disabled={!scheduledAt}
+              onClick={createTeamsMeeting}
+            >
+              Create Teams meeting
+            </Button>
+          </Group>
+          <Text size="xs" c="dimmed">
+            Create Teams meeting books it on <b>your</b> M365 calendar with a Teams link (invites go to the attendees) and fills the
+            link above automatically. Or paste a link manually and just Save.
+          </Text>
         </Stack>
       </Card>
 

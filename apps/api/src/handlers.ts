@@ -26,7 +26,8 @@ import {
 } from './store/index.js';
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
 import { currentActor } from './requestContext.js';
-import type { Principal } from './auth.js';
+import type { HeaderGet, Principal } from './auth.js';
+import { graphPost, graphTokenFrom, validEmails, type FetchLike } from './graph.js';
 import { importHaloClients, listOrgs, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
 import { pushAction, type PushInput } from './actions.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
@@ -447,6 +448,131 @@ export async function pushQbrAction(
   } catch (e) {
     return err(400, e instanceof Error ? e.message : 'Push failed');
   }
+}
+
+// ── Microsoft Graph (delegated, via the Easy Auth token store) ───────────────
+const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+/** Graph rejects inline attachments over ~3 MB; leave headroom for base64 + envelope. */
+const MAX_ATTACHMENT_BYTES = 2.5 * 1024 * 1024;
+
+function graphToken(header: HeaderGet): { token: string } | { error: ApiResult } {
+  const { token, expired } = graphTokenFrom(header);
+  if (!token) return { error: err(401, 'graph_token_missing') };
+  if (expired) return { error: err(401, 'token_expired') };
+  return { token };
+}
+
+/** Email the QBR as the signed-in user (Graph sendMail), optionally attaching the deck. */
+export async function emailQbr(
+  clientId: string,
+  period: string,
+  body: { to?: unknown; subject?: string; bodyHtml?: string; attachDeck?: boolean },
+  header: HeaderGet,
+  fetchFn?: FetchLike,
+): Promise<ApiResult> {
+  const auth = graphToken(header);
+  if ('error' in auth) return auth.error;
+  const to = validEmails(body.to);
+  if (!to.length) return err(400, 'At least one valid recipient email is required.');
+
+  const client = await getDataStore().getClient(clientId);
+  const subject = body.subject?.trim() || `Mash IT QBR — ${client?.name ?? clientId} ${period}`;
+
+  const attachments: unknown[] = [];
+  if (body.attachDeck) {
+    let report;
+    try {
+      report = await buildReportFor(clientId, period, null);
+    } catch (e) {
+      return mapBuildError(e);
+    }
+    const pptx = await renderDeck(report.model);
+    if (pptx.length > MAX_ATTACHMENT_BYTES) {
+      return err(400, `Deck is too large to attach (${Math.round(pptx.length / 1024)} KB) — send the report link instead.`);
+    }
+    attachments.push({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: `QBR-${clientId}-${period}.pptx`,
+      contentType: PPTX_MIME,
+      contentBytes: pptx.toString('base64'),
+    });
+  }
+
+  const res = await graphPost(
+    auth.token,
+    '/me/sendMail',
+    {
+      message: {
+        subject,
+        body: { contentType: 'HTML', content: body.bodyHtml ?? '' },
+        toRecipients: to.map((address) => ({ emailAddress: { address } })),
+        ...(attachments.length ? { attachments } : {}),
+      },
+      saveToSentItems: true,
+    },
+    fetchFn,
+  );
+  if (res.status !== 202) {
+    const detail = (res.json as { error?: { message?: string } } | undefined)?.error?.message;
+    return err(502, `Graph sendMail failed (${res.status})${detail ? `: ${detail}` : ''}`);
+  }
+  audit('qbr.email', `qbr:${clientId}/${period}`, `${to.join(', ')}${attachments.length ? ' +deck' : ''}`);
+  return ok({ sent: true, to });
+}
+
+/** Create a Teams meeting on the signed-in user's calendar and schedule the QBR. */
+export async function createMeeting(
+  clientId: string,
+  period: string,
+  body: { start?: string; end?: string; attendees?: unknown; subject?: string },
+  header: HeaderGet,
+  fetchFn?: FetchLike,
+): Promise<ApiResult> {
+  const auth = graphToken(header);
+  if ('error' in auth) return auth.error;
+  const start = body.start && Number.isFinite(Date.parse(body.start)) ? new Date(body.start).toISOString() : undefined;
+  if (!start) return err(400, 'A valid start date/time is required.');
+  const end =
+    body.end && Number.isFinite(Date.parse(body.end))
+      ? new Date(body.end).toISOString()
+      : new Date(Date.parse(start) + 60 * 60 * 1000).toISOString();
+
+  const store = getDataStore();
+  const client = await store.getClient(clientId);
+  const subject = body.subject?.trim() || `Mash IT QBR — ${client?.name ?? clientId} ${period}`;
+  const attendees = validEmails(body.attendees);
+
+  const res = await graphPost(
+    auth.token,
+    '/me/events',
+    {
+      subject,
+      start: { dateTime: start, timeZone: 'UTC' },
+      end: { dateTime: end, timeZone: 'UTC' },
+      attendees: attendees.map((address) => ({ emailAddress: { address }, type: 'required' })),
+      isOnlineMeeting: true,
+      onlineMeetingProvider: 'teamsForBusiness',
+    },
+    fetchFn,
+  );
+  if (res.status !== 201) {
+    const detail = (res.json as { error?: { message?: string } } | undefined)?.error?.message;
+    return err(502, `Graph event creation failed (${res.status})${detail ? `: ${detail}` : ''}`);
+  }
+
+  const created = res.json as { id?: string; onlineMeeting?: { joinUrl?: string } };
+  const existing = await store.getQbr(clientId, period);
+  const meeting = {
+    ...existing?.meeting,
+    scheduledAt: start,
+    joinUrl: created.onlineMeeting?.joinUrl ?? existing?.meeting?.joinUrl,
+    eventId: created.id,
+    attendees,
+  };
+  const status = advanceStatus(existing?.status, 'scheduled');
+  await store.upsertQbr({ clientId, period, status, meeting, updatedAt: new Date().toISOString() });
+  audit('qbr.meeting', `qbr:${clientId}/${period}`, `${start} · ${attendees.join(', ') || 'no attendees'}`);
+  return ok({ scheduledAt: start, joinUrl: meeting.joinUrl, eventId: created.id });
 }
 
 export function currentPeriod(): ApiResult {

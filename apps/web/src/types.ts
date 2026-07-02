@@ -6,6 +6,7 @@ export type Rating = 'green' | 'amber' | 'red' | 'unknown';
 export interface Client {
   id: string;
   name: string;
+  primaryContact?: { name: string; email?: string; role?: string };
   industry?: string;
   hipaa?: boolean;
   /** Whether this client gets QBRs (undefined = true). */
