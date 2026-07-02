@@ -62,6 +62,29 @@ Persistence is a local JSON store in dev (`.data/store.json`, override with
 API: `GET/PUT /api/clients/:id/config` and
 `GET/PUT /api/clients/:id/qbr/:period/discussion`.
 
+## Deploy to Azure (one Function App)
+
+Deployed as a **single Linux Node-20 Azure Function App** that serves both the
+API and the React UI at one URL (mirrors the Mash IT MCP gateway). Build the
+self-contained package and deploy the folder:
+
+```bash
+npm install
+npm run deploy:build          # builds web + API, assembles apps/api/deploy/
+# VS Code: Open Folder -> apps/api/deploy -> Azure -> Deploy to Function App
+```
+
+Portal one-time: create the Function App (Node 20 / Linux / Consumption),
+enable system-assigned **managed identity**, put `ANTHROPIC_API_KEY` in **Key
+Vault**, grant the identity **Key Vault Secrets User**, and add the app setting
+`ANTHROPIC_API_KEY=@Microsoft.KeyVault(SecretUri=…)`. Optionally turn on **Entra
+Easy Auth** to lock the app to Mash IT logins. Full click-by-click steps are in
+the plan file (Addendum 2). PDF export is deferred on Consumption (print the
+HTML report from the browser); the interactive report + PPTX deck work.
+
+> Locally, once the web is built, `npm run dev:api` also serves the SPA at
+> http://localhost:7071 — the same single-app behavior as production.
+
 ## Grounding & safety
 
 - The AI never does arithmetic — all totals, percentages, and QoQ deltas are

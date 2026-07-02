@@ -5,14 +5,26 @@
  *   node apps/api/dist/devserver.js   (listens on :7071)
  */
 import { createServer, type IncomingMessage } from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { periodFor, type QbrDiscussion, type ReportConfig } from '@mashit/core';
 import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
 import { renderDeck, renderPdf } from '@mashit/report';
 import { seedDataSource } from './dataSource.js';
 import { buildQbrReport, renderQbrHtml } from './service.js';
 import { getConfig, getDiscussion, loadReportInputs, putConfig, putDiscussion } from './store.js';
+import { resolveStaticFile } from './static.js';
 
 const PORT = Number(process.env['PORT'] ?? 7071);
+
+// Serve the built SPA if present (so :7071 alone mirrors the single-app deploy).
+// Falls back gracefully — for pure API dev, use the Vite dev server on :5173.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const WWW = [resolve(HERE, '..', 'www'), resolve(process.cwd(), 'apps/web/dist'), resolve(process.cwd(), 'apps/api/www')].find(
+  (d) => existsSync(join(d, 'index.html')),
+);
 
 function modelFor(url: URL): NarrativeModel | undefined {
   const aiOff = url.searchParams.get('ai') === '0';
@@ -78,6 +90,12 @@ const server = createServer(async (req, res) => {
           }
         }
         return json(200, { model: report.model, warnings: report.warnings, verification: report.narrative.verification.ok });
+      }
+
+      // Static SPA (if a web build is present) — mirrors the single-app deploy.
+      if (WWW && !path.startsWith('/api/')) {
+        const match = resolveStaticFile(WWW, path);
+        if (match) return send(200, match.contentType, await readFile(match.file));
       }
     }
 

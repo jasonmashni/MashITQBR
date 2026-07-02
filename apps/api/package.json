@@ -9,10 +9,11 @@
     "@mashit/core": "*",
     "@mashit/integrations": "*",
     "@mashit/narrative": "*",
-    "@mashit/report": "*"
+    "@mashit/report": "*",
+    "pptxgenjs": "^3.12.0"
   },
   "scripts": {
-    "build": "esbuild src/functions.ts src/cli.ts src/devserver.ts --bundle --platform=node --format=esm --target=node20 --outdir=dist --external:@azure/functions --external:@anthropic-ai/sdk --external:playwright --external:pptxgenjs",
+    "build": "esbuild src/functions.ts src/cli.ts src/devserver.ts --bundle --platform=node --format=esm --target=node20 --outdir=dist --external:@azure/functions --external:playwright --external:pptxgenjs",
     "start": "func start",
     "typecheck": "tsc -p tsconfig.json"
   }

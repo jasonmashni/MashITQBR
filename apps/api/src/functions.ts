@@ -5,11 +5,12 @@ import { renderDeck, renderPdf } from '@mashit/report';
 import { seedDataSource } from './dataSource.js';
 import { buildQbrReport, renderQbrHtml } from './service.js';
 import { getConfig, getDiscussion, loadReportInputs, putConfig, putDiscussion } from './store.js';
+import './spa.js'; // registers the catch-all route that serves the React SPA
 
-/** Use Claude only when explicitly requested AND a key is configured. */
+/** Use Claude when a key is configured and the request didn't opt out (?ai=0). */
 function narrativeModelFor(req: HttpRequest): NarrativeModel | undefined {
-  const wantAi = req.query.get('ai') === '1';
-  if (wantAi && process.env['ANTHROPIC_API_KEY']) return createClaudeNarrativeModel();
+  const aiOff = req.query.get('ai') === '0';
+  if (!aiOff && process.env['ANTHROPIC_API_KEY']) return createClaudeNarrativeModel();
   return undefined;
 }
 
@@ -18,14 +19,14 @@ function json(status: number, body: unknown): HttpResponseInit {
 }
 
 app.http('listClients', {
-  route: 'clients',
+  route: 'api/clients',
   methods: ['GET'],
   authLevel: 'anonymous', // Static Web Apps Easy Auth gates access in front of the API
   handler: async (): Promise<HttpResponseInit> => json(200, { clients: seedDataSource.listClients() }),
 });
 
 app.http('getQbr', {
-  route: 'clients/{clientId}/qbr/{period}',
+  route: 'api/clients/{clientId}/qbr/{period}',
   methods: ['GET'],
   authLevel: 'anonymous',
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
@@ -44,7 +45,7 @@ app.http('getQbr', {
 });
 
 app.http('getQbrHtml', {
-  route: 'clients/{clientId}/qbr/{period}/report.html',
+  route: 'api/clients/{clientId}/qbr/{period}/report.html',
   methods: ['GET'],
   authLevel: 'anonymous',
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
@@ -55,7 +56,7 @@ app.http('getQbrHtml', {
 });
 
 app.http('getQbrPdf', {
-  route: 'clients/{clientId}/qbr/{period}/report.pdf',
+  route: 'api/clients/{clientId}/qbr/{period}/report.pdf',
   methods: ['GET'],
   authLevel: 'anonymous',
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
@@ -77,7 +78,7 @@ app.http('getQbrPdf', {
 });
 
 app.http('getQbrDeck', {
-  route: 'clients/{clientId}/qbr/{period}/deck.pptx',
+  route: 'api/clients/{clientId}/qbr/{period}/deck.pptx',
   methods: ['GET'],
   authLevel: 'anonymous',
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
@@ -101,7 +102,7 @@ app.http('getQbrDeck', {
 
 // ── Per-client report config (branding + sections) ──
 app.http('getConfig', {
-  route: 'clients/{clientId}/config',
+  route: 'api/clients/{clientId}/config',
   methods: ['GET'],
   authLevel: 'anonymous',
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
@@ -111,7 +112,7 @@ app.http('getConfig', {
 });
 
 app.http('putConfig', {
-  route: 'clients/{clientId}/config',
+  route: 'api/clients/{clientId}/config',
   methods: ['PUT'],
   authLevel: 'anonymous',
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
@@ -123,7 +124,7 @@ app.http('putConfig', {
 
 // ── Per-QBR discussion + notes capture ──
 app.http('getDiscussion', {
-  route: 'clients/{clientId}/qbr/{period}/discussion',
+  route: 'api/clients/{clientId}/qbr/{period}/discussion',
   methods: ['GET'],
   authLevel: 'anonymous',
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
@@ -133,7 +134,7 @@ app.http('getDiscussion', {
 });
 
 app.http('putDiscussion', {
-  route: 'clients/{clientId}/qbr/{period}/discussion',
+  route: 'api/clients/{clientId}/qbr/{period}/discussion',
   methods: ['PUT'],
   authLevel: 'anonymous',
   handler: async (req: HttpRequest): Promise<HttpResponseInit> => {
@@ -145,7 +146,7 @@ app.http('putDiscussion', {
 
 /** Convenience: current quarter id for the UI's default selection. */
 app.http('currentPeriod', {
-  route: 'period/current',
+  route: 'api/period/current',
   methods: ['GET'],
   authLevel: 'anonymous',
   handler: async (): Promise<HttpResponseInit> => json(200, { period: periodFor(new Date()).id }),

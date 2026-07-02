@@ -22,6 +22,10 @@ obj/
 # Vite / web build
 apps/web/dist/
 
+# Assembled Azure Functions deploy package + copied web assets
+apps/api/deploy/
+apps/api/www/
+
 # Test / coverage
 coverage/
 .vitest/
