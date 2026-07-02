@@ -19,7 +19,19 @@ if (!existsSync(resolve(webDist, 'index.html'))) {
   throw new Error('apps/web/dist/index.html missing — run `npm run build -w @mashit/web` first.');
 }
 
-rmSync(deploy, { recursive: true, force: true });
+try {
+  // maxRetries/retryDelay: Windows holds EBUSY/EPERM locks briefly (VS Code,
+  // AV scanners, a shell cd'd into the folder) — retry before giving up.
+  rmSync(deploy, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+} catch (err) {
+  if (err?.code === 'EBUSY' || err?.code === 'EPERM' || err?.code === 'ENOTEMPTY') {
+    console.error(
+      `\nCould not clear ${deploy} — something is holding it open.\n` +
+        'Close any terminal or VS Code window sitting in apps/api/deploy (and any running func host), then re-run npm run deploy:build.\n',
+    );
+  }
+  throw err;
+}
 mkdirSync(deploy, { recursive: true });
 cpSync(apiDist, resolve(deploy, 'dist'), { recursive: true });
 cpSync(webDist, resolve(deploy, 'www'), { recursive: true });

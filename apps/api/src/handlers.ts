@@ -4,12 +4,14 @@ import { renderDeck, renderPdf } from '@mashit/report';
 import { FetchHttpTransport, type McpTransport } from '@mashit/integrations';
 import { buildQbrReport, renderQbrHtml } from './service.js';
 import {
+  dataStoreKind,
   ensureSeeded,
   getDataStore,
   getSecretStore,
   isConnectionType,
   loadReportInputs,
   narrativeCacheFor,
+  secretStoreKind,
   storeDataSource,
   toConnectionView,
 } from './store/index.js';
@@ -266,4 +268,26 @@ export async function pushQbrAction(
 
 export function currentPeriod(): ApiResult {
   return ok({ period: periodFor(new Date()).id });
+}
+
+// Playwright is an optional external; on Azure Consumption it isn't installed.
+// Variable specifier avoids a hard compile-time dependency (same as renderPdf).
+let _pdfAvailable: Promise<boolean> | undefined;
+function pdfAvailable(): Promise<boolean> {
+  const spec = 'playwright';
+  _pdfAvailable ??= import(spec).then(
+    () => true,
+    () => false,
+  );
+  return _pdfAvailable;
+}
+
+/** Runtime capabilities — lets the UI gate features and show accurate copy. */
+export async function getSystem(): Promise<ApiResult> {
+  return ok({
+    dataStore: dataStoreKind(),
+    secretStore: secretStoreKind(),
+    ai: !!process.env['ANTHROPIC_API_KEY'],
+    pdfAvailable: await pdfAvailable(),
+  });
 }

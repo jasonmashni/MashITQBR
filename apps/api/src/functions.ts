@@ -1,4 +1,5 @@
 import { app, type HttpMethod, type HttpRequest, type HttpResponseInit } from '@azure/functions';
+import { SECURITY_HEADERS } from './static.js';
 import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
@@ -8,10 +9,11 @@ import './spa.js'; // registers the catch-all route that serves the React SPA
 const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
 function toResponse(r: ApiResult): HttpResponseInit {
-  if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: r.html };
-  if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf' }, body: r.pdf };
-  if (r.pptx !== undefined) return { status: r.status, headers: { 'Content-Type': PPTX, 'Content-Disposition': 'attachment' }, body: r.pptx };
-  return { status: r.status, jsonBody: r.json };
+  const sec = SECURITY_HEADERS;
+  if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...sec }, body: r.html };
+  if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf', ...sec }, body: r.pdf };
+  if (r.pptx !== undefined) return { status: r.status, headers: { 'Content-Type': PPTX, 'Content-Disposition': 'attachment', ...sec }, body: r.pptx };
+  return { status: r.status, jsonBody: r.json, headers: sec };
 }
 
 const ai = (req: HttpRequest) => req.query.get('ai');
@@ -48,3 +50,4 @@ route('deleteIntegration', 'DELETE', 'api/integrations/{id}', (req) => h.deleteI
 route('testIntegration', 'POST', 'api/integrations/{id}/test', (req) => h.testIntegration(req.params['id']!));
 
 route('currentPeriod', 'GET', 'api/period/current', () => h.currentPeriod());
+route('system', 'GET', 'api/system', () => h.getSystem());

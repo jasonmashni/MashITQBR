@@ -13,7 +13,7 @@ import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
 import type { PushInput } from './actions.js';
-import { resolveStaticFile } from './static.js';
+import { resolveStaticFile, SECURITY_HEADERS } from './static.js';
 
 const PORT = Number(process.env['PORT'] ?? 7071);
 const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
@@ -63,12 +63,18 @@ const routes: Route[] = [
   { method: 'DELETE', re: /^\/api\/integrations\/([^/]+)$/, run: (m) => h.deleteIntegration(m[1]!) },
   { method: 'POST', re: /^\/api\/integrations\/([^/]+)\/test$/, run: (m) => h.testIntegration(m[1]!) },
   { method: 'GET', re: /^\/api\/period\/current$/, run: () => h.currentPeriod() },
+  { method: 'GET', re: /^\/api\/system$/, run: () => h.getSystem() },
 ];
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   const path = url.pathname.replace(/\/+$/, '') || '/';
-  const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
+  const cors = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    ...SECURITY_HEADERS,
+  };
   try {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, cors);
@@ -82,7 +88,7 @@ const server = createServer(async (req, res) => {
       const result = await rt.run(m, b, url);
       if (result.html !== undefined) { res.writeHead(result.status, { 'Content-Type': 'text/html; charset=utf-8', ...cors }); return res.end(result.html); }
       if (result.pdf !== undefined) { res.writeHead(result.status, { 'Content-Type': 'application/pdf', ...cors }); return res.end(result.pdf); }
-      if (result.pptx !== undefined) { res.writeHead(result.status, { 'Content-Type': PPTX, ...cors }); return res.end(result.pptx); }
+      if (result.pptx !== undefined) { res.writeHead(result.status, { 'Content-Type': PPTX, 'Content-Disposition': 'attachment', ...cors }); return res.end(result.pptx); }
       res.writeHead(result.status, { 'Content-Type': 'application/json', ...cors });
       return res.end(JSON.stringify(result.json));
     }
@@ -91,7 +97,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && WWW && !path.startsWith('/api/')) {
       const match = resolveStaticFile(WWW, path);
       if (match) {
-        res.writeHead(200, { 'Content-Type': match.contentType, ...cors });
+        res.writeHead(200, { 'Content-Type': match.contentType, 'Cache-Control': match.cacheControl, ...cors });
         return res.end(await readFile(match.file));
       }
     }

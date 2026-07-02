@@ -12,13 +12,21 @@ export { JsonDataStore } from './jsonStore.js';
 export { TableDataStore } from './tableStore.js';
 
 let _data: DataStore | undefined;
+let _dataKind: 'table' | 'json' = 'json';
 let _secrets: SecretStore | undefined;
+let _secretKind: 'keyvault' | 'local' = 'local';
 
 /** Table Storage when a real storage connection is configured, else local JSON. */
 export function getDataStore(): DataStore {
   if (!_data) {
     const conn = process.env['AzureWebJobsStorage'];
-    _data = conn && conn.trim() !== '' ? new TableDataStore(conn) : new JsonDataStore();
+    if (conn && conn.trim() !== '') {
+      _dataKind = 'table';
+      _data = new TableDataStore(conn);
+    } else {
+      _dataKind = 'json';
+      _data = new JsonDataStore();
+    }
   }
   return _data;
 }
@@ -27,9 +35,22 @@ export function getDataStore(): DataStore {
 export function getSecretStore(): SecretStore {
   if (!_secrets) {
     const url = process.env['KEY_VAULT_URL'];
+    _secretKind = url ? 'keyvault' : 'local';
     _secrets = url ? new KeyVaultSecretStore(url) : new LocalSecretStore();
   }
   return _secrets;
+}
+
+/** Which data backend the factory picked (forces creation). */
+export function dataStoreKind(): 'table' | 'json' {
+  getDataStore();
+  return _dataKind;
+}
+
+/** Which secret backend the factory picked (forces creation). */
+export function secretStoreKind(): 'keyvault' | 'local' {
+  getSecretStore();
+  return _secretKind;
 }
 
 let seeded = false;
