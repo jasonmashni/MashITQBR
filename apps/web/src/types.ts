@@ -1,0 +1,102 @@
+// Frontend mirrors of the API response shapes (kept small and local so the web
+// app has no build dependency on the server packages).
+
+export type Rating = 'green' | 'amber' | 'red' | 'unknown';
+
+export interface Client {
+  id: string;
+  name: string;
+  industry?: string;
+  hipaa?: boolean;
+  integrationRefs?: Record<string, string>;
+}
+
+export interface FunctionScore {
+  function: string;
+  score: number | null;
+  rating: Rating;
+}
+
+export interface MetricTrend {
+  key: string;
+  label: string;
+  category: string;
+  current: number | null;
+  previous: number | null;
+  deltaPct: number | null;
+  direction: string;
+  sentiment: string;
+}
+
+export interface ReportModel {
+  client: { name: string; industry?: string; hipaa?: boolean };
+  period: { id: string; label: string };
+  brand?: { name?: string; logoDataUri?: string };
+  executive: { headline?: string; paragraphs: string[]; highlights: string[] };
+  scorecard: {
+    overall: { score: number | null; rating: Rating; coverage: number };
+    functions: FunctionScore[];
+  };
+  trends: MetricTrend[];
+  recommendations: string[];
+}
+
+export interface QbrMeta {
+  clientId: string;
+  period: string;
+  status: string;
+  meeting?: { scheduledAt?: string; joinUrl?: string; heldAt?: string };
+}
+
+export interface QbrResponse {
+  model: ReportModel;
+  warnings: string[];
+  verification: boolean;
+  meta: QbrMeta;
+}
+
+export interface Brand {
+  name?: string;
+  logoDataUri?: string;
+  primary?: string;
+  accent?: string;
+}
+export interface CustomSection {
+  id: string;
+  title: string;
+  body: string;
+  placement?: string;
+}
+export interface ReportConfig {
+  clientId: string;
+  hiddenSections?: string[];
+  customSections?: CustomSection[];
+  brand?: Brand;
+}
+
+export interface DiscussionItem {
+  id: string;
+  topic: string;
+  response?: string;
+  disposition?: string;
+  owner?: string;
+  externalRef?: { system: string; id: string; status?: string };
+}
+export interface Discussion {
+  clientId: string;
+  period: string;
+  items: DiscussionItem[];
+  notes?: string;
+}
+
+export interface ConnectionView {
+  id: string;
+  type: string;
+  label: string;
+  config: Record<string, string>;
+  secretFields: string[];
+  status?: 'unknown' | 'ok' | 'error';
+  statusMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+}

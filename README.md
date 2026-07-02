@@ -21,8 +21,8 @@ centerpiece (the gap across CloudRadial / ScalePad / Strategy Overview).
 | `packages/integrations` | Read-only collectors: MCP (Halo/Ninja/Hudu via MASH MCP) + HTTP (Huntress/Check Point), snapshot assembly |
 | `packages/narrative` | Claude-backed executive narrative with a **figure-verification guardrail** + deterministic offline drafter |
 | `packages/report` | One view-model → branded HTML, Playwright PDF, pptxgenjs deck |
-| `apps/api` | Azure Functions (v4) HTTP API + orchestration service (`buildQbrReport`) |
-| `apps/web` | React (Vite) admin shell, gated by Static Web Apps Entra ID auth |
+| `apps/api` | Azure Functions (v4) HTTP API + orchestration, data/secret stores (Table Storage / Key Vault), live sync + workflow pipeline |
+| `apps/web` | React (Vite) + **Mantine v7** admin app (Dashboard, Clients, Integrations, QBR workspace), gated by Entra ID auth |
 | `infra` | Bicep: SWA + Flex-Consumption Functions + Key Vault + Azure SQL + Blob, VNet-isolated |
 
 ## Develop
@@ -30,37 +30,50 @@ centerpiece (the gap across CloudRadial / ScalePad / Strategy Overview).
 ```bash
 npm install
 npm run typecheck   # tsc across the workspace
-npm test            # vitest (66 tests)
+npm test            # vitest (88 tests)
 ```
 
-Run the API + web locally (requires Azure Functions Core Tools v4):
+Run the API + web locally (no Azure tooling required):
 
 ```bash
-# terminal 1 — API
-cd apps/api && cp local.settings.json.example local.settings.json && func start
+# terminal 1 — API (node http server, mirrors the Functions routes + serves the SPA)
+npm run build:api && npm run dev:api        # http://localhost:7071
 # terminal 2 — web (proxies /api to :7071)
-cd apps/web && npm install && npm run dev
+cd apps/web && npm install && npm run dev    # http://localhost:5173
 ```
 
-The pipeline runs end-to-end with **no credentials** using transcribed seed data
-and the offline narrative drafter. Set `ANTHROPIC_API_KEY` and request `?ai=1`
-to use Claude (`claude-opus-4-8`) for the narrative; install `playwright` +
-`pptxgenjs` to enable PDF/deck export.
+The pipeline runs end-to-end with **no credentials** using transcribed seed data,
+the offline narrative drafter, and a local JSON store + secret file. Set
+`ANTHROPIC_API_KEY` to use Claude (`claude-opus-4-8`) for the narrative; install
+`playwright` + `pptxgenjs` to enable PDF/deck export. (`func start` from
+`apps/api` still works for production parity if you have Core Tools v4.)
 
-## Customize & capture
+## Using the app
 
-The web app has three tabs:
-- **Report** — the AI summary, maturity score, and the live report/PDF/deck.
-- **Branding & Sections** — upload a logo, set brand colors, show/hide standard
-  sections, and add free-text custom sections — saved per client.
-- **Discussion & Responses** — capture talking points, client responses, a
-  disposition (→ ticket/opportunity), and an owner *during* the review, plus
-  general notes. These render into the report (and PDF/deck).
+The Mantine UI has four areas:
+- **Dashboard** — client count, integrations, current quarter, and a
+  security-maturity bar across clients.
+- **Clients** — table of clients with **Import from Halo** (via the MASH MCP);
+  edit each client's tool mappings (per-tool external ids the sync reads).
+- **Integrations** — add/edit/rotate/test connections (MASH MCP, Huntress,
+  Check Point, Zomentum). Secret fields (tokens, API keys) are written to **Key
+  Vault**; only references are stored — API responses expose `secretFields`, never
+  values.
+- **QBR workspace** (`/clients/:id`) — pick a quarter, **Sync** live metrics, and
+  work four tabs:
+  - *Report* — executive summary, maturity ring + radar, QoQ chart, and the live
+    HTML report / PDF / deck.
+  - *Branding & Sections* — logo, brand colors, section show/hide, custom sections.
+  - *Discussion & Responses* — capture talking points, responses, dispositions,
+    and owners live during the review.
+  - *Schedule & Actions* — set the meeting date/time + Teams link + status, and
+    push dispositioned items to **Halo tickets/opportunities** or **Zomentum
+    opportunities** (status chips reflect the created external id).
 
-Persistence is a local JSON store in dev (`.data/store.json`, override with
-`QBR_DATA_DIR`); in Azure this moves to SQL (config/discussion) + Blob (logos).
-API: `GET/PUT /api/clients/:id/config` and
-`GET/PUT /api/clients/:id/qbr/:period/discussion`.
+Persistence is a local JSON store + secret file in dev (`.data/`, gitignored;
+override the dir with `QBR_DATA_DIR`); in Azure it uses **Azure Table Storage**
+(app data, references only) + **Key Vault** (secrets). The store/secret backends
+switch automatically when `AzureWebJobsStorage` / `KEY_VAULT_URL` are set.
 
 ## Deploy to Azure (one Function App)
 
@@ -76,11 +89,14 @@ npm run deploy:build          # builds web + API, assembles apps/api/deploy/
 
 Portal one-time: create the Function App (Node 20 / Linux / Consumption),
 enable system-assigned **managed identity**, put `ANTHROPIC_API_KEY` in **Key
-Vault**, grant the identity **Key Vault Secrets User**, and add the app setting
-`ANTHROPIC_API_KEY=@Microsoft.KeyVault(SecretUri=…)`. Optionally turn on **Entra
-Easy Auth** to lock the app to Mash IT logins. Full click-by-click steps are in
-the plan file (Addendum 2). PDF export is deferred on Consumption (print the
-HTML report from the browser); the interactive report + PPTX deck work.
+Vault**, and add the app setting `ANTHROPIC_API_KEY=@Microsoft.KeyVault(SecretUri=…)`.
+For the portal-managed integrations, grant the identity **Key Vault Secrets
+Officer** (write, so the app can store connection secrets) and add the app
+setting `KEY_VAULT_URL=https://<vault>.vault.azure.net/`. App data uses the
+Function App's existing `AzureWebJobsStorage` (Table Storage) — no new resource.
+Optionally turn on **Entra Easy Auth** to lock the app to Mash IT logins. Full
+click-by-click steps are in the plan file (Addenda 2–3). PDF export is deferred
+on Consumption (print the HTML report from the browser); the report + PPTX deck work.
 
 > Locally, once the web is built, `npm run dev:api` also serves the SPA at
 > http://localhost:7071 — the same single-app behavior as production.
@@ -96,7 +112,9 @@ HTML report from the browser); the interactive report + PPTX deck work.
 
 ## Status
 
-v1 (Aggregate + one-click AI-drafted QBR for Halo + Ninja + Huntress + Check
-Point) — see the build plan for the phased roadmap (CIPP/Domotz/Dropsuite,
-scheduled snapshot sync, Teams scheduling + disposition → Zomentum/Halo push,
-and the client-facing portal).
+Phase 2 — modern Mantine UI, portal-managed integrations (secrets → Key Vault),
+live client import + metric sync via the MASH MCP, Azure Table Storage app data,
+and the QBR workflow (schedule → disposition → push to Zomentum/Halo). Next:
+Microsoft Graph auto-scheduling (Teams meeting + attendance), CIPP/Domotz/Dropsuite
+collectors, scheduled snapshot sync, and the client-facing portal — see the build
+plan for the phased roadmap.
