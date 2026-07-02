@@ -1,5 +1,4 @@
 import { app, type HttpMethod, type HttpRequest, type HttpResponseInit } from '@azure/functions';
-import type { QbrStatus } from '@mashit/core';
 import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
@@ -37,7 +36,7 @@ route('putDiscussion', 'PUT', 'api/clients/{clientId}/qbr/{period}/discussion', 
 
 // Live pipeline + workflow
 route('syncQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/sync', (req) => h.syncQbr(req.params['clientId']!, req.params['period']!));
-route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) => h.putStatus(req.params['clientId']!, req.params['period']!, ((await body(req))['status'] as QbrStatus) ?? 'draft'));
+route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) => h.putStatus(req.params['clientId']!, req.params['period']!, (await body(req))['status']));
 route('putSchedule', 'PUT', 'api/clients/{clientId}/qbr/{period}/schedule', async (req) => h.putSchedule(req.params['clientId']!, req.params['period']!, (await body(req)) as { scheduledAt?: string; joinUrl?: string }));
 route('pushAction', 'POST', 'api/clients/{clientId}/qbr/{period}/actions/push', async (req) => h.pushQbrAction(req.params['clientId']!, req.params['period']!, (await body(req)) as { actionId?: string; target: PushInput['target'] }));
 

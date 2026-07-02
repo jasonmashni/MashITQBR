@@ -1,4 +1,4 @@
-import { periodFor, type QbrStatus } from '@mashit/core';
+import { advanceStatus, isQbrStatus, periodFor, type QbrStatus } from '@mashit/core';
 import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
 import { renderDeck, renderPdf } from '@mashit/report';
 import { FetchHttpTransport, type McpTransport } from '@mashit/integrations';
@@ -7,6 +7,7 @@ import {
   ensureSeeded,
   getDataStore,
   getSecretStore,
+  isConnectionType,
   loadReportInputs,
   storeDataSource,
   toConnectionView,
@@ -25,6 +26,12 @@ export interface ApiResult {
 }
 const ok = (json: unknown): ApiResult => ({ status: 200, json });
 const err = (status: number, message: string): ApiResult => ({ status, json: { error: message } });
+
+/** Map a report-build failure: 404 for a missing client/snapshot, 500 otherwise. */
+export function mapBuildError(e: unknown): ApiResult {
+  const message = e instanceof Error ? e.message : 'Report build failed';
+  return err(/^(Unknown client|No metric snapshot)/.test(message) ? 404 : 500, message);
+}
 
 function aiModel(aiParam: string | null): NarrativeModel | undefined {
   const off = aiParam === '0';
@@ -53,10 +60,16 @@ export async function listClients(): Promise<ApiResult> {
   return ok({ clients: await store.listClients() });
 }
 
+/** Fields a client PUT may change — everything else in the body is ignored. */
+const CLIENT_PATCH_FIELDS = ['name', 'industry', 'hipaa', 'integrationRefs', 'primaryContact'] as const;
+
 export async function updateClient(id: string, patch: Record<string, unknown>): Promise<ApiResult> {
   const store = getDataStore();
   const existing = (await store.getClient(id)) ?? { id, name: id };
-  const merged = { ...existing, ...patch, id };
+  const allowed = Object.fromEntries(
+    Object.entries(patch).filter(([k]) => (CLIENT_PATCH_FIELDS as readonly string[]).includes(k)),
+  );
+  const merged = { ...existing, ...allowed, id };
   await store.upsertClient(merged as typeof existing);
   return ok(merged);
 }
@@ -70,7 +83,7 @@ export async function getQbr(clientId: string, period: string, ai: string | null
     const meta = (await getDataStore().getQbr(clientId, period)) ?? { clientId, period, status: 'draft' as QbrStatus };
     return ok({ model: report.model, warnings: report.warnings, verification: report.narrative.verification.ok, meta });
   } catch (e) {
-    return err(404, e instanceof Error ? e.message : 'Not found');
+    return mapBuildError(e);
   }
 }
 
@@ -82,22 +95,35 @@ async function buildReportFor(clientId: string, period: string, ai: string | nul
 }
 
 export async function getReportHtml(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
-  return { status: 200, html: renderQbrHtml(await buildReportFor(clientId, period, ai)) };
+  try {
+    return { status: 200, html: renderQbrHtml(await buildReportFor(clientId, period, ai)) };
+  } catch (e) {
+    return mapBuildError(e);
+  }
 }
 export async function getReportPdf(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  let html: string;
   try {
-    const pdf = await renderPdf(renderQbrHtml(await buildReportFor(clientId, period, ai)), {
-      executablePath: process.env['PLAYWRIGHT_CHROMIUM_PATH'],
-    });
+    html = renderQbrHtml(await buildReportFor(clientId, period, ai));
+  } catch (e) {
+    return mapBuildError(e); // a missing client shouldn't read as "PDF unavailable"
+  }
+  try {
+    const pdf = await renderPdf(html, { executablePath: process.env['PLAYWRIGHT_CHROMIUM_PATH'] });
     return { status: 200, pdf };
   } catch (e) {
     return err(501, e instanceof Error ? e.message : 'PDF rendering unavailable');
   }
 }
 export async function getReportDeck(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  let report;
   try {
-    const pptx = await renderDeck((await buildReportFor(clientId, period, ai)).model);
-    return { status: 200, pptx };
+    report = await buildReportFor(clientId, period, ai);
+  } catch (e) {
+    return mapBuildError(e);
+  }
+  try {
+    return { status: 200, pptx: await renderDeck(report.model) };
   } catch (e) {
     return err(501, e instanceof Error ? e.message : 'Deck rendering unavailable');
   }
@@ -114,8 +140,20 @@ export async function getDiscussion(clientId: string, period: string): Promise<A
   return ok((await getDataStore().getDiscussion(clientId, period)) ?? { clientId, period, items: [] });
 }
 export async function putDiscussion(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const store = getDataStore();
   const items = Array.isArray(body['items']) ? (body['items'] as never[]) : [];
-  return ok(await getDataStore().putDiscussion({ clientId, period, items, notes: body['notes'] as string | undefined }));
+  const saved = await store.putDiscussion({ clientId, period, items, notes: body['notes'] as string | undefined });
+
+  // Any captured non-pending disposition moves the QBR forward to 'dispositioned'.
+  const dispositioned = saved.items.some((i) => i.disposition && i.disposition !== 'pending');
+  if (dispositioned) {
+    const existing = await store.getQbr(clientId, period);
+    const status = advanceStatus(existing?.status, 'dispositioned');
+    if (status !== existing?.status) {
+      await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() });
+    }
+  }
+  return ok(saved);
 }
 
 // ── Integrations ─────────────────────────────────────────────────────────────
@@ -124,6 +162,7 @@ export async function listIntegrations(): Promise<ApiResult> {
 }
 export async function saveIntegration(body: ConnectionInput): Promise<ApiResult> {
   if (!body.type || !body.label) return err(400, 'type and label are required');
+  if (!isConnectionType(body.type)) return err(400, `Unknown integration type: ${String(body.type)}`);
   const conn = await saveConnection(getDataStore(), getSecretStore(), body);
   return ok(toConnectionView(conn));
 }
@@ -162,14 +201,18 @@ export async function syncQbr(clientId: string, period: string): Promise<ApiResu
     const { snapshot, warnings } = await syncClientMetrics(await buildIntegrations(), clientId, period);
     const store = getDataStore();
     const existing = await store.getQbr(clientId, period);
-    await store.upsertQbr({ clientId, period, status: 'data_synced', meeting: existing?.meeting, updatedAt: new Date().toISOString() });
+    // Forward-only: a re-sync must not demote a scheduled/completed QBR.
+    const status = advanceStatus(existing?.status, 'data_synced');
+    await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() });
     return ok({ metrics: snapshot.metrics.length, warnings });
   } catch (e) {
     return err(400, e instanceof Error ? e.message : 'Sync failed');
   }
 }
 
-export async function putStatus(clientId: string, period: string, status: QbrStatus): Promise<ApiResult> {
+export async function putStatus(clientId: string, period: string, status: unknown): Promise<ApiResult> {
+  // Manual status set is the explicit user override (incl. un-archiving) — validated, not advanced.
+  if (!isQbrStatus(status)) return err(400, `Invalid status: ${String(status)}`);
   const store = getDataStore();
   const existing = await store.getQbr(clientId, period);
   return ok(await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() }));
@@ -179,7 +222,8 @@ export async function putSchedule(clientId: string, period: string, body: { sche
   const store = getDataStore();
   const existing = await store.getQbr(clientId, period);
   const meeting = { ...existing?.meeting, scheduledAt: body.scheduledAt, joinUrl: body.joinUrl };
-  const status: QbrStatus = existing?.status && existing.status !== 'draft' ? existing.status : 'scheduled';
+  // Booking a meeting advances data_synced/draft to scheduled without demoting later stages.
+  const status = advanceStatus(existing?.status, 'scheduled');
   return ok(await store.upsertQbr({ clientId, period, status, meeting, updatedAt: new Date().toISOString() }));
 }
 
@@ -206,6 +250,13 @@ export async function pushQbrAction(
     if (disc && item) {
       item.externalRef = { system: result.system, id: result.id, status: result.status };
       await store.putDiscussion(disc);
+    }
+
+    // A successful push is the workflow's last mile — advance the QBR.
+    const existing = await store.getQbr(clientId, period);
+    const status = advanceStatus(existing?.status, 'actions_pushed');
+    if (status !== existing?.status) {
+      await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() });
     }
     return ok(result);
   } catch (e) {

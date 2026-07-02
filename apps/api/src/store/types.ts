@@ -10,6 +10,26 @@ import type {
 /** Kind of integration a connection represents. */
 export type ConnectionType = IntegrationId | 'mcp' | 'zomentum';
 
+/** Runtime list of valid connection types (drives API validation). */
+export const CONNECTION_TYPES = [
+  'halo',
+  'ninja',
+  'hudu',
+  'huntress',
+  'checkpoint',
+  'cipp',
+  'domotz',
+  'dropsuite',
+  'synology',
+  'manual',
+  'mcp',
+  'zomentum',
+] as const satisfies readonly ConnectionType[];
+
+export function isConnectionType(value: unknown): value is ConnectionType {
+  return typeof value === 'string' && (CONNECTION_TYPES as readonly string[]).includes(value);
+}
+
 /**
  * A configured integration connection. Non-secret settings live in `config`;
  * secret fields are stored in the secret store and only *referenced* here by

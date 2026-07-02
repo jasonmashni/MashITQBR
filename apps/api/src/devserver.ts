@@ -13,7 +13,6 @@ import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
 import type { PushInput } from './actions.js';
-import type { QbrStatus } from '@mashit/core';
 import { resolveStaticFile } from './static.js';
 
 const PORT = Number(process.env['PORT'] ?? 7071);
@@ -55,7 +54,7 @@ const routes: Route[] = [
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m) => h.getDiscussion(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m, b) => h.putDiscussion(m[1]!, m[2]!, b) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/sync$/, run: (m) => h.syncQbr(m[1]!, m[2]!) },
-  { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/status$/, run: (m, b) => h.putStatus(m[1]!, m[2]!, (b['status'] as QbrStatus) ?? 'draft') },
+  { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/status$/, run: (m, b) => h.putStatus(m[1]!, m[2]!, b['status']) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/schedule$/, run: (m, b) => h.putSchedule(m[1]!, m[2]!, b as { scheduledAt?: string; joinUrl?: string }) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/actions\/push$/, run: (m, b) => h.pushQbrAction(m[1]!, m[2]!, b as { actionId?: string; target: PushInput['target'] }) },
   { method: 'GET', re: /^\/api\/integrations$/, run: () => h.listIntegrations() },
