@@ -34,6 +34,10 @@ const deployPkg = {
   main: 'dist/functions.js',
   dependencies: {
     '@azure/functions': apiPkg.dependencies['@azure/functions'],
+    '@azure/data-tables': apiPkg.dependencies['@azure/data-tables'],
+    '@azure/identity': apiPkg.dependencies['@azure/identity'],
+    '@azure/keyvault-secrets': apiPkg.dependencies['@azure/keyvault-secrets'],
+    '@modelcontextprotocol/sdk': apiPkg.dependencies['@modelcontextprotocol/sdk'],
     pptxgenjs: apiPkg.dependencies.pptxgenjs,
   },
 };

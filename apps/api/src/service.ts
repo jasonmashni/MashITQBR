@@ -44,11 +44,11 @@ export async function buildQbrReport(
   periodId: string,
   opts: BuildQbrOptions = {},
 ): Promise<QbrReport> {
-  const client = ds.getClient(clientId);
+  const client = await ds.getClient(clientId);
   if (!client) throw new Error(`Unknown client: ${clientId}`);
-  const current = ds.getSnapshot(clientId, periodId);
+  const current = await ds.getSnapshot(clientId, periodId);
   if (!current) throw new Error(`No metric snapshot for ${clientId} ${periodId}`);
-  const previous = ds.getSnapshot(clientId, previousPeriod(periodId).id);
+  const previous = await ds.getSnapshot(clientId, previousPeriod(periodId).id);
 
   const input = buildNarrativeInput({ client, current, previous });
 

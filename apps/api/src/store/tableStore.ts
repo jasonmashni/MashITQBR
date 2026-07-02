@@ -1,0 +1,125 @@
+import { TableClient, odata, type TableEntity } from '@azure/data-tables';
+import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
+import type { ClientConnectionMap, Connection, DataStore, QbrRecord } from './types.js';
+
+const TABLES = {
+  clients: 'qbrClients',
+  connections: 'qbrConnections',
+  maps: 'qbrMaps',
+  qbrs: 'qbrQbrs',
+  configs: 'qbrConfigs',
+  discussions: 'qbrDiscussions',
+  snapshots: 'qbrSnapshots',
+} as const;
+
+interface Row extends TableEntity {
+  data: string; // JSON-serialized entity
+}
+
+/** DataStore backed by Azure Table Storage (one table per entity kind). */
+export class TableDataStore implements DataStore {
+  private readonly clients: Record<string, TableClient> = {};
+
+  constructor(private readonly connectionString: string) {}
+
+  private table(name: string): TableClient {
+    let client = this.clients[name];
+    if (!client) {
+      client = TableClient.fromConnectionString(this.connectionString, name, { allowInsecureConnection: true });
+      this.clients[name] = client;
+    }
+    return client;
+  }
+
+  private async put<T>(name: string, partitionKey: string, rowKey: string, value: T): Promise<T> {
+    const table = this.table(name);
+    await ensureTable(table);
+    const entity: Row = { partitionKey, rowKey, data: JSON.stringify(value) };
+    await table.upsertEntity(entity, 'Replace');
+    return value;
+  }
+
+  private async get<T>(name: string, partitionKey: string, rowKey: string): Promise<T | undefined> {
+    try {
+      const row = await this.table(name).getEntity<Row>(partitionKey, rowKey);
+      return JSON.parse(row.data) as T;
+    } catch (err) {
+      if (isNotFound(err)) return undefined;
+      throw err;
+    }
+  }
+
+  private async list<T>(name: string, partitionKey?: string): Promise<T[]> {
+    const table = this.table(name);
+    await ensureTable(table);
+    const filter = partitionKey ? odata`PartitionKey eq ${partitionKey}` : undefined;
+    const out: T[] = [];
+    for await (const row of table.listEntities<Row>({ queryOptions: filter ? { filter } : undefined })) {
+      if (typeof row.data === 'string') out.push(JSON.parse(row.data) as T);
+    }
+    return out;
+  }
+
+  // clients
+  listClients = () => this.list<Client>(TABLES.clients, 'client');
+  getClient = (id: string) => this.get<Client>(TABLES.clients, 'client', id);
+  upsertClient = (c: Client) => this.put(TABLES.clients, 'client', c.id, c);
+
+  // connections
+  listConnections = () => this.list<Connection>(TABLES.connections, 'conn');
+  getConnection = (id: string) => this.get<Connection>(TABLES.connections, 'conn', id);
+  upsertConnection = (c: Connection) => this.put(TABLES.connections, 'conn', c.id, c);
+  async deleteConnection(id: string): Promise<void> {
+    try {
+      await this.table(TABLES.connections).deleteEntity('conn', id);
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+    }
+  }
+
+  // mappings
+  listClientConnections = (clientId: string) => this.list<ClientConnectionMap>(TABLES.maps, clientId);
+  async putClientConnections(clientId: string, maps: ClientConnectionMap[]): Promise<void> {
+    const table = this.table(TABLES.maps);
+    await ensureTable(table);
+    // Replace the client's set: delete existing, then write the new maps.
+    for await (const row of table.listEntities<Row>({ queryOptions: { filter: odata`PartitionKey eq ${clientId}` } })) {
+      await table.deleteEntity(clientId, row.rowKey as string);
+    }
+    for (const m of maps) await this.put(TABLES.maps, clientId, m.connectionId, m);
+  }
+
+  // qbr lifecycle
+  getQbr = (clientId: string, period: string) => this.get<QbrRecord>(TABLES.qbrs, clientId, period);
+  upsertQbr = (q: QbrRecord) => this.put(TABLES.qbrs, q.clientId, q.period, q);
+
+  // config + discussion
+  getReportConfig = (clientId: string) => this.get<ReportConfig>(TABLES.configs, 'config', clientId);
+  putReportConfig = (c: ReportConfig) => this.put(TABLES.configs, 'config', c.clientId, c);
+  getDiscussion = (clientId: string, period: string) => this.get<QbrDiscussion>(TABLES.discussions, clientId, period);
+  putDiscussion = (d: QbrDiscussion) => this.put(TABLES.discussions, d.clientId, d.period, d);
+
+  // snapshots
+  getSnapshot = (clientId: string, period: string) => this.get<MetricSnapshot>(TABLES.snapshots, clientId, period);
+  putSnapshot = (s: MetricSnapshot) => this.put(TABLES.snapshots, s.clientId, s.period, s);
+}
+
+const ensured = new Set<string>();
+async function ensureTable(table: TableClient): Promise<void> {
+  const name = table.tableName;
+  if (ensured.has(name)) return;
+  try {
+    await table.createTable();
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+  }
+  ensured.add(name);
+}
+
+function isNotFound(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { statusCode?: number }).statusCode === 404;
+}
+function isAlreadyExists(err: unknown): boolean {
+  const code = (err as { statusCode?: number; code?: string })?.statusCode;
+  return code === 409 || (err as { code?: string })?.code === 'TableAlreadyExists';
+}
