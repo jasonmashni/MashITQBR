@@ -51,3 +51,12 @@ route('testIntegration', 'POST', 'api/integrations/{id}/test', (req) => h.testIn
 
 route('currentPeriod', 'GET', 'api/period/current', () => h.currentPeriod());
 route('system', 'GET', 'api/system', () => h.getSystem());
+route('overview', 'GET', 'api/overview', (req) => h.getOverview(req.query.get('current')));
+route('clientPeriods', 'GET', 'api/clients/{clientId}/periods', (req) => h.getPeriods(req.params['clientId']!, req.query.get('current')));
+
+// Keeps a worker warm on the Consumption plan (softens cold starts; timers
+// ride the existing AzureWebJobsStorage and run singleton across instances).
+app.timer('keepWarm', {
+  schedule: '0 */5 * * * *',
+  handler: async () => {},
+});

@@ -235,6 +235,8 @@ export interface Client {
   /** Sector hint, used for benchmarking and HIPAA handling. */
   industry?: string;
   hipaa?: boolean;
+  /** Whether this client gets QBRs (undefined = true; Halo imports default false). */
+  qbrEnabled?: boolean;
   /** Map of integration -> per-client external identifier (e.g. Halo client id). */
   integrationRefs?: Partial<Record<IntegrationId, string>>;
 }

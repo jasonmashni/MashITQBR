@@ -64,6 +64,8 @@ const routes: Route[] = [
   { method: 'POST', re: /^\/api\/integrations\/([^/]+)\/test$/, run: (m) => h.testIntegration(m[1]!) },
   { method: 'GET', re: /^\/api\/period\/current$/, run: () => h.currentPeriod() },
   { method: 'GET', re: /^\/api\/system$/, run: () => h.getSystem() },
+  { method: 'GET', re: /^\/api\/overview$/, run: (_m, _b, url) => h.getOverview(url.searchParams.get('current')) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/periods$/, run: (m, _b, url) => h.getPeriods(m[1]!, url.searchParams.get('current')) },
 ];
 
 const server = createServer(async (req, res) => {

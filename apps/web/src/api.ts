@@ -4,6 +4,8 @@ import type {
   Client,
   ConnectionView,
   Discussion,
+  OverviewRow,
+  PeriodInfo,
   QbrResponse,
   ReportConfig,
   SystemInfo,
@@ -48,6 +50,9 @@ export const api = {
   getQbr: (clientId: string, period: string, ai = true) =>
     send('GET', `/api/clients/${clientId}/qbr/${period}${ai ? '' : '?ai=0'}`).then(json<QbrResponse>),
   currentPeriod: () => send('GET', '/api/period/current').then(json<{ period: string }>),
+  overview: () => send('GET', '/api/overview').then(json<{ currentPeriod: string; clients: OverviewRow[] }>),
+  periods: (clientId: string) =>
+    send('GET', `/api/clients/${clientId}/periods`).then(json<{ currentPeriod: string; periods: PeriodInfo[] }>),
 
   // Config + discussion
   getConfig: (clientId: string) => send('GET', `/api/clients/${clientId}/config`).then(json<ReportConfig>),

@@ -62,7 +62,7 @@ const RING_COLOR: Record<string, string> = { green: 'teal', amber: 'yellow', red
 
 export function Workspace() {
   const { clientId = '' } = useParams();
-  const [periods, setPeriods] = useState<string[]>([]);
+  const [periods, setPeriods] = useState<Array<{ value: string; label: string }>>([]);
   const [period, setPeriod] = useState('');
   const [qbr, setQbr] = useState<QbrResponse | null>(null);
   const [config, setConfig] = useState<ReportConfig | null>(null);
@@ -80,26 +80,24 @@ export function Workspace() {
     api.system().then(setSystem).catch(() => {});
   }, [clientId]);
 
-  // Build the quarter list from the real current period and land on the most
-  // recent quarter that actually has data (walking back a few quarters).
+  // One call tells us which of the last 8 quarters have data; land on the
+  // newest one that does (else the current quarter).
   useEffect(() => {
     let live = true;
-    (async () => {
-      const { period: current } = await api.currentPeriod().catch(() => ({ period: '2026-Q1' }));
-      const options = lastPeriods(current, 8);
-      if (!live) return;
-      setPeriods(options);
-      for (const p of options.slice(0, 4)) {
-        try {
-          await api.getQbr(clientId, p, false); // offline draft — cheap probe
-          if (live) setPeriod(p);
-          return;
-        } catch {
-          /* no data for this quarter — walk back */
-        }
-      }
-      if (live) setPeriod(options[0]!);
-    })().catch(() => {});
+    api
+      .periods(clientId)
+      .then(({ periods: list }) => {
+        if (!live) return;
+        setPeriods(list.map((p) => ({ value: p.period, label: p.hasSnapshot ? p.period : `${p.period} — no data` })));
+        const first = list.find((p) => p.hasSnapshot) ?? list[0];
+        if (first) setPeriod(first.period);
+      })
+      .catch(() => {
+        if (!live) return;
+        const options = lastPeriods('2026-Q1', 4);
+        setPeriods(options.map((p) => ({ value: p, label: p })));
+        setPeriod(options[0]!);
+      });
     return () => {
       live = false;
     };
@@ -161,7 +159,7 @@ export function Workspace() {
         </div>
         <Group>
           <Select
-            w={140}
+            w={190}
             data={periods}
             value={period || null}
             onChange={(v) => v && setPeriod(v)}

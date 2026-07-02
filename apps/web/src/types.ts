@@ -8,7 +8,27 @@ export interface Client {
   name: string;
   industry?: string;
   hipaa?: boolean;
+  /** Whether this client gets QBRs (undefined = true). */
+  qbrEnabled?: boolean;
   integrationRefs?: Record<string, string>;
+}
+
+/** One row of GET /api/overview. */
+export interface OverviewRow {
+  clientId: string;
+  name: string;
+  industry?: string;
+  hipaa?: boolean;
+  period: string | null;
+  score: number | null;
+  rating: Rating;
+  status: string;
+}
+
+/** One row of GET /api/clients/{id}/periods. */
+export interface PeriodInfo {
+  period: string;
+  hasSnapshot: boolean;
 }
 
 export interface FunctionScore {

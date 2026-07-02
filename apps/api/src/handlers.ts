@@ -1,4 +1,4 @@
-import { advanceStatus, isQbrStatus, periodFor, type QbrStatus } from '@mashit/core';
+import { advanceStatus, computeScorecard, isQbrStatus, lastPeriods, periodFor, type QbrStatus } from '@mashit/core';
 import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
 import { renderDeck, renderPdf } from '@mashit/report';
 import { FetchHttpTransport, type McpTransport } from '@mashit/integrations';
@@ -279,6 +279,62 @@ export async function pushQbrAction(
 
 export function currentPeriod(): ApiResult {
   return ok({ period: periodFor(new Date()).id });
+}
+
+/**
+ * Dashboard rollup in one call: for each QBR-enabled client, the newest
+ * snapshot within the last 4 quarters scored with computeScorecard only —
+ * no narrative or report build.
+ */
+export async function getOverview(currentOverride?: string | null): Promise<ApiResult> {
+  const store = getDataStore();
+  await ensureSeeded(store);
+  const ds = storeDataSource(store);
+  const current = resolveCurrent(currentOverride);
+  const candidates = lastPeriods(current, 4);
+  const clients = (await store.listClients()).filter((c) => c.qbrEnabled !== false);
+
+  const rows = await Promise.all(
+    clients.map(async (client) => {
+      let period: string | undefined;
+      let snapshot;
+      for (const p of candidates) {
+        snapshot = await ds.getSnapshot(client.id, p);
+        if (snapshot) {
+          period = p;
+          break;
+        }
+      }
+      const scorecard = snapshot ? computeScorecard(snapshot) : undefined;
+      const qbr = period ? await store.getQbr(client.id, period) : undefined;
+      return {
+        clientId: client.id,
+        name: client.name,
+        industry: client.industry,
+        hipaa: client.hipaa,
+        period: period ?? null,
+        score: scorecard?.overall.score ?? null,
+        rating: scorecard?.overall.rating ?? 'unknown',
+        status: qbr?.status ?? 'draft',
+      };
+    }),
+  );
+  return ok({ currentPeriod: current, clients: rows });
+}
+
+/** Which of the last 8 quarters have data for this client (store or seed). */
+export async function getPeriods(clientId: string, currentOverride?: string | null): Promise<ApiResult> {
+  const ds = storeDataSource(getDataStore());
+  const current = resolveCurrent(currentOverride);
+  const periods = await Promise.all(
+    lastPeriods(current, 8).map(async (period) => ({ period, hasSnapshot: !!(await ds.getSnapshot(clientId, period)) })),
+  );
+  return ok({ currentPeriod: current, periods });
+}
+
+/** Honor a well-formed ?current= override (useful for tests/debugging). */
+function resolveCurrent(override?: string | null): string {
+  return override && /^\d{4}-Q[1-4]$/.test(override) ? override : periodFor(new Date()).id;
 }
 
 // Playwright is an optional external; on Azure Consumption it isn't installed.

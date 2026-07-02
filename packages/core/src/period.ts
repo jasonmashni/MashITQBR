@@ -65,3 +65,24 @@ export function periodFor(date: Date): Period {
   const quarter = (Math.floor(date.getUTCMonth() / 3) + 1) as Quarter;
   return makePeriod(year, quarter);
 }
+
+/**
+ * The n most recent period ids ending at `currentId`, newest first.
+ * Returns `[currentId]` untouched when the id is malformed (UI-friendly).
+ */
+export function lastPeriods(currentId: string, n: number): string[] {
+  const m = /^(\d{4})-Q([1-4])$/.exec(currentId.trim());
+  if (!m) return [currentId];
+  let year = Number(m[1]);
+  let quarter = Number(m[2]);
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    out.push(`${year}-Q${quarter}`);
+    quarter -= 1;
+    if (quarter === 0) {
+      quarter = 4;
+      year -= 1;
+    }
+  }
+  return out;
+}
