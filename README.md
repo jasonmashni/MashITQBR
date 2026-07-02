@@ -73,7 +73,15 @@ The Mantine UI has four areas:
 Persistence is a local JSON store + secret file in dev (`.data/`, gitignored;
 override the dir with `QBR_DATA_DIR`); in Azure it uses **Azure Table Storage**
 (app data, references only) + **Key Vault** (secrets). The store/secret backends
-switch automatically when `AzureWebJobsStorage` / `KEY_VAULT_URL` are set.
+switch automatically when `AzureWebJobsStorage` / `KEY_VAULT_URL` are set —
+`GET /api/system` reports which backends are active plus whether AI and
+server-side PDF are available, and the UI adapts (PDF button, secret-store copy).
+
+Quarter pickers are driven by `GET /api/period/current` (the UI walks back to
+the most recent quarter with data), and the QBR status advances forward
+automatically — sync → `data_synced`, booking a meeting → `scheduled`, captured
+dispositions → `dispositioned`, a successful push → `actions_pushed` — without
+ever downgrading a later stage.
 
 ## Deploy to Azure (one Function App)
 
@@ -101,12 +109,19 @@ on Consumption (print the HTML report from the browser); the report + PPTX deck 
 > Locally, once the web is built, `npm run dev:api` also serves the SPA at
 > http://localhost:7071 — the same single-app behavior as production.
 
+The `Deploy` GitHub Action mirrors this path: it runs the tests, builds the
+same self-contained `apps/api/deploy` package, and publishes it to the one
+Function App (the old separate Static-Web-Apps deploy is gone).
+
 ## Grounding & safety
 
 - The AI never does arithmetic — all totals, percentages, and QoQ deltas are
   pre-computed in `packages/core` and passed to the model.
 - Every cited figure must trace back to a computed value; the guardrail
   regenerates the narrative on any mismatch and never auto-publishes.
+- Verified narratives are **cached** per client/period, keyed on a hash of the
+  exact metric bundle + model id — repeat report views don't re-call Claude,
+  and any data re-sync or model upgrade regenerates automatically.
 - Secrets live in Key Vault (referenced, never stored in the DB); SQL is
   Entra-only; data services are private-endpoint only. See `infra/main.bicep`.
 
