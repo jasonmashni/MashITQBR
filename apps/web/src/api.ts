@@ -60,6 +60,19 @@ export const api = {
   periods: (clientId: string) =>
     send('GET', `/api/clients/${clientId}/periods`).then(json<{ currentPeriod: string; periods: PeriodInfo[] }>),
 
+  // Narrative editor
+  getNarrative: (clientId: string, period: string) =>
+    send('GET', `/api/clients/${clientId}/qbr/${period}/narrative`).then(
+      json<{ edits: { headline?: string; summary_paragraphs?: string[]; highlights?: string[]; recommendations?: string[]; editedBy: string; editedAt: string } | null; hasCached: boolean }>,
+    ),
+  putNarrative: (
+    clientId: string,
+    period: string,
+    edits: { headline?: string; summary_paragraphs?: string[]; highlights?: string[]; recommendations?: string[] },
+  ) => send('PUT', `/api/clients/${clientId}/qbr/${period}/narrative`, edits).then(json<{ edits: unknown }>),
+  regenerateNarrative: (clientId: string, period: string) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/narrative/regenerate`).then(json<{ cleared: boolean }>),
+
   // Data review
   getMetrics: (clientId: string, period: string) =>
     send('GET', `/api/clients/${clientId}/qbr/${period}/metrics`).then(json<{ snapshot: SnapshotView; excluded: string[] }>),

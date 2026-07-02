@@ -198,6 +198,44 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   return ok(saved);
 }
 
+// ── Narrative editor ─────────────────────────────────────────────────────────
+export async function getNarrativeState(clientId: string, period: string): Promise<ApiResult> {
+  const rec = await getDataStore().getNarrative(clientId, period);
+  return ok({ edits: rec?.edits ?? null, hasCached: !!rec?.result });
+}
+
+/** Save author edits — undefined/blank fields fall back to the generated text. */
+export async function putNarrativeEdits(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const lines = (v: unknown): string[] | undefined => {
+    if (!Array.isArray(v)) return undefined;
+    const out = v.map((s) => String(s).trim()).filter(Boolean);
+    return out.length ? out : undefined;
+  };
+  const headline = typeof body['headline'] === 'string' && body['headline'].trim() ? body['headline'].trim() : undefined;
+  const summary_paragraphs = lines(body['summary_paragraphs']);
+  const highlights = lines(body['highlights']);
+  const recommendations = lines(body['recommendations']);
+
+  const store = getDataStore();
+  const existing = await store.getNarrative(clientId, period);
+  const now = new Date().toISOString();
+  const empty = !headline && !summary_paragraphs && !highlights && !recommendations;
+  const edits = empty
+    ? undefined
+    : { headline, summary_paragraphs, highlights, recommendations, editedBy: currentActor(), editedAt: now };
+
+  await store.putNarrative({ clientId, period, inputHash: existing?.inputHash, result: existing?.result, edits, updatedAt: now });
+  audit('narrative.edit', `qbr:${clientId}/${period}`, empty ? 'edits cleared' : 'edited');
+  return ok({ edits: edits ?? null });
+}
+
+/** Drop the cached AI narrative AND edits so the next build re-drafts fresh. */
+export async function regenerateNarrative(clientId: string, period: string): Promise<ApiResult> {
+  await getDataStore().putNarrative({ clientId, period, updatedAt: new Date().toISOString() });
+  audit('narrative.regenerate', `qbr:${clientId}/${period}`);
+  return ok({ cleared: true });
+}
+
 // ── Data review (raw snapshot + manual metrics) ──────────────────────────────
 export async function getMetrics(clientId: string, period: string): Promise<ApiResult> {
   const store = getDataStore();

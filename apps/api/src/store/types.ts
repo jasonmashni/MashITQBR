@@ -66,16 +66,27 @@ export interface QbrRecord {
   updatedAt: string;
 }
 
+/** Human edits overlaid on the generated narrative (undefined field = keep AI text). */
+export interface NarrativeEdits {
+  headline?: string;
+  summary_paragraphs?: string[];
+  highlights?: string[];
+  recommendations?: string[];
+  editedBy: string;
+  editedAt: string;
+}
+
 /**
- * A cached AI narrative for a client/period. `inputHash` fingerprints the
- * exact metric bundle (and model) the narrative was generated from — any data
- * re-sync changes the hash and naturally invalidates the cache.
+ * The narrative state for a client/period: a cached AI result (fingerprinted
+ * by `inputHash` — any data re-sync or model change invalidates it) and/or
+ * the author's manual edits, which take precedence in the report.
  */
 export interface NarrativeRecord {
   clientId: string;
   period: string;
-  inputHash: string;
-  result: NarrativeResult;
+  inputHash?: string;
+  result?: NarrativeResult;
+  edits?: NarrativeEdits;
   updatedAt: string;
 }
 

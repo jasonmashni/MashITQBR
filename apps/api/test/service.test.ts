@@ -129,6 +129,19 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     expect(report.model.executive.headline).toBe('Resilient');
   });
 
+  it('narrative edits win over generated text (and blank fields keep it)', async () => {
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      narrativeEdits: {
+        headline: 'Hand-written headline',
+        recommendations: ['Do the thing', 'Then the other thing'],
+        // summary_paragraphs / highlights left undefined → generated text kept
+      },
+    });
+    expect(report.model.executive.headline).toBe('Hand-written headline');
+    expect(report.model.recommendations).toEqual(['Do the thing', 'Then the other thing']);
+    expect(report.model.executive.paragraphs.length).toBeGreaterThan(0); // offline draft retained
+  });
+
   it('excludedMetrics vanish from sections, trends, and the AI input', async () => {
     const base = await buildQbrReport(seedDataSource, 'anp', '2026-Q1');
     const someKey = base.model.sections[0]!.rows[0]!.metric.key;

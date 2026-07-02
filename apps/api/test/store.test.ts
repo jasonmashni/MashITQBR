@@ -54,7 +54,7 @@ describe('JsonDataStore', () => {
 
     const rec = await store().getNarrative('c1', '2026-Q1');
     expect(rec?.inputHash).toBe('abc123');
-    expect(rec?.result.output.headline).toBe('H');
+    expect(rec?.result?.output.headline).toBe('H');
   });
 });
 

@@ -43,10 +43,11 @@ import {
   IconTargetArrow,
   IconCalendarEvent,
   IconEye,
+  IconPencil,
 } from '@tabler/icons-react';
 import { api, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
-import type { Client, Discussion, MetricRow, QbrResponse, ReportConfig, SnapshotView, SystemInfo } from '../types.js';
+import type { Client, Discussion, MetricRow, QbrResponse, ReportConfig, ReportModel, SnapshotView, SystemInfo } from '../types.js';
 import { RatingBadge, StatusBadge, uid } from '../ui.js';
 
 const SECTIONS: Array<[string, string]> = [
@@ -187,7 +188,16 @@ export function Workspace() {
           {loading || !period ? (
             <Center h={240}><Loader /></Center>
           ) : qbr ? (
-            <ReportTab qbr={qbr} urls={urls} pdfAvailable={system?.pdfAvailable ?? false} refresh={refresh} />
+            <ReportTab
+              qbr={qbr}
+              urls={urls}
+              pdfAvailable={system?.pdfAvailable ?? false}
+              refresh={refresh}
+              clientId={clientId}
+              period={period}
+              aiEnabled={system?.ai ?? false}
+              onChanged={() => setRefresh((n) => n + 1)}
+            />
           ) : (
             <Text c="dimmed">No report.</Text>
           )}
@@ -221,13 +231,22 @@ function ReportTab({
   urls,
   pdfAvailable,
   refresh,
+  clientId,
+  period,
+  aiEnabled,
+  onChanged,
 }: {
   qbr: QbrResponse;
   urls: { html: string; pdf: string; deck: string };
   pdfAvailable: boolean;
   refresh: number;
+  clientId: string;
+  period: string;
+  aiEnabled: boolean;
+  onChanged: () => void;
 }) {
   const [preview, setPreview] = useState(false);
+  const [editing, setEditing] = useState(false);
   const { model } = qbr;
   const score = model.scorecard.overall.score ?? 0;
   const radar = model.scorecard.functions.map((f) => ({ function: f.function, score: f.score ?? 0 }));
@@ -290,13 +309,32 @@ function ReportTab({
       )}
 
       <Card withBorder radius="md" padding="lg">
-        <Title order={4}>{model.period.label} — Executive summary</Title>
+        <Group justify="space-between" align="flex-start">
+          <Title order={4}>{model.period.label} — Executive summary</Title>
+          <Button size="xs" variant="light" leftSection={<IconPencil size={14} />} onClick={() => setEditing((e) => !e)}>
+            {editing ? 'Close editor' : 'Edit narrative'}
+          </Button>
+        </Group>
         {model.executive.headline && <Text fw={600} c="navy.9" mt={4}>{model.executive.headline}</Text>}
         {model.executive.paragraphs.map((p, i) => <Text key={i} mt="sm" size="sm">{p}</Text>)}
         {model.executive.highlights.length > 0 && (
           <List size="sm" mt="md" spacing={4}>{model.executive.highlights.map((h, i) => <List.Item key={i}>{h}</List.Item>)}</List>
         )}
       </Card>
+
+      {editing && (
+        <NarrativeEditor
+          clientId={clientId}
+          period={period}
+          model={model}
+          aiEnabled={aiEnabled}
+          status={qbr.meta.status}
+          onChanged={() => {
+            setEditing(false);
+            onChanged();
+          }}
+        />
+      )}
 
       <SimpleGrid cols={{ base: 1, md: 2 }}>
         <Card withBorder radius="md" padding="lg">
@@ -349,6 +387,117 @@ function ReportTab({
         </Card>
       )}
     </Stack>
+  );
+}
+
+// ── Narrative editor ──────────────────────────────────────────────────────────
+function NarrativeEditor({
+  clientId,
+  period,
+  model,
+  aiEnabled,
+  status,
+  onChanged,
+}: {
+  clientId: string;
+  period: string;
+  model: ReportModel;
+  aiEnabled: boolean;
+  status: string;
+  onChanged: () => void;
+}) {
+  const [headline, setHeadline] = useState(model.executive.headline ?? '');
+  const [summary, setSummary] = useState(model.executive.paragraphs.join('\n\n'));
+  const [highlights, setHighlights] = useState(model.executive.highlights.join('\n'));
+  const [recommendations, setRecommendations] = useState(model.recommendations.join('\n'));
+  const [editedBy, setEditedBy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.getNarrative(clientId, period).then((d) => setEditedBy(d.edits ? `${d.edits.editedBy} · ${new Date(d.edits.editedAt).toLocaleString()}` : null)).catch(() => {});
+  }, [clientId, period]);
+
+  const splitLines = (s: string) => s.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  async function save() {
+    setBusy('save');
+    try {
+      await api.putNarrative(clientId, period, {
+        headline: headline.trim() || undefined,
+        summary_paragraphs: summary.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean),
+        highlights: splitLines(highlights),
+        recommendations: splitLines(recommendations),
+      });
+      notifications.show({ color: 'teal', message: 'Narrative saved — no AI call needed.' });
+      onChanged();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function regenerate() {
+    setBusy('regen');
+    try {
+      await api.regenerateNarrative(clientId, period);
+      notifications.show({
+        color: 'teal',
+        message: aiEnabled ? 'Cleared — the next load drafts fresh AI text.' : 'Cleared — the offline drafter will rebuild the text.',
+      });
+      onChanged();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Regenerate failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function approve() {
+    setBusy('approve');
+    try {
+      await api.putStatus(clientId, period, 'narrative_approved');
+      notifications.show({ color: 'teal', message: 'Narrative approved.' });
+      onChanged();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Approve failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card withBorder radius="md" padding="lg">
+      <Group justify="space-between" mb="sm">
+        <Title order={5}>Narrative editor</Title>
+        {editedBy && <Badge variant="light" color="yellow">edited · {editedBy}</Badge>}
+      </Group>
+      <Stack gap="sm">
+        <TextInput label="Headline" value={headline} onChange={(e) => setHeadline(e.currentTarget.value)} />
+        <Textarea label="Executive summary (blank line between paragraphs)" autosize minRows={4} value={summary} onChange={(e) => setSummary(e.currentTarget.value)} />
+        <Textarea label="Highlights (one per line)" autosize minRows={2} value={highlights} onChange={(e) => setHighlights(e.currentTarget.value)} />
+        <Textarea label="Recommendations (one per line)" autosize minRows={2} value={recommendations} onChange={(e) => setRecommendations(e.currentTarget.value)} />
+        <Group>
+          <Button loading={busy === 'save'} onClick={save}>Save narrative</Button>
+          <Button variant="default" loading={busy === 'regen'} onClick={regenerate}>
+            Regenerate {aiEnabled ? 'with AI' : ''}
+          </Button>
+          <Button
+            variant="light"
+            color="teal"
+            loading={busy === 'approve'}
+            disabled={status === 'narrative_approved'}
+            onClick={approve}
+          >
+            Approve narrative
+          </Button>
+        </Group>
+        <Text size="xs" c="dimmed">
+          Edits are saved per client/quarter and always win over generated text — no regeneration happens when you tweak wording.
+          Regenerate discards edits and the cached draft.
+        </Text>
+      </Stack>
+    </Card>
   );
 }
 

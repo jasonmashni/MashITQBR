@@ -23,11 +23,21 @@ export interface NarrativeCache {
   put(hash: string, result: NarrativeResult): Promise<void>;
 }
 
+/** Human narrative overrides (undefined field = keep the generated text). */
+export interface NarrativeEditFields {
+  headline?: string;
+  summary_paragraphs?: string[];
+  highlights?: string[];
+  recommendations?: string[];
+}
+
 export interface BuildQbrOptions {
   /** Provide to use Claude; omit to use the deterministic offline drafter. */
   narrativeModel?: NarrativeModel;
   /** Optional persistent cache — consulted only when `narrativeModel` is set. */
   narrativeCache?: NarrativeCache;
+  /** Author edits overlaid on the narrative — they always win. */
+  narrativeEdits?: NarrativeEditFields;
   heldBy?: string;
   generatedLabel?: string;
   /** Per-client report customization (branding + sections). */
@@ -96,6 +106,21 @@ export async function buildQbrReport(
     const output = draftOfflineNarrative(input);
     const verification = verifyFigures(output.figures_referenced, buildAllowedNumbers(input));
     narrative = { output, verification, attempts: 1 };
+  }
+
+  // Human edits win over whatever was generated — that's the approval loop.
+  const edits = opts.narrativeEdits;
+  if (edits) {
+    narrative = {
+      ...narrative,
+      output: {
+        ...narrative.output,
+        ...(edits.headline !== undefined && edits.headline !== '' ? { headline: edits.headline } : {}),
+        ...(edits.summary_paragraphs?.length ? { summary_paragraphs: edits.summary_paragraphs } : {}),
+        ...(edits.highlights?.length ? { highlights: edits.highlights } : {}),
+        ...(edits.recommendations?.length ? { recommendations: edits.recommendations } : {}),
+      },
+    };
   }
 
   const model = buildReportModel({

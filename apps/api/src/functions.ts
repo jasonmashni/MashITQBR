@@ -39,6 +39,11 @@ route('getReportHtml', 'GET', 'api/clients/{clientId}/qbr/{period}/report.html',
 route('getReportPdf', 'GET', 'api/clients/{clientId}/qbr/{period}/report.pdf', (req) => h.getReportPdf(req.params['clientId']!, req.params['period']!, ai(req)));
 route('getReportDeck', 'GET', 'api/clients/{clientId}/qbr/{period}/deck.pptx', (req) => h.getReportDeck(req.params['clientId']!, req.params['period']!, ai(req)));
 
+// Narrative editor
+route('getNarrative', 'GET', 'api/clients/{clientId}/qbr/{period}/narrative', (req) => h.getNarrativeState(req.params['clientId']!, req.params['period']!));
+route('putNarrative', 'PUT', 'api/clients/{clientId}/qbr/{period}/narrative', async (req) => h.putNarrativeEdits(req.params['clientId']!, req.params['period']!, await body(req)));
+route('regenNarrative', 'POST', 'api/clients/{clientId}/qbr/{period}/narrative/regenerate', (req) => h.regenerateNarrative(req.params['clientId']!, req.params['period']!));
+
 // Data review
 route('getMetrics', 'GET', 'api/clients/{clientId}/qbr/{period}/metrics', (req) => h.getMetrics(req.params['clientId']!, req.params['period']!));
 route('putMetrics', 'PUT', 'api/clients/{clientId}/qbr/{period}/metrics', async (req) => h.putManualMetrics(req.params['clientId']!, req.params['period']!, await body(req)));

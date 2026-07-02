@@ -85,19 +85,21 @@ export interface ReportInputs {
   config?: ReportConfig;
   discussion?: DiscussionItem[];
   notes?: string;
+  narrativeEdits?: import('./types.js').NarrativeEdits;
 }
 
-/** Load persisted branding/config + discussion to feed a report build. */
+/** Load persisted branding/config + discussion + narrative edits for a report build. */
 export async function loadReportInputs(store: DataStore, clientId: string, period: string): Promise<ReportInputs> {
   const config = await store.getReportConfig(clientId);
   const d = await store.getDiscussion(clientId, period);
-  return { config, discussion: d?.items, notes: d?.notes };
+  const narrative = await store.getNarrative(clientId, period);
+  return { config, discussion: d?.items, notes: d?.notes, narrativeEdits: narrative?.edits };
 }
 
 /**
  * NarrativeCache backed by the DataStore — one record per client/period; a
  * hash mismatch (data re-synced, model changed) reads as a miss and the fresh
- * result overwrites the old record.
+ * result overwrites the old record. Manual edits on the record survive.
  */
 export function narrativeCacheFor(store: DataStore, clientId: string, period: string): NarrativeCache {
   return {
@@ -106,7 +108,8 @@ export function narrativeCacheFor(store: DataStore, clientId: string, period: st
       return rec?.inputHash === hash ? rec.result : undefined;
     },
     async put(hash, result) {
-      await store.putNarrative({ clientId, period, inputHash: hash, result, updatedAt: new Date().toISOString() });
+      const existing = await store.getNarrative(clientId, period);
+      await store.putNarrative({ clientId, period, inputHash: hash, result, edits: existing?.edits, updatedAt: new Date().toISOString() });
     },
   };
 }
