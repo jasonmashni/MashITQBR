@@ -22,7 +22,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconPlus, IconDots, IconPlugConnected, IconTrash, IconPlugConnectedX, IconPencil } from '@tabler/icons-react';
 import { api, type ConnectionInput } from '../api.js';
-import type { ConnectionView } from '../types.js';
+import type { ConnectionView, SystemInfo } from '../types.js';
 
 interface Field {
   key: string;
@@ -51,7 +51,7 @@ const TYPES: TypeDef[] = [
     value: 'huntress',
     label: 'Huntress',
     hint: 'EDR / ITDR / SAT posture',
-    config: [{ key: 'baseUrl', label: 'Base URL', placeholder: 'https://api.huntress.io' }],
+    config: [{ key: 'baseUrl', label: 'Base URL (includes /v1)', placeholder: 'https://api.huntress.io/v1' }],
     secrets: [
       { key: 'apiKey', label: 'API Key' },
       { key: 'apiSecret', label: 'API Secret' },
@@ -81,6 +81,9 @@ export function Integrations() {
   const [loading, setLoading] = useState(true);
   const [opened, { open, close }] = useDisclosure(false);
   const [testing, setTesting] = useState<string | null>(null);
+  const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<ConnectionView | null>(null);
+  const secretHome = system?.secretStore === 'keyvault' ? 'Azure Key Vault' : 'the local secret file (dev)';
 
   const [editId, setEditId] = useState<string | undefined>();
   const [type, setType] = useState('mcp');
@@ -91,6 +94,7 @@ export function Integrations() {
   const load = () => api.listIntegrations().then((d) => setConns(d.integrations)).finally(() => setLoading(false));
   useEffect(() => {
     load();
+    api.system().then(setSystem).catch(() => {});
   }, []);
 
   function openNew() {
@@ -111,16 +115,16 @@ export function Integrations() {
   }
 
   async function save() {
-    const def = typeDef(type);
     if (!label.trim()) {
       notifications.show({ color: 'red', message: 'A label is required.' });
       return;
     }
     const input: ConnectionInput = { type, label, config, secrets };
+    const savedSecrets = Object.values(secrets).some((v) => v && v.length > 0);
     try {
       if (editId) await api.updateIntegration(editId, input);
       else await api.createIntegration(input);
-      notifications.show({ color: 'teal', message: `Saved ${label}. ${def && input.secrets && Object.keys(input.secrets).length ? 'Secrets stored in Key Vault.' : ''}` });
+      notifications.show({ color: 'teal', message: `Saved ${label}.${savedSecrets ? ` Secrets stored in ${secretHome}.` : ''}` });
       close();
       await load();
     } catch (e) {
@@ -137,6 +141,7 @@ export function Integrations() {
         title: r.ok ? 'Connection OK' : 'Connection failed',
         message: r.error ?? r.note ?? (r.ok ? 'Reachable.' : 'Unknown error'),
       });
+      await load(); // the test result is persisted on the connection — refresh the card
     } catch (e) {
       notifications.show({ color: 'red', title: 'Test failed', message: e instanceof Error ? e.message : 'Unknown error' });
     } finally {
@@ -147,10 +152,12 @@ export function Integrations() {
   async function remove(c: ConnectionView) {
     try {
       await api.deleteIntegration(c.id);
-      notifications.show({ color: 'gray', message: `Deleted ${c.label}.` });
+      notifications.show({ color: 'gray', message: `Deleted ${c.label} and purged its secrets.` });
       await load();
     } catch (e) {
       notifications.show({ color: 'red', title: 'Delete failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setConfirmDelete(null);
     }
   }
 
@@ -161,7 +168,7 @@ export function Integrations() {
       <Group justify="space-between">
         <div>
           <Title order={2}>Integrations</Title>
-          <Text c="dimmed" size="sm">Credentials are written to Azure Key Vault; only references are stored here.</Text>
+          <Text c="dimmed" size="sm">Credentials are written to {secretHome}; only references are stored here.</Text>
         </div>
         <Button leftSection={<IconPlus size={16} />} onClick={openNew}>Add integration</Button>
       </Group>
@@ -195,12 +202,12 @@ export function Integrations() {
                   </Group>
                   <Menu withinPortal position="bottom-end">
                     <Menu.Target>
-                      <ActionIcon variant="subtle" color="gray"><IconDots size={18} /></ActionIcon>
+                      <ActionIcon variant="subtle" color="gray" aria-label={`Actions for ${c.label}`}><IconDots size={18} /></ActionIcon>
                     </Menu.Target>
                     <Menu.Dropdown>
                       <Menu.Item leftSection={<IconPlugConnectedX size={14} />} onClick={() => test(c)}>Test</Menu.Item>
                       <Menu.Item leftSection={<IconPencil size={14} />} onClick={() => openEdit(c)}>Edit / rotate</Menu.Item>
-                      <Menu.Item color="red" leftSection={<IconTrash size={14} />} onClick={() => remove(c)}>Delete</Menu.Item>
+                      <Menu.Item color="red" leftSection={<IconTrash size={14} />} onClick={() => setConfirmDelete(c)}>Delete</Menu.Item>
                     </Menu.Dropdown>
                   </Menu>
                 </Group>
@@ -208,6 +215,9 @@ export function Integrations() {
                   <Badge size="sm" color={STATUS_COLOR[c.status ?? 'unknown']} variant="light">{c.status ?? 'unknown'}</Badge>
                   {c.secretFields.map((f) => <Badge key={f} size="sm" variant="outline" color="teal">🔑 {f}</Badge>)}
                 </Group>
+                {c.statusMessage && (
+                  <Text size="xs" c={c.status === 'error' ? 'red.7' : 'dimmed'} mb={4}>{c.statusMessage}</Text>
+                )}
                 {Object.entries(c.config).map(([k, v]) => (
                   <Text key={k} size="xs" c="dimmed" truncate>{k}: {v}</Text>
                 ))}
@@ -251,6 +261,18 @@ export function Integrations() {
           <Group justify="flex-end" mt="sm">
             <Button variant="default" onClick={close}>Cancel</Button>
             <Button onClick={save}>Save</Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal opened={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Delete integration?" size="sm">
+        <Stack>
+          <Text size="sm">
+            Delete <b>{confirmDelete?.label}</b>? Its stored credentials will be purged from {secretHome}. This cannot be undone.
+          </Text>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setConfirmDelete(null)}>Cancel</Button>
+            <Button color="red" onClick={() => confirmDelete && remove(confirmDelete)}>Delete</Button>
           </Group>
         </Stack>
       </Modal>

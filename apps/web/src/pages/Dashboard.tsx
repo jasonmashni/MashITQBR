@@ -17,6 +17,7 @@ import {
 import { BarChart } from '@mantine/charts';
 import { IconUsers, IconPlugConnected, IconCalendarStats, IconArrowRight } from '@tabler/icons-react';
 import { api } from '../api.js';
+import { lastPeriods } from '../periods.js';
 import type { Client } from '../types.js';
 import { RatingBadge } from '../ui.js';
 
@@ -63,8 +64,9 @@ export function Dashboard() {
       setIntegrations(integrations.length);
       setPeriod(period);
 
-      // Pull each client's maturity for the current (or seed) period; skip those without data.
-      const tryPeriods = [period, '2026-Q1', '2025-Q4'];
+      // Pull each client's maturity, walking back from the current quarter to
+      // the most recent one that actually has data.
+      const tryPeriods = lastPeriods(period, 4);
       const built = await Promise.all(
         clients.map(async (client) => {
           for (const p of tryPeriods) {
@@ -90,6 +92,8 @@ export function Dashboard() {
   const chartData = rows
     .filter((r) => r.score !== null)
     .map((r) => ({ name: r.client.name.length > 16 ? r.client.name.slice(0, 15) + '…' : r.client.name, score: r.score }));
+  // YYYY-QN ids sort lexicographically, so the max is the newest scored quarter.
+  const dataThrough = rows.map((r) => r.period).sort().at(-1);
 
   return (
     <Stack gap="lg">
@@ -101,7 +105,18 @@ export function Dashboard() {
       <SimpleGrid cols={{ base: 1, sm: 3 }}>
         <StatCard icon={<IconUsers size={24} />} label="Clients" value={clients.length} />
         <StatCard icon={<IconPlugConnected size={24} />} label="Integrations" value={integrations} />
-        <StatCard icon={<IconCalendarStats size={24} />} label="Quarter" value={period || '—'} />
+        <StatCard
+          icon={<IconCalendarStats size={24} />}
+          label="Current quarter"
+          value={
+            <>
+              {period || '—'}
+              {dataThrough && dataThrough !== period && (
+                <Text span size="xs" c="dimmed" ml={8}>data through {dataThrough}</Text>
+              )}
+            </>
+          }
+        />
       </SimpleGrid>
 
       <Card withBorder radius="md" padding="lg">

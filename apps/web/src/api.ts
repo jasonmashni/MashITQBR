@@ -6,6 +6,7 @@ import type {
   Discussion,
   QbrResponse,
   ReportConfig,
+  SystemInfo,
 } from './types.js';
 
 async function json<T>(res: Response): Promise<T> {
@@ -31,7 +32,13 @@ export interface ConnectionInput {
   secrets?: Record<string, string>;
 }
 
+// Capabilities don't change while the app is open — fetch once, share everywhere.
+let _system: Promise<SystemInfo> | undefined;
+
 export const api = {
+  // System capabilities (memoized)
+  system: () => (_system ??= send('GET', '/api/system').then(json<SystemInfo>)),
+
   // Clients
   listClients: () => send('GET', '/api/clients').then(json<{ clients: Client[] }>),
   updateClient: (id: string, patch: Partial<Client>) => send('PUT', `/api/clients/${id}`, patch).then(json<Client>),

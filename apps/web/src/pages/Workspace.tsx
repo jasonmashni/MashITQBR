@@ -25,6 +25,7 @@ import {
   FileButton,
   Image,
   Divider,
+  Tooltip,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { RadarChart, BarChart } from '@mantine/charts';
@@ -40,12 +41,13 @@ import {
   IconTicket,
   IconTargetArrow,
   IconCalendarEvent,
+  IconEye,
 } from '@tabler/icons-react';
 import { api, reportUrls } from '../api.js';
-import type { Client, Discussion, QbrResponse, ReportConfig } from '../types.js';
+import { lastPeriods } from '../periods.js';
+import type { Client, Discussion, QbrResponse, ReportConfig, SystemInfo } from '../types.js';
 import { RatingBadge, StatusBadge, uid } from '../ui.js';
 
-const PERIODS = ['2026-Q1', '2025-Q4'];
 const SECTIONS: Array<[string, string]> = [
   ['operations', 'Operational Stability & Support'],
   ['security', 'Security & Risk'],
@@ -60,11 +62,13 @@ const RING_COLOR: Record<string, string> = { green: 'teal', amber: 'yellow', red
 
 export function Workspace() {
   const { clientId = '' } = useParams();
-  const [period, setPeriod] = useState(PERIODS[0]!);
+  const [periods, setPeriods] = useState<string[]>([]);
+  const [period, setPeriod] = useState('');
   const [qbr, setQbr] = useState<QbrResponse | null>(null);
   const [config, setConfig] = useState<ReportConfig | null>(null);
   const [disc, setDisc] = useState<Discussion | null>(null);
   const [client, setClient] = useState<Client | null>(null);
+  const [system, setSystem] = useState<SystemInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -73,21 +77,55 @@ export function Workspace() {
   useEffect(() => {
     api.listClients().then((d) => setClient(d.clients.find((c) => c.id === clientId) ?? null)).catch(() => {});
     api.getConfig(clientId).then(setConfig).catch(() => setConfig({ clientId }));
+    api.system().then(setSystem).catch(() => {});
+  }, [clientId]);
+
+  // Build the quarter list from the real current period and land on the most
+  // recent quarter that actually has data (walking back a few quarters).
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const { period: current } = await api.currentPeriod().catch(() => ({ period: '2026-Q1' }));
+      const options = lastPeriods(current, 8);
+      if (!live) return;
+      setPeriods(options);
+      for (const p of options.slice(0, 4)) {
+        try {
+          await api.getQbr(clientId, p, false); // offline draft — cheap probe
+          if (live) setPeriod(p);
+          return;
+        } catch {
+          /* no data for this quarter — walk back */
+        }
+      }
+      if (live) setPeriod(options[0]!);
+    })().catch(() => {});
+    return () => {
+      live = false;
+    };
   }, [clientId]);
 
   useEffect(() => {
-    if (!clientId) return;
+    if (!clientId || !period) return;
+    let live = true;
     setLoading(true);
     setError(null);
     api
       .getQbr(clientId, period)
-      .then(setQbr)
+      .then((r) => live && setQbr(r))
       .catch((e) => {
+        if (!live) return;
         setQbr(null);
         setError(e instanceof Error ? e.message : 'Failed to build QBR');
       })
-      .finally(() => setLoading(false));
-    api.getDiscussion(clientId, period).then(setDisc).catch(() => setDisc({ clientId, period, items: [] }));
+      .finally(() => live && setLoading(false));
+    api
+      .getDiscussion(clientId, period)
+      .then((d) => live && setDisc(d))
+      .catch(() => live && setDisc({ clientId, period, items: [] }));
+    return () => {
+      live = false;
+    };
   }, [clientId, period, refresh]);
 
   async function onSync() {
@@ -122,8 +160,16 @@ export function Workspace() {
           </Group>
         </div>
         <Group>
-          <Select w={140} data={PERIODS} value={period} onChange={(v) => v && setPeriod(v)} allowDeselect={false} />
-          <Button leftSection={<IconRefresh size={16} />} loading={syncing} onClick={onSync}>Sync</Button>
+          <Select
+            w={140}
+            data={periods}
+            value={period || null}
+            onChange={(v) => v && setPeriod(v)}
+            allowDeselect={false}
+            placeholder="Quarter"
+            aria-label="Quarter"
+          />
+          <Button leftSection={<IconRefresh size={16} />} loading={syncing} onClick={onSync} disabled={!period}>Sync</Button>
         </Group>
       </Group>
 
@@ -138,7 +184,13 @@ export function Workspace() {
         </Tabs.List>
 
         <Tabs.Panel value="report">
-          {loading ? <Center h={240}><Loader /></Center> : qbr ? <ReportTab qbr={qbr} urls={urls} /> : <Text c="dimmed">No report.</Text>}
+          {loading || !period ? (
+            <Center h={240}><Loader /></Center>
+          ) : qbr ? (
+            <ReportTab qbr={qbr} urls={urls} pdfAvailable={system?.pdfAvailable ?? false} refresh={refresh} />
+          ) : (
+            <Text c="dimmed">No report.</Text>
+          )}
         </Tabs.Panel>
 
         <Tabs.Panel value="branding">
@@ -158,7 +210,18 @@ export function Workspace() {
 }
 
 // ── Report tab ────────────────────────────────────────────────────────────────
-function ReportTab({ qbr, urls }: { qbr: QbrResponse; urls: { html: string; pdf: string; deck: string } }) {
+function ReportTab({
+  qbr,
+  urls,
+  pdfAvailable,
+  refresh,
+}: {
+  qbr: QbrResponse;
+  urls: { html: string; pdf: string; deck: string };
+  pdfAvailable: boolean;
+  refresh: number;
+}) {
+  const [preview, setPreview] = useState(false);
   const { model } = qbr;
   const score = model.scorecard.overall.score ?? 0;
   const radar = model.scorecard.functions.map((f) => ({ function: f.function, score: f.score ?? 0 }));
@@ -185,9 +248,40 @@ function ReportTab({ qbr, urls }: { qbr: QbrResponse; urls: { html: string; pdf:
 
       <Group>
         <Button component="a" href={urls.html} target="_blank" leftSection={<IconFileText size={16} />}>Open report</Button>
-        <Button component="a" href={urls.pdf} target="_blank" variant="default" leftSection={<IconFileTypePdf size={16} />}>PDF</Button>
-        <Button component="a" href={urls.deck} variant="default" leftSection={<IconPresentation size={16} />}>Deck</Button>
+        {pdfAvailable ? (
+          <Button component="a" href={urls.pdf} target="_blank" variant="default" leftSection={<IconFileTypePdf size={16} />}>PDF</Button>
+        ) : (
+          <Tooltip label="Server PDF isn't available on this plan — Open report, then print to PDF from the browser.">
+            <Button
+              variant="default"
+              leftSection={<IconFileTypePdf size={16} />}
+              onClick={() =>
+                notifications.show({
+                  color: 'blue',
+                  title: 'PDF via the browser',
+                  message: 'Use Open report, then Ctrl+P → Save as PDF. Server-side PDF needs the Premium plan.',
+                })
+              }
+            >
+              PDF
+            </Button>
+          </Tooltip>
+        )}
+        <Button component="a" href={urls.deck} download variant="default" leftSection={<IconPresentation size={16} />}>Deck</Button>
+        <Button variant="subtle" leftSection={<IconEye size={16} />} onClick={() => setPreview((p) => !p)}>
+          {preview ? 'Hide preview' : 'Preview'}
+        </Button>
       </Group>
+
+      {preview && (
+        <Card withBorder radius="md" padding={0}>
+          <iframe
+            title="QBR report preview"
+            src={`${urls.html}?v=${refresh}`}
+            style={{ width: '100%', height: 640, border: 'none', display: 'block', borderRadius: 8 }}
+          />
+        </Card>
+      )}
 
       <Card withBorder radius="md" padding="lg">
         <Title order={4}>{model.period.label} — Executive summary</Title>
@@ -345,7 +439,7 @@ function BrandingTab({
                   value={s.placement ?? 'in-body'}
                   onChange={(v) => { const cs = [...(config.customSections ?? [])]; cs[i] = { ...s, placement: v ?? 'in-body' }; setConfig({ ...config, customSections: cs }); }}
                 />
-                <ActionIcon color="red" variant="subtle" onClick={() => setConfig({ ...config, customSections: (config.customSections ?? []).filter((x) => x.id !== s.id) })}><IconTrash size={16} /></ActionIcon>
+                <ActionIcon color="red" variant="subtle" aria-label="Remove section" onClick={() => setConfig({ ...config, customSections: (config.customSections ?? []).filter((x) => x.id !== s.id) })}><IconTrash size={16} /></ActionIcon>
               </Group>
               <Textarea autosize minRows={2} placeholder="Body" value={s.body} onChange={(e) => { const cs = [...(config.customSections ?? [])]; cs[i] = { ...s, body: e.currentTarget.value }; setConfig({ ...config, customSections: cs }); }} />
             </Fieldset>
@@ -401,7 +495,7 @@ function DiscussionTab({
             <Fieldset key={it.id} p="sm">
               <Group justify="space-between" align="flex-start">
                 <TextInput style={{ flex: 1 }} placeholder="Topic / question / decision" value={it.topic} onChange={(e) => { const items = [...disc.items]; items[i] = { ...it, topic: e.currentTarget.value }; setDisc({ ...disc, items }); }} />
-                <ActionIcon color="red" variant="subtle" onClick={() => setDisc({ ...disc, items: disc.items.filter((x) => x.id !== it.id) })}><IconTrash size={16} /></ActionIcon>
+                <ActionIcon color="red" variant="subtle" aria-label="Remove item" onClick={() => setDisc({ ...disc, items: disc.items.filter((x) => x.id !== it.id) })}><IconTrash size={16} /></ActionIcon>
               </Group>
               <Textarea mt="xs" autosize minRows={2} placeholder="Client response & notes" value={it.response ?? ''} onChange={(e) => { const items = [...disc.items]; items[i] = { ...it, response: e.currentTarget.value }; setDisc({ ...disc, items }); }} />
               <Group mt="xs">

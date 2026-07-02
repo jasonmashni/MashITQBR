@@ -89,6 +89,14 @@ export interface Discussion {
   notes?: string;
 }
 
+/** Runtime capabilities reported by GET /api/system. */
+export interface SystemInfo {
+  dataStore: 'table' | 'json';
+  secretStore: 'keyvault' | 'local';
+  ai: boolean;
+  pdfAvailable: boolean;
+}
+
 export interface ConnectionView {
   id: string;
   type: string;

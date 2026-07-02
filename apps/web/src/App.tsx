@@ -1,4 +1,5 @@
-import { AppShell, Group, NavLink, Text, ThemeIcon, Box } from '@mantine/core';
+import { AppShell, Group, NavLink, Text, ThemeIcon, Box, Burger } from '@mantine/core';
+import { useDisclosure } from '@mantine/hooks';
 import { IconLayoutDashboard, IconUsers, IconPlugConnected, IconChartHistogram } from '@tabler/icons-react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
@@ -10,10 +11,12 @@ const NAV = [
 
 export function App() {
   const { pathname } = useLocation();
+  const [opened, { toggle, close }] = useDisclosure(false);
   return (
-    <AppShell header={{ height: 60 }} navbar={{ width: 250, breakpoint: 'sm' }} padding="lg">
+    <AppShell header={{ height: 60 }} navbar={{ width: 250, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding="lg">
       <AppShell.Header>
         <Group h="100%" px="md" gap="sm">
+          <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
           <ThemeIcon size={34} radius="md" variant="gradient" gradient={{ from: 'navy.9', to: 'teal.7', deg: 135 }}>
             <IconChartHistogram size={20} />
           </ThemeIcon>
@@ -37,6 +40,7 @@ export function App() {
             leftSection={<Icon size={18} stroke={1.6} />}
             variant="filled"
             mb={4}
+            onClick={close}
           />
         ))}
         <Box mt="auto" pt="md">

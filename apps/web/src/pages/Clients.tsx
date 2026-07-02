@@ -141,10 +141,10 @@ export function Clients() {
                   <Table.Td ta="right">
                     <Group gap={4} justify="flex-end">
                       <Tooltip label="Edit mappings">
-                        <ActionIcon variant="subtle" color="gray" onClick={() => edit(c)}><IconPencil size={16} /></ActionIcon>
+                        <ActionIcon variant="subtle" color="gray" aria-label={`Edit ${c.name}`} onClick={() => edit(c)}><IconPencil size={16} /></ActionIcon>
                       </Tooltip>
                       <Tooltip label="Open workspace">
-                        <ActionIcon variant="subtle" component={Link} to={`/clients/${c.id}`}><IconExternalLink size={16} /></ActionIcon>
+                        <ActionIcon variant="subtle" component={Link} to={`/clients/${c.id}`} aria-label={`Open ${c.name} workspace`}><IconExternalLink size={16} /></ActionIcon>
                       </Tooltip>
                     </Group>
                   </Table.Td>
