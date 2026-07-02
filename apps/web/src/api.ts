@@ -81,6 +81,10 @@ export const api = {
 
   // Integrations
   listIntegrations: () => send('GET', '/api/integrations').then(json<{ integrations: ConnectionView[] }>),
+  integrationOrgs: (id: string) =>
+    send('GET', `/api/integrations/${id}/orgs`).then(json<{ orgs: Array<{ id: string; name: string }> | null }>),
+  putMappings: (id: string, mappings: Array<{ clientId: string; externalRef?: string }>) =>
+    send('PUT', `/api/integrations/${id}/mappings`, { mappings }).then(json<{ updated: number; refKey: string }>),
   createIntegration: (input: ConnectionInput) => send('POST', '/api/integrations', input).then(json<ConnectionView>),
   updateIntegration: (id: string, input: ConnectionInput) => send('PUT', `/api/integrations/${id}`, input).then(json<ConnectionView>),
   deleteIntegration: (id: string) => send('DELETE', `/api/integrations/${id}`).then(json<{ deleted: string }>),

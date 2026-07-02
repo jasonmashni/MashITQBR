@@ -95,7 +95,10 @@ export function Clients() {
   return (
     <Stack gap="lg">
       <Group justify="space-between">
-        <Title order={2}>Clients</Title>
+        <div>
+          <Title order={2}>Clients</Title>
+          <Text c="dimmed" size="sm">Flip <b>QBR</b> on for the clients you review — only those appear on the dashboard. Imports start off.</Text>
+        </div>
         <Group>
           <Button variant="default" leftSection={<IconPlus size={16} />} onClick={create}>New client</Button>
           <Button leftSection={<IconDownload size={16} />} loading={importing} onClick={onImport}>Import from Halo</Button>
@@ -112,6 +115,7 @@ export function Clients() {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Client</Table.Th>
+                <Table.Th>QBR</Table.Th>
                 <Table.Th>Industry</Table.Th>
                 <Table.Th>Mapped tools</Table.Th>
                 <Table.Th />
@@ -125,6 +129,24 @@ export function Clients() {
                       <Anchor component={Link} to={`/clients/${c.id}`} fw={600}>{c.name}</Anchor>
                       {c.hipaa && <Badge size="xs" color="grape" variant="light">HIPAA</Badge>}
                     </Group>
+                  </Table.Td>
+                  <Table.Td>
+                    <Switch
+                      size="sm"
+                      color="teal"
+                      aria-label={`QBRs for ${c.name}`}
+                      checked={c.qbrEnabled !== false}
+                      onChange={async (e) => {
+                        const qbrEnabled = e.currentTarget.checked;
+                        setClients((cs) => cs.map((x) => (x.id === c.id ? { ...x, qbrEnabled } : x)));
+                        try {
+                          await api.updateClient(c.id, { name: c.name, qbrEnabled });
+                        } catch {
+                          notifications.show({ color: 'red', message: 'Could not update the QBR flag.' });
+                          await load();
+                        }
+                      }}
+                    />
                   </Table.Td>
                   <Table.Td>{c.industry ?? '—'}</Table.Td>
                   <Table.Td>

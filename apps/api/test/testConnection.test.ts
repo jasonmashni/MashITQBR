@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { functionMcpTransport, type HttpRequest, type HttpResponse } from '@mashit/integrations';
 import { JsonDataStore, LocalSecretStore } from '../src/store/index.js';
 import { saveConnection } from '../src/connections.js';
-import { testConnection, type Integrations } from '../src/integrationsService.js';
+import { listOrgs, testConnection, type Integrations } from '../src/integrationsService.js';
 
 let dir: string;
 beforeAll(() => {
@@ -91,5 +91,44 @@ describe('testConnection', () => {
     const out = await testConnection({ store, secrets }, conn);
     expect(out.ok).toBe(true);
     expect(out.note).toMatch(/next sync/);
+  });
+});
+
+describe('listOrgs', () => {
+  it('pages through Huntress organizations', async () => {
+    const store = new JsonDataStore(dir);
+    const secrets = new LocalSecretStore(dir);
+    const conn = await saveConnection(store, secrets, {
+      type: 'huntress',
+      label: 'H',
+      config: { baseUrl: 'https://api.huntress.io/v1' },
+      secrets: { apiKey: 'k', apiSecret: 's' },
+    });
+    const pages: Record<string, unknown> = {
+      '1': { organizations: [{ id: 1, name: 'ANP' }], pagination: { next_page: 2 } },
+      '2': { organizations: [{ id: 2, name: 'KPCA' }], pagination: { next_page: null } },
+    };
+    const http = {
+      async request(req: HttpRequest): Promise<HttpResponse> {
+        const page = new URL(req.url).searchParams.get('page') ?? '1';
+        return { status: 200, json: pages[page] ?? { organizations: [] } };
+      },
+    };
+    const orgs = await listOrgs({ store, secrets, http }, conn);
+    expect(orgs).toEqual([
+      { id: '1', name: 'ANP' },
+      { id: '2', name: 'KPCA' },
+    ]);
+  });
+
+  it('lists Halo clients through the MCP and returns null for unlistable types', async () => {
+    const store = new JsonDataStore(dir);
+    const secrets = new LocalSecretStore(dir);
+    const mcpConn = await saveConnection(store, secrets, { type: 'mcp', label: 'MCP', config: { url: 'https://x/mcp' } });
+    const mcp = functionMcpTransport(async () => text([{ id: 42, name: 'ANP Enertech' }]));
+    expect(await listOrgs({ store, secrets, mcp }, mcpConn)).toEqual([{ id: '42', name: 'ANP Enertech' }]);
+
+    const cpConn = await saveConnection(store, secrets, { type: 'checkpoint', label: 'HEC', config: {} });
+    expect(await listOrgs({ store, secrets }, cpConn)).toBeNull();
   });
 });

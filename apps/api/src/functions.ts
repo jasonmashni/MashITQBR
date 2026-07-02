@@ -57,6 +57,8 @@ route('createIntegration', 'POST', 'api/integrations', async (req) => h.saveInte
 route('updateIntegration', 'PUT', 'api/integrations/{id}', async (req) => h.saveIntegration({ ...((await body(req)) as unknown as ConnectionInput), id: req.params['id']! }));
 route('deleteIntegration', 'DELETE', 'api/integrations/{id}', (req) => h.deleteIntegration(req.params['id']!));
 route('testIntegration', 'POST', 'api/integrations/{id}/test', (req) => h.testIntegration(req.params['id']!));
+route('integrationOrgs', 'GET', 'api/integrations/{id}/orgs', (req) => h.getIntegrationOrgs(req.params['id']!));
+route('integrationMappings', 'PUT', 'api/integrations/{id}/mappings', async (req) => h.putIntegrationMappings(req.params['id']!, (await body(req)) as never));
 
 route('currentPeriod', 'GET', 'api/period/current', () => h.currentPeriod());
 route('system', 'GET', 'api/system', () => h.getSystem());

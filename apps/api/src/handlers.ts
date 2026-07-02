@@ -18,7 +18,7 @@ import {
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
 import { currentActor } from './requestContext.js';
 import type { Principal } from './auth.js';
-import { importHaloClients, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
+import { importHaloClients, listOrgs, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
 import { pushAction, type PushInput } from './actions.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 
@@ -91,7 +91,7 @@ export async function listClients(): Promise<ApiResult> {
 }
 
 /** Fields a client PUT may change — everything else in the body is ignored. */
-const CLIENT_PATCH_FIELDS = ['name', 'industry', 'hipaa', 'integrationRefs', 'primaryContact'] as const;
+const CLIENT_PATCH_FIELDS = ['name', 'industry', 'hipaa', 'qbrEnabled', 'integrationRefs', 'primaryContact'] as const;
 
 export async function updateClient(id: string, patch: Record<string, unknown>): Promise<ApiResult> {
   const store = getDataStore();
@@ -220,6 +220,46 @@ export async function testIntegration(id: string): Promise<ApiResult> {
   });
   audit('integration.test', `integration:${conn.type}/${conn.id}`, outcome.ok ? 'ok' : outcome.message);
   return ok({ ok: outcome.ok, error: outcome.ok ? undefined : outcome.message, note: outcome.note });
+}
+
+/** Selectable orgs inside a tool, for dropdown-based client mapping. */
+export async function getIntegrationOrgs(id: string): Promise<ApiResult> {
+  const conn = await getDataStore().getConnection(id);
+  if (!conn) return err(404, 'Unknown connection');
+  try {
+    return ok({ orgs: await listOrgs(await buildIntegrations(), conn) });
+  } catch (e) {
+    return err(400, e instanceof Error ? e.message : 'Failed to list organizations');
+  }
+}
+
+// ConnectionType → the integrationRefs key the sync pipeline reads. The MCP
+// connection carries Halo, so its mappings land on refs.halo.
+const REF_KEY: Record<string, string> = { mcp: 'halo' };
+
+/** Bulk-map clients to their ids inside this tool. Blank ref clears the mapping. */
+export async function putIntegrationMappings(
+  id: string,
+  body: { mappings?: Array<{ clientId: string; externalRef?: string }> },
+): Promise<ApiResult> {
+  const store = getDataStore();
+  const conn = await store.getConnection(id);
+  if (!conn) return err(404, 'Unknown connection');
+  const refKey = REF_KEY[conn.type] ?? conn.type;
+  let updated = 0;
+  for (const m of Array.isArray(body.mappings) ? body.mappings : []) {
+    if (!m.clientId) continue;
+    const client = await store.getClient(m.clientId);
+    if (!client) continue;
+    const refs = { ...(client.integrationRefs ?? {}) } as Record<string, string>;
+    const val = (m.externalRef ?? '').trim();
+    if (val) refs[refKey] = val;
+    else delete refs[refKey];
+    await store.upsertClient({ ...client, integrationRefs: refs as never });
+    updated++;
+  }
+  audit('integration.map', `integration:${conn.type}/${conn.id}`, `${updated} client(s) → ${refKey}`);
+  return ok({ updated, refKey });
 }
 
 // ── Live pipeline + workflow ─────────────────────────────────────────────────

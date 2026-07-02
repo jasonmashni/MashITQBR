@@ -20,9 +20,9 @@ import {
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
-import { IconPlus, IconDots, IconPlugConnected, IconTrash, IconPlugConnectedX, IconPencil } from '@tabler/icons-react';
+import { IconPlus, IconDots, IconPlugConnected, IconTrash, IconPlugConnectedX, IconPencil, IconRoute } from '@tabler/icons-react';
 import { api, type ConnectionInput } from '../api.js';
-import type { ConnectionView, SystemInfo } from '../types.js';
+import type { Client, ConnectionView, SystemInfo } from '../types.js';
 
 interface Field {
   key: string;
@@ -83,6 +83,103 @@ const TYPES: TypeDef[] = [
 
 const typeDef = (t: string) => TYPES.find((d) => d.value === t);
 const STATUS_COLOR: Record<string, string> = { ok: 'teal', error: 'red', unknown: 'gray' };
+/** Which integrationRefs key a connection type maps to (mirrors the server). */
+const REF_KEY: Record<string, string> = { mcp: 'halo' };
+
+/** Modal that maps QBR clients to their ids inside one tool. */
+function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved: boolean) => void }) {
+  const [clients, setClients] = useState<Client[]>([]);
+  const [orgs, setOrgs] = useState<Array<{ id: string; name: string }> | null>(null);
+  const [refs, setRefs] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [orgError, setOrgError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const refKey = REF_KEY[conn.type] ?? conn.type;
+
+  useEffect(() => {
+    let live = true;
+    Promise.all([
+      api.listClients(),
+      api.integrationOrgs(conn.id).catch((e: unknown) => {
+        if (live) setOrgError(e instanceof Error ? e.message : 'Could not list organizations');
+        return { orgs: null };
+      }),
+    ])
+      .then(([c, o]) => {
+        if (!live) return;
+        const qbrClients = c.clients.filter((x) => x.qbrEnabled !== false);
+        setClients(qbrClients);
+        setOrgs(o.orgs);
+        setRefs(Object.fromEntries(qbrClients.map((x) => [x.id, x.integrationRefs?.[refKey] ?? ''])));
+      })
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [conn.id, refKey]);
+
+  async function save() {
+    setSaving(true);
+    try {
+      const { updated } = await api.putMappings(conn.id, Object.entries(refs).map(([clientId, externalRef]) => ({ clientId, externalRef })));
+      notifications.show({ color: 'teal', message: `Mapped ${updated} client(s) for ${conn.label}.` });
+      onClose(true);
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const orgOptions = (orgs ?? []).map((o) => ({ value: o.id, label: `${o.name} (${o.id})` }));
+
+  return (
+    <Modal opened onClose={() => onClose(false)} title={`Map clients — ${conn.label}`} size="lg">
+      <Stack>
+        <Text size="sm" c="dimmed">
+          Tell {typeDef(conn.type)?.label ?? conn.type} which of your QBR clients is which
+          {orgs ? ' — pick from the orgs found in the tool.' : ' — enter each client’s id in the tool.'}
+        </Text>
+        {orgError && <Text size="sm" c="red.7">{orgError}</Text>}
+        {loading ? (
+          <Center h={120}><Loader /></Center>
+        ) : clients.length === 0 ? (
+          <Text size="sm" c="dimmed">No QBR-enabled clients yet — enable some on the Clients page first.</Text>
+        ) : (
+          clients.map((c) => (
+            <Group key={c.id} wrap="nowrap" align="center">
+              <Text size="sm" fw={600} w={220} truncate>{c.name}</Text>
+              {orgs ? (
+                <Select
+                  style={{ flex: 1 }}
+                  placeholder="Not mapped"
+                  data={orgOptions}
+                  value={refs[c.id] || null}
+                  onChange={(v) => setRefs({ ...refs, [c.id]: v ?? '' })}
+                  searchable
+                  clearable
+                  aria-label={`Map ${c.name}`}
+                />
+              ) : (
+                <TextInput
+                  style={{ flex: 1 }}
+                  placeholder={`${conn.type} id`}
+                  value={refs[c.id] ?? ''}
+                  onChange={(e) => setRefs({ ...refs, [c.id]: e.currentTarget.value })}
+                  aria-label={`Map ${c.name}`}
+                />
+              )}
+            </Group>
+          ))
+        )}
+        <Group justify="flex-end">
+          <Button variant="default" onClick={() => onClose(false)}>Cancel</Button>
+          <Button loading={saving} onClick={save} disabled={clients.length === 0}>Save mappings</Button>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+}
 
 export function Integrations() {
   const [conns, setConns] = useState<ConnectionView[]>([]);
@@ -91,6 +188,7 @@ export function Integrations() {
   const [testing, setTesting] = useState<string | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ConnectionView | null>(null);
+  const [mapping, setMapping] = useState<ConnectionView | null>(null);
   const secretHome = system?.secretStore === 'keyvault' ? 'Azure Key Vault' : 'the local secret file (dev)';
 
   const [editId, setEditId] = useState<string | undefined>();
@@ -214,6 +312,7 @@ export function Integrations() {
                     </Menu.Target>
                     <Menu.Dropdown>
                       <Menu.Item leftSection={<IconPlugConnectedX size={14} />} onClick={() => test(c)}>Test</Menu.Item>
+                      <Menu.Item leftSection={<IconRoute size={14} />} onClick={() => setMapping(c)}>Map clients</Menu.Item>
                       <Menu.Item leftSection={<IconPencil size={14} />} onClick={() => openEdit(c)}>Edit / rotate</Menu.Item>
                       <Menu.Item color="red" leftSection={<IconTrash size={14} />} onClick={() => setConfirmDelete(c)}>Delete</Menu.Item>
                     </Menu.Dropdown>
@@ -229,7 +328,10 @@ export function Integrations() {
                 {Object.entries(c.config).map(([k, v]) => (
                   <Text key={k} size="xs" c="dimmed" truncate>{k}: {v}</Text>
                 ))}
-                <Button mt="md" size="xs" variant="light" fullWidth loading={testing === c.id} onClick={() => test(c)}>Test connection</Button>
+                <Group mt="md" grow>
+                  <Button size="xs" variant="light" loading={testing === c.id} onClick={() => test(c)}>Test connection</Button>
+                  <Button size="xs" variant="default" leftSection={<IconRoute size={14} />} onClick={() => setMapping(c)}>Map clients</Button>
+                </Group>
               </Card>
             );
           })}
@@ -272,6 +374,8 @@ export function Integrations() {
           </Group>
         </Stack>
       </Modal>
+
+      {mapping && <MappingModal conn={mapping} onClose={() => setMapping(null)} />}
 
       <Modal opened={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Delete integration?" size="sm">
         <Stack>
