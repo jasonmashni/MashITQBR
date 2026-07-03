@@ -63,8 +63,11 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
 - **Clients** — all clients with a **QBR toggle** (you don't review everyone —
   imports from Halo arrive with QBR off; enable just the ones you do).
 - **Integrations** — every tool connects **directly with its own API
-  credentials**: HaloPSA (Client ID/Secret — tickets with real date windows,
-  contracts/invoices for MRR + spend, ticket push), NinjaOne (API client,
+  credentials**: HaloPSA (Client ID/Secret — tickets with real date windows
+  and a **ticket-type allowlist** so only the categories you report on count,
+  **SLA outcomes**, contracts/invoices for MRR + an **invoice breakdown by
+  Halo item group** — Managed Services / Subscriptions / Software…, ticket
+  push), NinjaOne (API client,
   `monitoring` scope — devices, health, AV, **quarterly patch compliance**
   from the install history, org-scoped backup), Hudu (API key — assets +
   warranty/domain/SSL expirations), Huntress (API key/secret — quarterly
@@ -225,6 +228,10 @@ Function App (the old separate Static-Web-Apps deploy is gone).
 
 ## Grounding & safety
 
+- The narrative is written for executives: a headline, a short summary, and
+  **one plain-English takeaway sentence per report section** (rendered under
+  each section heading in the report, PDF and deck) — enough data to show the
+  value, high-level enough to hold a non-technical room.
 - The AI never does arithmetic — all totals, percentages, and QoQ deltas are
   pre-computed in `packages/core` and passed to the model.
 - Every cited figure must trace back to a computed value; the guardrail

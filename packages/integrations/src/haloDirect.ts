@@ -20,6 +20,12 @@ export interface HaloCfg {
   clientSecret: string;
   /** Hosted instances sometimes require the tenant name on the token call. */
   tenant?: string;
+  /**
+   * Ticket-type ids to report on (from the connection's "Ticket types"
+   * picker). Empty/absent = report on everything. When set, ticket tallies
+   * are computed from rows filtered to these types.
+   */
+  ticketTypeIds?: string[];
 }
 
 type Json = Record<string, unknown>;
@@ -152,6 +158,53 @@ const MRR_FIELDS = ['monthlyvalue', 'monthly_value', 'periodicbillingamount', 'p
 /** Fields that plausibly carry an invoice total (net preferred over gross). */
 const INVOICE_TOTAL_FIELDS = ['nettotal', 'net_total', 'total', 'totalprice', 'totalinctax'];
 const INVOICE_DATE_FIELDS = ['invoicedate', 'invoice_date', 'date', 'datesent'];
+/** Fields that plausibly carry an invoice line's net amount / category. */
+const LINE_AMOUNT_FIELDS = ['net_amount', 'netamount', 'nettotal', 'line_total', 'linetotal', 'baseprice', 'price'];
+const LINE_CATEGORY_FIELDS = [
+  'item_group_name',
+  'itemgroup_name',
+  'item_group',
+  'nominal_code_name',
+  'nominalcode_name',
+  'group_name',
+  'category_name',
+  'category',
+];
+
+/** The ticket-type id on a ticket row (shape varies by instance). */
+function ticketTypeIdOf(row: Json): string | undefined {
+  const v = row['tickettype_id'] ?? (row['tickettype'] as Json | undefined)?.['id'];
+  return v === undefined || v === null ? undefined : String(v);
+}
+
+/**
+ * SLA outcome tally from ticket rows. Field names differ across Halo
+ * versions, so scan sla-keyed string fields for met/breach wording; rows
+ * with no recognizable SLA state are simply not counted. A ticket can carry
+ * several SLA fields (response + resolution) — any breach makes the ticket
+ * breached. Fields that name the SLA rather than its state (slaname) are
+ * skipped so wording like "Respond within 4 hours" can't read as met.
+ */
+const SLA_BREACH_RE = /\b(breach\w*|late|miss\w*|fail\w*|overdue|unmet)\b|\bnot\s+(met|ok|achieved|within)/;
+const SLA_MET_RE = /\b(met|ok|achieved?|within|pass(?:ed)?|on.?target)\b/;
+
+export function tallyHaloSla(rows: Json[]): { met: number; breached: number } {
+  let met = 0;
+  let breached = 0;
+  for (const row of rows) {
+    let sawBreach = false;
+    let sawMet = false;
+    for (const [k, v] of Object.entries(row)) {
+      if (!/sla/i.test(k) || /name|id$/i.test(k) || typeof v !== 'string' || !v) continue;
+      const s = v.toLowerCase();
+      if (SLA_BREACH_RE.test(s)) sawBreach = true;
+      else if (SLA_MET_RE.test(s)) sawMet = true;
+    }
+    if (sawBreach) breached++;
+    else if (sawMet) met++;
+  }
+  return { met, breached };
+}
 
 export interface HaloFinanceInput {
   contracts: Json[];
@@ -191,6 +244,8 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
   const end = Date.parse(input.periodEnd) + 24 * 3600 * 1000; // inclusive end date
   let invoiced = 0;
   let counted = 0;
+  let withLines = 0;
+  const byCategory = new Map<string, number>();
   for (const inv of input.invoices) {
     const dateStr = firstStr(inv, INVOICE_DATE_FIELDS);
     const at = dateStr ? Date.parse(dateStr) : NaN;
@@ -200,8 +255,47 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
       invoiced += total;
       counted++;
     }
+    // High-level breakdown from invoice lines (Managed Services,
+    // Subscriptions, Software, …) — categories come from Halo's own groups.
+    const lines = Array.isArray(inv['lines']) ? (inv['lines'] as Json[]) : [];
+    if (lines.length > 0) withLines++;
+    for (const line of lines) {
+      const amount = firstNum(line, LINE_AMOUNT_FIELDS);
+      if (amount === undefined || amount === 0) continue;
+      const category = firstStr(line, LINE_CATEGORY_FIELDS) ?? 'Other';
+      byCategory.set(category, (byCategory.get(category) ?? 0) + amount);
+    }
   }
-  if (counted > 0) metrics.push(spend('finance.quarter_invoiced', 'Invoiced this quarter', invoiced));
+  if (counted > 0) metrics.push(spend('finance.quarter_invoiced', 'Invoiced this quarter (total)', invoiced));
+
+  if (byCategory.size > 0) {
+    // Top categories keep the breakdown executive-sized; the tail — together
+    // with Halo's own catch-all group, if it has one — folds into one Other
+    // entry, so the emitted categories always sum to the lines' total.
+    const isOther = (name: string) => name.trim().toLowerCase() === 'other';
+    const named = [...byCategory.entries()].filter(([n]) => !isOther(n)).sort((a, b) => b[1] - a[1]);
+    const top = named.slice(0, 6);
+    const other =
+      named.slice(6).reduce((sum, [, v]) => sum + v, 0) +
+      [...byCategory.entries()].filter(([n]) => isOther(n)).reduce((sum, [, v]) => sum + v, 0);
+    if (other !== 0) top.push(['Other', other]);
+    // Distinct group names can slug identically — merge so metric keys stay unique.
+    const bySlug = new Map<string, { name: string; amount: number }>();
+    for (const [name, amount] of top) {
+      const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'other';
+      const prev = bySlug.get(slug);
+      if (prev) prev.amount += amount;
+      else bySlug.set(slug, { name, amount });
+    }
+    for (const [slug, { name, amount }] of bySlug) {
+      metrics.push(spend(`finance.invoiced.${slug}`, `Invoiced — ${name}`, amount));
+    }
+  } else if (counted > 0) {
+    warnings.push('Halo invoices carried no line items — the invoice breakdown needs line-level data (categories come from Halo item groups).');
+  }
+  if (withLines > 0 && withLines < counted) {
+    warnings.push(`${counted - withLines} of ${counted} in-quarter invoices had no line items — the category breakdown may be partial.`);
+  }
 
   return { metrics, warnings };
 }
@@ -226,10 +320,46 @@ async function collectHaloForId(
 ): Promise<{ ok: boolean; openedRows: Json[]; openedTotal: number; closed: number; open: number; contracts: Json[]; invoices: Json[] }> {
   const startMs = Date.parse(ctx.period.start);
   const endMs = Date.parse(ctx.period.end) + 24 * 3600 * 1000;
+  const allowedTypes = cfg.ticketTypeIds?.length ? new Set(cfg.ticketTypeIds.map(String)) : undefined;
+  const typeMatch = (r: Json) => {
+    if (!allowedTypes) return true;
+    const t = ticketTypeIdOf(r);
+    return t !== undefined && allowedTypes.has(t);
+  };
   let ok = false;
   let openedRows: Json[] = [];
   let openedTotal = 0;
   let closed = 0;
+
+  // With a ticket-type allowlist, server-side record counts can't be used —
+  // pull recent tickets and tally locally (types, period, SLA all from rows).
+  if (allowedTypes) {
+    let filterUsable = true;
+    try {
+      const all = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: false, order: 'dateoccurred', orderdesc: true }, 'tickets', 10);
+      if (all.rows.length > 0 && !all.rows.some((r) => ticketTypeIdOf(r) !== undefined)) {
+        // This instance's list rows don't expose a type id — filtered tallies
+        // would read as a quarter of zeros. Report unavailable instead.
+        filterUsable = false;
+        warnings.push(
+          `Halo${tag}: ticket rows carry no ticket-type id, so the connection's ticket-type filter can't be applied — ticket metrics skipped (clear the filter to report on all tickets).`,
+        );
+      } else {
+        ok = true;
+        const typed = all.rows.filter(typeMatch);
+        openedRows = typed.filter((r) => inPeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
+        openedTotal = openedRows.length;
+        closed = typed.filter((r) => inPeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs)).length;
+        if (all.rows.length < all.total) {
+          warnings.push(`Halo${tag}: type-filtered tallies counted from the most recent ${all.rows.length} of ${all.total} tickets.`);
+        }
+      }
+    } catch (e) {
+      filterUsable = false;
+      warnings.push(`Halo${tag} ticket volume unavailable: ${e instanceof Error ? e.message : 'error'}`);
+    }
+    return withFinance(filterUsable);
+  }
 
   // Tickets opened in the period via the server-side date window.
   try {
@@ -280,14 +410,25 @@ async function collectHaloForId(
   }
   return withFinance();
 
-  async function withFinance() {
+  async function withFinance(includeOpenSnapshot = true) {
     let open = 0;
-    try {
-      const res = await haloGet(http, cfg, 'Tickets', { client_id: haloId, open_only: true, pageinate: true, page_size: 1, page_no: 1 });
-      open = recordCount(res, toArray(res, ['tickets']));
-      ok = true;
-    } catch (e) {
-      warnings.push(`Halo${tag} open-ticket snapshot unavailable: ${e instanceof Error ? e.message : 'error'}`);
+    if (includeOpenSnapshot) {
+      try {
+        if (allowedTypes) {
+          // Type filter needs rows, not the server count.
+          const openAll = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: true }, 'tickets', 3);
+          open = openAll.rows.filter(typeMatch).length;
+          if (openAll.rows.length < openAll.total) {
+            warnings.push(`Halo${tag}: open-ticket snapshot filtered from the first ${openAll.rows.length} of ${openAll.total} open tickets.`);
+          }
+        } else {
+          const res = await haloGet(http, cfg, 'Tickets', { client_id: haloId, open_only: true, pageinate: true, page_size: 1, page_no: 1 });
+          open = recordCount(res, toArray(res, ['tickets']));
+        }
+        ok = true;
+      } catch (e) {
+        warnings.push(`Halo${tag} open-ticket snapshot unavailable: ${e instanceof Error ? e.message : 'error'}`);
+      }
     }
     let contracts: Json[] = [];
     let invoices: Json[] = [];
@@ -297,7 +438,8 @@ async function collectHaloForId(
       warnings.push(`Halo${tag} contracts unavailable (MRR skipped): ${e instanceof Error ? e.message : 'error'}`);
     }
     try {
-      invoices = (await haloPageAll(http, cfg, 'Invoice', { client_id: haloId }, 'invoices')).rows;
+      // includelines feeds the invoice category breakdown.
+      invoices = (await haloPageAll(http, cfg, 'Invoice', { client_id: haloId, includelines: true }, 'invoices')).rows;
     } catch (e) {
       warnings.push(`Halo${tag} invoices unavailable (quarterly spend skipped): ${e instanceof Error ? e.message : 'error'}`);
     }
@@ -362,6 +504,22 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
     }
     metrics.push(op('tickets.closed', 'Tickets closed', closed, true));
     metrics.push(op('tickets.open', 'Open tickets', open, false));
+
+    // SLA outcomes from the period's ticket rows (field names vary — see tallyHaloSla).
+    const sla = tallyHaloSla(openedRows);
+    if (sla.met + sla.breached > 0) {
+      metrics.push(
+        metric('sla.met_pct', 'SLA met', Math.round((1000 * sla.met) / (sla.met + sla.breached)) / 10, {
+          category: 'operations',
+          source: 'halo',
+          unit: '%',
+          higherIsBetter: true,
+        }),
+      );
+      if (sla.breached > 0) metrics.push(op('sla.breaches', 'SLA breaches', sla.breached, false));
+    } else if (openedRows.length > 0) {
+      warnings.push('Halo ticket rows carry no recognizable SLA state field — SLA reporting needs tuning against this instance.');
+    }
   }
 
   const finance = normalizeHaloFinance({ contracts, invoices, periodStart: ctx.period.start, periodEnd: ctx.period.end });

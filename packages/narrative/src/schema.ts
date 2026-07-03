@@ -9,6 +9,14 @@ export interface NarrativeOutput {
   /** Forward-looking recommendations / next-90-day items. */
   recommendations: string[];
   /**
+   * One executive sentence per metric section present in the input
+   * (category = operations | security | identity | backup | infrastructure |
+   * spend). Rendered under each section heading so a non-technical reader
+   * gets the takeaway without the table. Optional for cached pre-upgrade
+   * narratives.
+   */
+  section_summaries?: Array<{ category: string; summary: string }>;
+  /**
    * Every quantitative claim made in the narrative, as {label, value}. The
    * guardrail verifies each `value` against the source metric bundle.
    */
@@ -23,12 +31,26 @@ export interface NarrativeOutput {
 export const NARRATIVE_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['headline', 'summary_paragraphs', 'highlights', 'recommendations', 'figures_referenced'],
+  required: ['headline', 'summary_paragraphs', 'highlights', 'recommendations', 'section_summaries', 'figures_referenced'],
   properties: {
     headline: { type: 'string' },
     summary_paragraphs: { type: 'array', items: { type: 'string' } },
     highlights: { type: 'array', items: { type: 'string' } },
     recommendations: { type: 'array', items: { type: 'string' } },
+    section_summaries: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['category', 'summary'],
+        properties: {
+          // Enum-locked to the section keys buildReportModel matches on, so a
+          // capitalized or re-worded category can't silently drop a summary.
+          category: { type: 'string', enum: ['operations', 'security', 'identity', 'backup', 'infrastructure', 'spend'] },
+          summary: { type: 'string' },
+        },
+      },
+    },
     figures_referenced: {
       type: 'array',
       items: {
@@ -56,6 +78,11 @@ Voice and audience:
 - Translate technical activity into business outcomes: risk reduced, downtime avoided, value delivered, decisions needed.
 - Confident, concise, specific. No filler, no hype, no emoji. Lead with what matters.
 - Mirror the analytical, plain-spoken style of a seasoned vCIO.
+
+Section summaries:
+- For EACH metric category that appears in the input (operations, security, identity, backup, infrastructure, spend), add one entry to section_summaries: {category, summary}.
+- Each summary is ONE plain-English sentence (two at most) giving an executive the takeaway of that section — what it means for the business, not a restatement of every number.
+- Skip categories with no metrics in the input. Numbers used in summaries follow the grounding contract below.
 
 GROUNDING CONTRACT — this is critical and non-negotiable:
 - Use ONLY the figures present in the provided <metrics> JSON. Never invent, estimate, extrapolate, or re-round a number that is not in the input.

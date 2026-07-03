@@ -7,6 +7,7 @@ import {
   haloToken,
   listHaloClients,
   normalizeHaloFinance,
+  tallyHaloSla,
   type HttpRequest,
   type HttpResponse,
   type HttpTransport,
@@ -220,7 +221,190 @@ describe('collectHaloDirect', () => {
   });
 });
 
+describe('ticket-type allowlist + SLA', () => {
+  it('counts only the allowed ticket types and tallies SLA outcomes from rows', async () => {
+    const period = makePeriod(2026, 2);
+    const tickets = [
+      { id: 1, tickettype_id: 1, tickettype_name: 'Incident', dateoccurred: '2026-05-01T10:00:00Z', sla_response_state: 'Met' },
+      { id: 2, tickettype_id: 1, tickettype_name: 'Incident', dateoccurred: '2026-05-02T10:00:00Z', sla_response_state: 'Breached' },
+      { id: 3, tickettype_id: 9, tickettype_name: 'Alert', dateoccurred: '2026-05-03T10:00:00Z' }, // excluded type
+      { id: 4, tickettype_id: 2, tickettype_name: 'Service Request', dateoccurred: '2026-04-10T10:00:00Z', dateclosed: '2026-04-12T10:00:00Z', sla_response_state: 'Met' },
+      { id: 5, tickettype_id: 1, tickettype_name: 'Incident', dateoccurred: '2026-01-05T10:00:00Z' }, // outside quarter
+    ];
+    const { http } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => r.url.includes('/api/Tickets'),
+        respond: (r) => {
+          const u = new URL(r.url);
+          if (u.searchParams.get('open_only') === 'true') {
+            return { status: 200, json: { record_count: 3, tickets: [{ id: 6, tickettype_id: 1 }, { id: 7, tickettype_id: 9 }, { id: 8, tickettype_id: 2 }] } };
+          }
+          return { status: 200, json: { record_count: tickets.length, tickets } };
+        },
+      },
+      { match: (r) => r.url.includes('/api/ClientContract'), respond: () => ({ status: 200, json: { contracts: [] } }) },
+      { match: (r) => r.url.includes('/api/Invoice'), respond: () => ({ status: 200, json: { invoices: [] } }) },
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'anp', period, externalRef: '35' },
+      http,
+      { baseUrl: 'https://x.halopsa.com', clientId: 'types-1', clientSecret: 's', ticketTypeIds: ['1', '2'] },
+    );
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['tickets.total']).toBe(3); // tickets 1, 2, 4 (type 9 and out-of-quarter excluded)
+    expect(by['tickets.closed']).toBe(1); // ticket 4 closed in Q2
+    expect(by['tickets.open']).toBe(2); // open snapshot filtered to types 1 + 2
+    expect(by['sla.met_pct']).toBe(66.7); // 2 met of 3 opened-in-period with SLA state
+    expect(by['sla.breaches']).toBe(1);
+  });
+
+  it('tallyHaloSla scans sla-prefixed fields tolerantly', () => {
+    expect(
+      tallyHaloSla([
+        { sla_response_state: 'Met' },
+        { slaresolutionstate: 'BREACHED' },
+        { sla_status: 'Within target' },
+        { sla_id: 3 }, // numeric — not counted
+        { status: 'Closed' }, // not sla-keyed — not counted
+      ]),
+    ).toEqual({ met: 2, breached: 1 });
+  });
+
+  it('tallyHaloSla handles negations, multi-field rows, and SLA-name fields', () => {
+    expect(
+      tallyHaloSla([
+        { sla_status: 'Not met' }, // negation must read as a breach
+        { sla_response_state: 'Met', sla_resolution_state: 'Breached' }, // any breach wins the row
+        { slaname: 'Respond within 4 hours', slastate: 'Breached' }, // the SLA *name* must not read as met
+        { slaname: 'Respond within 4 hours' }, // only a name → not counted at all
+      ]),
+    ).toEqual({ met: 0, breached: 3 });
+  });
+
+  it('reports unavailable (not zeros) when list rows expose no ticket-type id', async () => {
+    const period = makePeriod(2026, 2);
+    // An instance whose /Tickets rows carry only the type *name* — the id
+    // allowlist can't be applied, so ticket metrics must be skipped, not 0.
+    const tickets = [
+      { id: 1, tickettype_name: 'Incident', dateoccurred: '2026-05-01T10:00:00Z' },
+      { id: 2, tickettype_name: 'Alert', dateoccurred: '2026-05-02T10:00:00Z' },
+    ];
+    const { http } = fakeHttp([
+      tokenRoute(),
+      { match: (r) => r.url.includes('/api/Tickets'), respond: () => ({ status: 200, json: { record_count: 2, tickets } }) },
+      { match: (r) => r.url.includes('/api/ClientContract'), respond: () => ({ status: 200, json: { contracts: [{ monthlyvalue: 100 }] } }) },
+      { match: (r) => r.url.includes('/api/Invoice'), respond: () => ({ status: 200, json: { invoices: [] } }) },
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'anp', period, externalRef: '35' },
+      http,
+      { baseUrl: 'https://x.halopsa.com', clientId: 'types-2', clientSecret: 's', ticketTypeIds: ['1'] },
+    );
+    expect(out.metrics.some((m) => m.key.startsWith('tickets.'))).toBe(false);
+    expect(out.metrics.some((m) => m.key === 'finance.mrr')).toBe(true); // finance still flows
+    expect(out.warnings.some((w) => w.includes("ticket-type filter can't be applied"))).toBe(true);
+  });
+});
+
 describe('normalizeHaloFinance', () => {
+  it('breaks invoiced spend into Halo line categories', () => {
+    const { metrics, warnings } = normalizeHaloFinance({
+      contracts: [],
+      invoices: [
+        {
+          invoicedate: '2026-05-01',
+          nettotal: 6000,
+          lines: [
+            { net_amount: 4500, item_group_name: 'Managed Services' },
+            { net_amount: 1000, item_group_name: 'Subscriptions' },
+            { net_amount: 500, item_group_name: 'Software' },
+          ],
+        },
+        { invoicedate: '2026-06-01', nettotal: 1500, lines: [{ net_amount: 1500, item_group_name: 'Managed Services' }] },
+      ],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    const by = Object.fromEntries(metrics.map((m) => [m.key, m.value]));
+    expect(by['finance.quarter_invoiced']).toBe(7500);
+    expect(by['finance.invoiced.managed_services']).toBe(6000);
+    expect(by['finance.invoiced.subscriptions']).toBe(1000);
+    expect(by['finance.invoiced.software']).toBe(500);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('folds the tail into one Other without double-counting a Halo group named Other', () => {
+    // 8 groups; Halo's own "Other" ranks 7th, "Misc" 8th — both must fold into
+    // a SINGLE Other entry so the breakdown reconciles to the invoice total.
+    const { metrics } = normalizeHaloFinance({
+      contracts: [],
+      invoices: [
+        {
+          invoicedate: '2026-05-01',
+          nettotal: 12500,
+          lines: [
+            { net_amount: 5000, item_group_name: 'Managed Services' },
+            { net_amount: 2000, item_group_name: 'Subscriptions' },
+            { net_amount: 1500, item_group_name: 'Software' },
+            { net_amount: 1200, item_group_name: 'Hardware' },
+            { net_amount: 1100, item_group_name: 'Projects' },
+            { net_amount: 1000, item_group_name: 'Consulting' },
+            { net_amount: 400, item_group_name: 'Other' },
+            { net_amount: 300, item_group_name: 'Misc' },
+          ],
+        },
+      ],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    const breakdown = metrics.filter((m) => m.key.startsWith('finance.invoiced.'));
+    expect(breakdown.reduce((s, m) => s + Number(m.value), 0)).toBe(12500);
+    const others = breakdown.filter((m) => m.key === 'finance.invoiced.other');
+    expect(others).toHaveLength(1);
+    expect(others[0]!.value).toBe(700); // 400 (Other group) + 300 (Misc tail)
+  });
+
+  it('emits one Other even when the Other group ranks inside the top six', () => {
+    const { metrics } = normalizeHaloFinance({
+      contracts: [],
+      invoices: [
+        {
+          invoicedate: '2026-05-01',
+          nettotal: 11900,
+          lines: [
+            { net_amount: 5000, item_group_name: 'Managed Services' },
+            { net_amount: 3000, item_group_name: 'Other' }, // big enough for the top 6
+            { net_amount: 900, item_group_name: 'Subscriptions' },
+            { net_amount: 800, item_group_name: 'Software' },
+            { net_amount: 700, item_group_name: 'Hardware' },
+            { net_amount: 600, item_group_name: 'Projects' },
+            { net_amount: 500, item_group_name: 'Consulting' },
+            { net_amount: 400, item_group_name: 'Misc' }, // the tail
+          ],
+        },
+      ],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    const breakdown = metrics.filter((m) => m.key.startsWith('finance.invoiced.'));
+    expect(breakdown.reduce((s, m) => s + Number(m.value), 0)).toBe(11900);
+    const others = breakdown.filter((m) => m.key === 'finance.invoiced.other');
+    expect(others).toHaveLength(1);
+    expect(others[0]!.value).toBe(3400); // 3000 (Other group) + 400 (Misc tail)
+  });
+
+  it('warns when invoices carry no line items (breakdown unavailable)', () => {
+    const { metrics, warnings } = normalizeHaloFinance({
+      contracts: [],
+      invoices: [{ invoicedate: '2026-05-01', nettotal: 1000 }],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    expect(metrics.map((m) => m.key)).toEqual(['finance.quarter_invoiced']);
+    expect(warnings[0]).toMatch(/no line items/);
+  });
+
   it('warns when contracts carry no recognizable monthly value', () => {
     const { metrics, warnings } = normalizeHaloFinance({
       contracts: [{ ref: 'C-1' }],

@@ -505,12 +505,29 @@ export async function getIntegrationOrgs(id: string): Promise<ApiResult> {
   }
 }
 
-/** Halo lookup lists (types/agents/teams/priorities) for the push modal — cached ~5 min. */
-let _haloMeta: { at: number; data: unknown } | undefined;
-export async function getHaloMeta(): Promise<ApiResult> {
-  if (_haloMeta && Date.now() - _haloMeta.at < 5 * 60_000) return ok(_haloMeta.data);
-  const halo = await directHaloConn(getDataStore());
-  if (!halo) return err(404, 'No direct HaloPSA connection configured — add one under Integrations to pick ticket type/agent.');
+/**
+ * Halo lookup lists (types/agents/teams/priorities) for the push modal and
+ * the ticket-type picker — cached ~5 min per connection. The Integrations
+ * edit modal passes its connectionId so the lists come from the connection
+ * being edited (a second Halo instance must never leak its ids into
+ * another's config); without one, the default direct-Halo connection answers.
+ */
+const _haloMeta = new Map<string, { at: number; data: unknown }>();
+export async function getHaloMeta(connectionId?: string | null): Promise<ApiResult> {
+  const store = getDataStore();
+  const halo = connectionId
+    ? (await store.listConnections()).find((c) => c.id === connectionId && c.type === 'halo' && c.config['baseUrl'])
+    : await directHaloConn(store);
+  if (!halo) {
+    return err(
+      404,
+      connectionId
+        ? 'That HaloPSA connection was not found (or has no base URL saved yet).'
+        : 'No direct HaloPSA connection configured — add one under Integrations to pick ticket type/agent.',
+    );
+  }
+  const hit = _haloMeta.get(halo.id);
+  if (hit && Date.now() - hit.at < 5 * 60_000) return ok(hit.data);
   try {
     const cfg = {
       baseUrl: halo.config['baseUrl'] ?? '',
@@ -519,7 +536,7 @@ export async function getHaloMeta(): Promise<ApiResult> {
       tenant: halo.config['tenant'] || undefined,
     };
     const meta = await fetchHaloMeta(new FetchHttpTransport(), cfg);
-    _haloMeta = { at: Date.now(), data: meta };
+    _haloMeta.set(halo.id, { at: Date.now(), data: meta });
     return ok(meta);
   } catch (e) {
     return err(502, e instanceof Error ? e.message : 'Halo lookup lists unavailable');

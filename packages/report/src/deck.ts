@@ -298,6 +298,14 @@ function addSectionSlides(
 ): void {
   const s = pptx.addSlide({ masterName: 'QBR' });
   t.heading(s, section.title);
+  let tableY = BODY_Y;
+  if (section.summary) {
+    s.addText(section.summary, {
+      x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: 0.6,
+      fontFace: t.FONT, fontSize: 13, italic: true, color: '444444', valign: 'top', fit: 'shrink',
+    });
+    tableY = BODY_Y + 0.7;
+  }
   const rows = [
     ['Metric', 'This quarter', 'vs last'].map((text) => ({
       text,
@@ -314,7 +322,7 @@ function addSectionSlides(
     }),
   ];
   s.addTable(rows, {
-    x: CONTENT_X, y: BODY_Y, w: CONTENT_W,
+    x: CONTENT_X, y: tableY, w: CONTENT_W,
     colW: [7.6, 2.6, 1.93],
     border: { type: 'solid', color: 'DDE3EA', pt: 0.5 },
     valign: 'top',

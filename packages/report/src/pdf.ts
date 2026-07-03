@@ -91,6 +91,23 @@ function pdfTrend(t: MetricTrend): string {
   return `${pct > 0 ? '+' : ''}${pct}%`;
 }
 
+/** Light callout block with an accent left bar (section takeaways, notes). */
+function calloutBlock(text: string, accent: string, margin: number[] = [0, 2, 0, 10]): Node {
+  return {
+    table: {
+      widths: [3, '*'],
+      body: [
+        [
+          { text: '', fillColor: accent, border: [false, false, false, false] },
+          { text, style: 'body', margin: [8, 6, 8, 6], fillColor: '#f4f7fa', border: [false, false, false, false], color: '#333333' },
+        ],
+      ],
+    },
+    layout: { defaultBorder: false, paddingLeft: () => 0, paddingRight: () => 0, paddingTop: () => 0, paddingBottom: () => 0 },
+    margin,
+  };
+}
+
 function sectionTable(section: ReportSection, brand: BrandTokens): Node {
   const body: unknown[][] = [
     [
@@ -111,21 +128,75 @@ function sectionTable(section: ReportSection, brand: BrandTokens): Node {
   return {
     stack: [
       { text: section.title, style: 'h2', color: brand.primary },
+      ...(section.summary ? [calloutBlock(section.summary, brand.accent)] : []),
       {
         table: { headerRows: 1, widths: ['*', 90, 70], body },
         layout: {
           hLineWidth: (i: number) => (i <= 1 ? 1 : 0.5),
           vLineWidth: () => 0,
           hLineColor: (i: number) => (i <= 1 ? brand.accent : RULE),
+          // Subtle zebra keeps long tables scannable.
+          fillColor: (rowIndex: number) => (rowIndex > 0 && rowIndex % 2 === 0 ? '#f7f9fb' : null),
           paddingTop: () => 5,
           paddingBottom: () => 5,
-          paddingLeft: () => 2,
-          paddingRight: () => 2,
+          paddingLeft: () => 4,
+          paddingRight: () => 4,
         },
       },
     ],
     margin: [0, 0, 0, 16],
     unbreakable: section.rows.length <= 12,
+  };
+}
+
+/** Priority order for the executive KPI band (first four available win). */
+const KPI_CANDIDATES: Array<{ key: string; label: string }> = [
+  { key: 'tickets.total', label: 'Tickets handled' },
+  { key: 'email.threats_blocked', label: 'Email threats blocked' },
+  { key: 'huntress.blocked_malware', label: 'Malware blocked' },
+  { key: 'identity.mfa_coverage_pct', label: 'MFA coverage' },
+  { key: 'finance.mrr', label: 'Monthly investment' },
+  { key: 'endpoints.managed', label: 'Devices managed' },
+];
+
+/** The stat band under the executive summary — the quarter at a glance. */
+function kpiBand(m: ReportModel): Node | undefined {
+  const tiles: Array<{ value: string; label: string; color: string }> = [];
+  const score = m.scorecard.overall.score;
+  tiles.push({
+    value: score === null ? '—' : String(Math.round(score)),
+    label: 'Security maturity / 100',
+    color: ratingColor(m.scorecard.overall.rating),
+  });
+  const byKey = new Map(m.sections.flatMap((s) => s.rows.map((r) => [r.metric.key, r.metric] as const)));
+  for (const c of KPI_CANDIDATES) {
+    if (tiles.length >= 4) break;
+    const metric = byKey.get(c.key);
+    if (metric && metric.value !== null) tiles.push({ value: formatValue(metric), label: c.label, color: m.brand.primary });
+  }
+  if (tiles.length < 2) return undefined;
+  return {
+    table: {
+      widths: tiles.map(() => '*'),
+      body: [
+        tiles.map((t) => ({
+          stack: [
+            { text: t.value, fontSize: 22, bold: true, color: t.color, alignment: 'center' },
+            { text: t.label.toUpperCase(), fontSize: 7.5, color: GRAY, alignment: 'center', characterSpacing: 0.5, margin: [0, 3, 0, 0] },
+          ],
+          fillColor: '#f4f7fa',
+          margin: [4, 10, 4, 10],
+        })),
+      ],
+    },
+    layout: {
+      defaultBorder: false,
+      // White gutters between tiles.
+      vLineWidth: () => 3,
+      vLineColor: () => '#ffffff',
+      hLineWidth: () => 0,
+    },
+    margin: [0, 4, 0, 14],
   };
 }
 
@@ -161,6 +232,10 @@ function discussionTable(items: DiscussionItem[], brand: BrandTokens): Node {
   };
 }
 
+/** LETTER page geometry (points). */
+const PAGE = { width: 612, height: 792 };
+const COVER_BAND_H = 132;
+
 function coverPage(m: ReportModel): Node[] {
   const brand = m.brand;
   const logos: Node[] = [];
@@ -173,7 +248,7 @@ function coverPage(m: ReportModel): Node[] {
     ...logos,
     { text: '', margin: [0, 96, 0, 0] },
     { canvas: [{ type: 'rect', x: 0, y: 0, w: 90, h: 5, color: brand.accent }] },
-    { text: 'Quarterly Business Review', color: brand.accent, fontSize: 15, bold: true, characterSpacing: 1, margin: [0, 14, 0, 6] },
+    { text: 'QUARTERLY BUSINESS REVIEW', color: brand.accent, fontSize: 14, bold: true, characterSpacing: 2, margin: [0, 14, 0, 6] },
     { text: m.client.name, color: brand.primary, fontSize: 34, bold: true, margin: [0, 0, 0, 6] },
     { text: m.period.label, color: GRAY, fontSize: 17, margin: [0, 0, 0, 26] },
     {
@@ -184,11 +259,44 @@ function coverPage(m: ReportModel): Node[] {
       ],
       fontSize: 11,
     },
-    ...(m.client.hipaa
-      ? [{ text: 'Contains confidential client information (HIPAA) — handle accordingly.', italics: true, color: GRAY, fontSize: 9, margin: [0, 30, 0, 0] as number[] }]
-      : []),
+    // White text sits inside the brand band the background paints at the foot.
+    {
+      text: `${m.client.name} · ${m.period.label}`,
+      color: '#ffffff',
+      fontSize: 13,
+      bold: true,
+      absolutePosition: { x: 52, y: PAGE.height - COVER_BAND_H + 40 },
+    },
+    {
+      text: `Prepared by ${brand.orgName}${m.client.hipaa ? ' · Contains confidential client information (HIPAA)' : ' · Confidential'}`,
+      color: '#ffffff',
+      opacity: 0.85,
+      fontSize: 9,
+      absolutePosition: { x: 52, y: PAGE.height - COVER_BAND_H + 62 },
+    },
     { text: '', pageBreak: 'after' },
   ];
+}
+
+/** Page backgrounds: a bold brand band on the cover, a slim top bar after. */
+function pageBackground(brand: BrandTokens): (page: number) => unknown {
+  return (page: number) => {
+    if (page === 1) {
+      return {
+        canvas: [
+          { type: 'rect', x: 0, y: 0, w: PAGE.width, h: 8, color: brand.accent },
+          { type: 'rect', x: 0, y: PAGE.height - COVER_BAND_H, w: PAGE.width, h: COVER_BAND_H, color: brand.primary },
+          { type: 'rect', x: 0, y: PAGE.height - COVER_BAND_H - 6, w: PAGE.width, h: 6, color: brand.accent },
+        ],
+      };
+    }
+    return {
+      canvas: [
+        { type: 'rect', x: 0, y: 0, w: PAGE.width, h: 5, color: brand.primary },
+        { type: 'rect', x: 0, y: 0, w: 170, h: 5, color: brand.accent },
+      ],
+    };
+  };
 }
 
 /** Build the full pdfmake document definition (exported for tests). */
@@ -196,9 +304,11 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
   const brand = m.brand;
   const content: Node[] = [...coverPage(m)];
 
-  // Executive summary
+  // Executive summary — KPI band first, then the narrative.
   if (m.executive.headline || m.executive.paragraphs.length) {
     content.push({ text: 'Executive Summary', style: 'h1', color: brand.primary });
+    const band = kpiBand(m);
+    if (band) content.push(band);
     if (m.executive.headline) content.push({ text: m.executive.headline, fontSize: 13.5, bold: true, color: brand.accent, margin: [0, 0, 0, 8] });
     for (const p of m.executive.paragraphs) content.push({ text: p, style: 'body' });
     if (m.executive.highlights.length) {
@@ -283,6 +393,7 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
     content,
     pageSize: 'LETTER',
     pageMargins: [52, 58, 52, 56],
+    background: pageBackground(brand),
     info: { title: `${m.client.name} — ${m.period.label} QBR`, author: brand.orgName },
     defaultStyle: { font: 'Helvetica', fontSize: 10.5, color: brand.ink, lineHeight: 1.3 },
     styles: {

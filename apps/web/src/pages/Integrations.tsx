@@ -23,8 +23,9 @@ import {
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconPlus, IconDots, IconPlugConnected, IconTrash, IconPlugConnectedX, IconPencil, IconRoute } from '@tabler/icons-react';
+import { List, Anchor } from '@mantine/core';
 import { api, type ConnectionInput } from '../api.js';
-import type { Client, ConnectionView, SystemInfo } from '../types.js';
+import type { Client, ConnectionView, HaloMeta, SystemInfo } from '../types.js';
 
 interface Field {
   key: string;
@@ -41,6 +42,9 @@ interface TypeDef {
   perClient?: 'required' | 'optional';
   /** Secret fields rendered as multi-line inputs (e.g. pasted JSON keys). */
   multilineSecrets?: string[];
+  /** Step-by-step setup instructions rendered in the modal. */
+  setupSteps?: string[];
+  setupLink?: { label: string; href: string };
   /** Hidden from the Add picker (existing connections still render). */
   legacy?: boolean;
 }
@@ -112,8 +116,16 @@ const TYPES: TypeDef[] = [
   {
     value: 'googleworkspace',
     label: 'Google Workspace',
-    hint: 'Read-only Directory access for a Google Workspace client: users + 2-Step Verification coverage. Needs a service account with domain-wide delegation; each connection is dedicated to one QBR client.',
+    hint: 'Read-only Directory access for a Google Workspace client: users + 2-Step Verification coverage. Each connection is dedicated to one QBR client.',
     perClient: 'required',
+    setupSteps: [
+      'In Google Cloud Console (console.cloud.google.com), create (or pick) a project, then APIs & Services → Library → enable the "Admin SDK API".',
+      'IAM & Admin → Service Accounts → Create service account (no roles needed). Open it → Keys → Add key → JSON — download the key file.',
+      'Copy the service account\'s "Unique ID" (client ID) from its details page.',
+      'In the CLIENT\'s Google Admin console (admin.google.com): Security → Access and data control → API controls → Manage domain-wide delegation → Add new — paste the client ID and the scope: https://www.googleapis.com/auth/admin.directory.user.readonly',
+      'Enter a super-admin email from the client\'s domain below (the account the service impersonates, read-only), and paste the whole JSON key file into the secret field.',
+    ],
+    setupLink: { label: 'Google\'s domain-wide delegation guide', href: 'https://developers.google.com/workspace/guides/create-credentials#service-account' },
     config: [
       { key: 'adminEmail', label: 'Workspace admin email (impersonated)', placeholder: 'admin@client.com' },
       { key: 'customer', label: 'Customer ID (optional — defaults to the admin\'s domain)', placeholder: 'my_customer' },
@@ -316,6 +328,26 @@ export function Integrations() {
   const [label, setLabel] = useState('');
   const [config, setConfig] = useState<Record<string, string>>({});
   const [secrets, setSecrets] = useState<Record<string, string>>({});
+  const [haloMeta, setHaloMeta] = useState<HaloMeta | null>(null);
+  const [haloMetaLoading, setHaloMetaLoading] = useState(false);
+
+  // Ticket-type picker data for Halo connections (needs saved, working creds).
+  // Scoped to the connection being edited so a second Halo instance's ids
+  // can't leak into this one's config.
+  useEffect(() => {
+    if (!opened || type !== 'halo' || !editId) return;
+    let live = true;
+    setHaloMeta(null);
+    setHaloMetaLoading(true);
+    api
+      .haloMeta(editId)
+      .then((m) => live && setHaloMeta(m))
+      .catch(() => live && setHaloMeta(null))
+      .finally(() => live && setHaloMetaLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [opened, type, editId]);
 
   const load = () => api.listIntegrations().then((d) => setConns(d.integrations)).finally(() => setLoading(false));
   useEffect(() => {
@@ -474,6 +506,17 @@ export function Integrations() {
             allowDeselect={false}
           />
           {def && <Text size="xs" c="dimmed">{def.hint}</Text>}
+          {def?.setupSteps && (
+            <div>
+              <Text size="xs" fw={600} mb={4}>Setup</Text>
+              <List type="ordered" size="xs" spacing={4} c="dimmed">
+                {def.setupSteps.map((s, i) => <List.Item key={i}>{s}</List.Item>)}
+              </List>
+              {def.setupLink && (
+                <Anchor href={def.setupLink.href} target="_blank" size="xs">{def.setupLink.label} ↗</Anchor>
+              )}
+            </div>
+          )}
           <TextInput label="Label" placeholder={def?.label} required value={label} onChange={(e) => setLabel(e.currentTarget.value)} />
           {def?.config.map((f) => (
             <TextInput
@@ -495,6 +538,28 @@ export function Integrations() {
               clearable={def.perClient === 'optional'}
             />
           )}
+          {type === 'halo' &&
+            (editId && haloMeta ? (
+              <MultiSelect
+                label="Ticket types to report on (blank = all)"
+                description="Only these ticket types count toward the QBR's ticket volumes and SLA."
+                data={haloMeta.ticketTypes.map((t) => ({ value: t.id, label: t.name }))}
+                value={(config['ticketTypeIds'] ?? '').split(',').map((s) => s.trim()).filter(Boolean)}
+                onChange={(vals) => setConfig({ ...config, ticketTypeIds: vals.join(',') })}
+                searchable
+                clearable
+              />
+            ) : editId && haloMetaLoading ? (
+              <Text size="xs" c="dimmed">
+                Loading ticket types from Halo…
+              </Text>
+            ) : (
+              <Text size="xs" c="dimmed">
+                {editId
+                  ? 'Ticket-type picker unavailable — check the connection credentials, then reopen Edit.'
+                  : 'Save the connection first, then reopen Edit to choose which ticket types count toward the QBR.'}
+              </Text>
+            ))}
           {def?.secrets.map((f) =>
             def.multilineSecrets?.includes(f.key) ? (
               <Textarea

@@ -75,6 +75,78 @@ export function draftOfflineNarrative(input: NarrativeInput): NarrativeOutput {
     summary_paragraphs: paragraphs,
     highlights,
     recommendations,
+    section_summaries: draftSectionSummaries(input, cite),
     figures_referenced: figures,
   };
+}
+
+/**
+ * One deterministic executive sentence per metric category present in the
+ * bundle — the offline stand-in for the AI's section_summaries.
+ */
+function draftSectionSummaries(
+  input: NarrativeInput,
+  cite: (label: string, value: string | number) => string,
+): NarrativeOutput['section_summaries'] {
+  const out: Array<{ category: string; summary: string }> = [];
+  const has = (category: string) => input.metrics.some((m) => m.category === category);
+  const num = (key: string): number | null => {
+    const m = input.metrics.find((x) => x.key === key);
+    return typeof m?.value === 'number' ? m.value : null;
+  };
+
+  if (has('operations')) {
+    const total = num('tickets.total');
+    const open = num('tickets.open');
+    if (total !== null) {
+      const backlog = open !== null ? ` with ${cite('open tickets', open)} open at quarter end` : '';
+      out.push({ category: 'operations', summary: `The team handled ${cite('tickets handled', total)} support requests this quarter${backlog}.` });
+    } else {
+      out.push({ category: 'operations', summary: 'Support operations ran under active management this quarter.' });
+    }
+  }
+  if (has('security')) {
+    const sc = input.scorecard.overall;
+    out.push({
+      category: 'security',
+      summary:
+        sc.score !== null
+          ? `Layered monitoring kept the environment protected; overall security maturity rates ${sc.rating} at ${cite('security maturity', sc.score)}/100.`
+          : 'Layered monitoring kept the environment protected this quarter.',
+    });
+  }
+  if (has('identity')) {
+    const mfa = num('identity.mfa_coverage_pct');
+    out.push({
+      category: 'identity',
+      summary:
+        mfa !== null
+          ? `${cite('MFA coverage', mfa)}% of user accounts are protected by multi-factor authentication.`
+          : 'User accounts and access are actively managed.',
+    });
+  }
+  if (has('backup')) {
+    const failed = num('backup.failed_jobs');
+    out.push({
+      category: 'backup',
+      summary:
+        failed !== null && failed > 0
+          ? `Backups are running with ${cite('failing backups', failed)} device(s) needing attention.`
+          : 'Backup coverage is in place and healthy.',
+    });
+  }
+  if (has('infrastructure')) {
+    const expired = num('assets.warranty_expired');
+    out.push({
+      category: 'infrastructure',
+      summary:
+        expired !== null && expired > 0
+          ? `${cite('devices out of warranty', expired)} device(s) are past warranty and should be planned for refresh.`
+          : 'The device fleet is current with no urgent refresh risk.',
+    });
+  }
+  if (has('spend')) {
+    out.push({ category: 'spend', summary: 'IT investment for the quarter is broken down below.' });
+  }
+  return out;
 }

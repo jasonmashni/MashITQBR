@@ -18,6 +18,11 @@ const narrative: NarrativeOutput = {
   summary_paragraphs: ['Ticket volume rose to 141, up 200% from 47 last quarter.'],
   highlights: ['22 email threats blocked before reaching inboxes'],
   recommendations: ['Plan the May hardware refresh'],
+  section_summaries: [
+    { category: 'operations', summary: 'The team resolved a heavy quarter of support work without backlog growth.' },
+    // Capitalized on purpose — the model matches categories case-insensitively.
+    { category: 'Security', summary: 'Layered defenses held: no incidents reached the business.' },
+  ],
   figures_referenced: [],
 };
 
@@ -54,12 +59,18 @@ describe('brand resolution (org defaults + client overrides)', () => {
   });
 });
 
-describe('report model — discussion + documents', () => {
+describe('report model — discussion + documents + section summaries', () => {
   it('filters out includeInReport=false and sorts by agenda order', () => {
     expect(model.discussion.map((d) => d.id)).toEqual(['d2', 'd1']);
   });
   it('carries attached documents for the appendix', () => {
     expect(model.documents[0]!.source).toBe('huntress');
+  });
+  it('attaches the narrative section summaries to their sections', () => {
+    const ops = model.sections.find((s) => s.category === 'operations')!;
+    expect(ops.summary).toMatch(/heavy quarter/);
+    const sec = model.sections.find((s) => s.category === 'security')!;
+    expect(sec.summary).toMatch(/Layered defenses/);
   });
 });
 
@@ -68,11 +79,15 @@ describe('designed PDF (pdfmake)', () => {
     const def = buildPdfDefinition(model);
     const text = JSON.stringify(def);
     expect(text).toContain('ANP Enertech');
-    expect(text).toContain('Quarterly Business Review');
+    expect(text).toContain('QUARTERLY BUSINESS REVIEW');
     expect(text).toContain('Security & Risk Maturity');
     expect(text).toContain('Discussion & Decisions');
     expect(text).toContain('Appendix — Attached Reports');
     expect(text).toContain('"svg"'); // score visuals are inline SVG
+    // Design round: section summaries, the KPI band, and page backgrounds.
+    expect(text).toContain('heavy quarter');
+    expect(text).toContain('TICKETS HANDLED');
+    expect(typeof (def as { background?: unknown }).background).toBe('function');
     expect((def as { pageSize?: string }).pageSize).toBe('LETTER');
   });
 

@@ -59,11 +59,13 @@ export interface Integrations {
 // ── Per-vendor config resolution (connection record + secret store) ─────────
 
 async function haloCfg(secrets: SecretStore, conn: Connection): Promise<HaloCfg> {
+  const ticketTypeIds = (conn.config['ticketTypeIds'] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   return {
     baseUrl: conn.config['baseUrl'] ?? '',
     clientId: conn.config['clientId'] ?? '',
     clientSecret: (await resolveSecret(secrets, conn, 'clientSecret')) ?? '',
     tenant: conn.config['tenant'] || undefined,
+    ticketTypeIds: ticketTypeIds.length ? ticketTypeIds : undefined,
   };
 }
 

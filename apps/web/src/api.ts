@@ -118,7 +118,8 @@ export const api = {
     send('PUT', `/api/clients/${clientId}/qbr/${period}/status`, { status }).then(json<unknown>),
   putSchedule: (clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/schedule`, body).then(json<unknown>),
-  haloMeta: () => send('GET', '/api/integrations/halo/meta').then(json<HaloMeta>),
+  haloMeta: (connectionId?: string) =>
+    send('GET', `/api/integrations/halo/meta${connectionId ? `?connectionId=${encodeURIComponent(connectionId)}` : ''}`).then(json<HaloMeta>),
   pushAction: (
     clientId: string,
     period: string,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link as RouterLink, useParams } from 'react-router-dom';
 import {
   Title,
   Group,
@@ -30,6 +30,7 @@ import {
   Modal,
   Anchor,
   SegmentedControl,
+  CopyButton,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { RadarChart, BarChart } from '@mantine/charts';
@@ -807,15 +808,32 @@ function DocumentsCard({
           )}
         </FileButton>
       </Group>
-      {reportsMailbox && (
+      {reportsMailbox ? (
         <Alert color="teal" variant="light" mb="sm" p="xs">
-          <Text size="xs">
-            This client's report inbox:{' '}
-            <Text span fw={700} style={{ userSelect: 'all' }}>
-              {reportsMailbox.replace('@', `+${clientId}@`)}
+          <Group gap="xs" wrap="nowrap" align="flex-start">
+            <Text size="xs" style={{ flex: 1 }}>
+              This client's report inbox:{' '}
+              <Text span fw={700} style={{ userSelect: 'all' }}>
+                {reportsMailbox.replace('@', `+${clientId}@`)}
+              </Text>
+              {' '}— schedule vendor reports (Check Point, NinjaOne's “Endpoint Management Report for QBRs”, Dropsuite…) to send here,
+              or forward them yourself. Attachments file onto this client automatically, checked every 5 minutes. Add a quarter tag
+              like “2026-Q3” to the subject to file into a specific quarter.
             </Text>
-            {' '}— forward or schedule vendor reports (Check Point, NinjaOne, Dropsuite…) to it and their attachments land here
-            automatically, checked every 5 minutes. Add a quarter tag like “2026-Q3” to the subject to file into a specific quarter.
+            <CopyButton value={reportsMailbox.replace('@', `+${clientId}@`)}>
+              {({ copied, copy }) => (
+                <Button size="compact-xs" variant={copied ? 'filled' : 'light'} color="teal" onClick={copy}>
+                  {copied ? 'Copied' : 'Copy address'}
+                </Button>
+              )}
+            </CopyButton>
+          </Group>
+        </Alert>
+      ) : (
+        <Alert color="gray" variant="light" mb="sm" p="xs">
+          <Text size="xs">
+            <b>Report inbox not set up yet.</b> Once configured, this client gets its own email address to receive scheduled vendor
+            reports (they file here automatically). The 3-step setup is on the <Anchor component={RouterLink} to="/settings" size="xs">Settings page</Anchor>.
           </Text>
         </Alert>
       )}

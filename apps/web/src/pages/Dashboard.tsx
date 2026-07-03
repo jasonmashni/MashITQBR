@@ -8,13 +8,14 @@ import {
   Center,
   Group,
   Loader,
+  SimpleGrid,
   Stack,
   Table,
   Text,
   Title,
   Tooltip,
 } from '@mantine/core';
-import { IconFileText, IconFileTypePdf, IconArrowUpRight, IconArrowDownRight } from '@tabler/icons-react';
+import { IconFileText, IconFileTypePdf, IconArrowUpRight, IconArrowDownRight, IconCalendarEvent, IconCalendarPlus } from '@tabler/icons-react';
 import { api, reportUrls } from '../api.js';
 import type { OverviewRow } from '../types.js';
 import { RatingBadge, StatusBadge } from '../ui.js';
@@ -67,6 +68,19 @@ export function Dashboard() {
   const totalMrr = rows.reduce((sum, r) => sum + (r.mrr ?? 0), 0);
   const flagged = rows.filter((r) => r.flags.length > 0).length;
 
+  // The QBR calendar at a glance: what's booked vs what still needs a date.
+  // A past meetingAt is still booked — it must not read as "needs scheduling".
+  const now = Date.now();
+  const done = new Set(['completed', 'dispositioned', 'actions_pushed', 'archived']);
+  const upcoming = rows
+    .filter((r) => r.meetingAt && Date.parse(r.meetingAt) >= now && r.status !== 'archived')
+    .sort((a, b) => Date.parse(a.meetingAt!) - Date.parse(b.meetingAt!));
+  const toSchedule = rows.filter((r) => r.period && !r.meetingAt && !done.has(r.status ?? ''));
+  const when = (iso: string) =>
+    new Date(iso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) +
+    ' · ' +
+    new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+
   return (
     <Stack gap="lg">
       <Group justify="space-between" align="flex-end">
@@ -79,6 +93,50 @@ export function Dashboard() {
           </Text>
         </div>
       </Group>
+
+      {!loading && rows.length > 0 && (
+        <SimpleGrid cols={{ base: 1, md: 2 }}>
+          <Card withBorder radius="md" padding="lg">
+            <Group gap="xs" mb="xs">
+              <IconCalendarEvent size={18} color="var(--mantine-color-teal-7)" />
+              <Text fw={600}>Upcoming QBRs</Text>
+            </Group>
+            {upcoming.length === 0 ? (
+              <Text size="sm" c="dimmed">Nothing on the calendar.</Text>
+            ) : (
+              <Stack gap={6}>
+                {upcoming.map((r) => (
+                  <Group key={r.clientId} justify="space-between" wrap="nowrap">
+                    <Anchor component={Link} to={`/clients/${r.clientId}`} size="sm" fw={600}>{r.name}</Anchor>
+                    <Text size="sm" c="dimmed">{when(r.meetingAt!)}</Text>
+                  </Group>
+                ))}
+              </Stack>
+            )}
+          </Card>
+          <Card withBorder radius="md" padding="lg">
+            <Group gap="xs" mb="xs">
+              <IconCalendarPlus size={18} color="var(--mantine-color-yellow-7)" />
+              <Text fw={600}>Needs scheduling</Text>
+            </Group>
+            {toSchedule.length === 0 ? (
+              <Text size="sm" c="dimmed">Every active QBR has a meeting booked.</Text>
+            ) : (
+              <Stack gap={6}>
+                {toSchedule.map((r) => (
+                  <Group key={r.clientId} justify="space-between" wrap="nowrap">
+                    <Anchor component={Link} to={`/clients/${r.clientId}`} size="sm" fw={600}>{r.name}</Anchor>
+                    <Group gap={6} wrap="nowrap">
+                      <Text size="sm" c="dimmed">{r.period}</Text>
+                      <StatusBadge status={r.status} />
+                    </Group>
+                  </Group>
+                ))}
+              </Stack>
+            )}
+          </Card>
+        </SimpleGrid>
+      )}
 
       <Card withBorder radius="md" padding="lg">
         {loading ? (

@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import {
+  Badge,
   Button,
   Card,
+  Code,
   ColorInput,
   FileButton,
   Group,
   Image,
+  List,
   Loader,
   Center,
   Stack,
@@ -16,6 +19,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconUpload, IconTrash } from '@tabler/icons-react';
 import { api } from '../api.js';
+import type { SystemInfo } from '../types.js';
 
 const MAX_LOGO_BYTES = 500 * 1024;
 
@@ -41,6 +45,11 @@ export function Settings() {
   const [logo, setLogo] = useState<string | undefined>();
   const [primary, setPrimary] = useState('');
   const [accent, setAccent] = useState('');
+  const [system, setSystem] = useState<SystemInfo | null>(null);
+
+  useEffect(() => {
+    api.system().then(setSystem).catch(() => {});
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -134,6 +143,41 @@ export function Settings() {
             <Button loading={saving} onClick={save}>Save branding</Button>
           </Group>
         </Stack>
+      </Card>
+
+      <Card withBorder radius="md" padding="lg">
+        <Group justify="space-between" mb={4}>
+          <Text fw={600}>Report inbox (email ingestion)</Text>
+          {system?.reportsMailbox ? (
+            <Badge color="teal" variant="light">active · {system.reportsMailbox}</Badge>
+          ) : (
+            <Badge color="gray" variant="light">not configured</Badge>
+          )}
+        </Group>
+        <Text size="sm" c="dimmed" mb="sm">
+          Every client gets its own address on one shared mailbox — <Code>qbr-reports+&#123;client-id&#125;@yourdomain</Code>.
+          Schedule vendor reports (Check Point, NinjaOne, Dropsuite…) to send there, or forward them yourself, and the
+          attachments file onto that client's QBR automatically (checked every 5 minutes). This builds the per-client
+          repository of quarterly reports; each client's exact address shows on its workspace <b>Data</b> tab.
+        </Text>
+        <Text size="sm" fw={600} mb={4}>One-time setup</Text>
+        <List type="ordered" size="sm" spacing={4}>
+          <List.Item>
+            Create a shared mailbox in Microsoft 365, e.g. <Code>qbr-reports@mashit.net</Code> (plus-addressing is on by default).
+          </List.Item>
+          <List.Item>
+            Entra → App registrations → new app → API permissions → <b>Microsoft Graph → Application → Mail.ReadWrite</b> → Grant
+            admin consent. Create a client secret. (Recommended: scope it to just this mailbox with an ApplicationAccessPolicy.)
+          </List.Item>
+          <List.Item>
+            Function App → Environment variables: <Code>REPORTS_MAILBOX</Code>, <Code>REPORTS_TENANT_ID</Code>,{' '}
+            <Code>REPORTS_CLIENT_ID</Code>, <Code>REPORTS_CLIENT_SECRET</Code> (put the secret in Key Vault and use a Key Vault
+            reference). Restart the app.
+          </List.Item>
+        </List>
+        <Text size="xs" c="dimmed" mt="sm">
+          Tip: add a quarter tag like “2026-Q3” to a forwarded email's subject to file it into a specific quarter.
+        </Text>
       </Card>
     </Stack>
   );

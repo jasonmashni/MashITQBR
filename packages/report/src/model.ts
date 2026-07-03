@@ -25,6 +25,8 @@ export interface ReportSectionRow {
 export interface ReportSection {
   category: MetricCategory;
   title: string;
+  /** One-sentence executive takeaway rendered under the section heading. */
+  summary?: string;
   rows: ReportSectionRow[];
 }
 
@@ -86,13 +88,16 @@ export function buildReportModel(args: {
   const scorecard = computeScorecard(current);
 
   const hidden = new Set(config?.hiddenSections ?? []);
+  // Categories are lowercase tokens by contract, but tolerate case drift from
+  // older cached narratives.
+  const summaries = new Map((narrative?.section_summaries ?? []).map((s) => [s.category.trim().toLowerCase(), s.summary]));
   const sections: ReportSection[] = [];
   for (const { category, title } of SECTION_ORDER) {
     if (hidden.has(category)) continue;
     const rows = current.metrics
       .filter((m) => m.category === category)
       .map((metric) => ({ metric, trend: trendIndex.get(metric.key) }));
-    if (rows.length) sections.push({ category, title, rows });
+    if (rows.length) sections.push({ category, title, summary: summaries.get(category), rows });
   }
 
   const recommendations =

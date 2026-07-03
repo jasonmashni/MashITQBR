@@ -119,6 +119,27 @@ export function normalizeCippUserCounts(json: unknown): MetricValue[] {
   return out;
 }
 
+/** Intune-managed device fleet + compliance (ListDevices rows). */
+export function normalizeCippDevices(rows: Json[]): MetricValue[] {
+  if (rows.length === 0) return [];
+  const out: MetricValue[] = [
+    metric('devices.m365_managed', 'Microsoft 365 managed devices', rows.length, { category: 'infrastructure', source: 'cipp', unit: 'count' }),
+  ];
+  const withState = rows.filter((r) => typeof (r['complianceState'] ?? r['ComplianceState']) === 'string');
+  if (withState.length > 0) {
+    const compliant = withState.filter((r) => String(r['complianceState'] ?? r['ComplianceState']).toLowerCase() === 'compliant').length;
+    out.push(
+      metric('devices.compliant_pct', 'Device compliance (Intune)', Math.round((1000 * compliant) / withState.length) / 10, {
+        category: 'security',
+        source: 'cipp',
+        unit: '%',
+        higherIsBetter: true,
+      }),
+    );
+  }
+  return out;
+}
+
 /** Conditional Access posture (enabled policy count). */
 export function normalizeCippCa(rows: Json[]): MetricValue[] {
   const enabled = rows.filter((r) => String(r['state'] ?? r['State'] ?? '').toLowerCase() === 'enabled').length;
@@ -167,6 +188,7 @@ export async function collectCipp(ctx: CollectorContext, http: HttpTransport, cf
 
   await pull('ListMFAUsers', (j) => normalizeCippMfa(toArray<Json>(j, ['Results'])));
   await pull('ListUserCounts', normalizeCippUserCounts);
+  await pull('ListDevices', (j) => normalizeCippDevices(toArray<Json>(j, ['Results'])));
   await pull('ListConditionalAccessPolicies', (j) => normalizeCippCa(toArray<Json>(j, ['Results'])));
   await pull('ListLicenses', (j) => normalizeCippLicenses(toArray<Json>(j, ['Results'])));
 

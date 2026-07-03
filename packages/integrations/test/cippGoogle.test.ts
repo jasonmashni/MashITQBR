@@ -5,6 +5,7 @@ import {
   collectCipp,
   collectGoogleWorkspace,
   listCippTenants,
+  normalizeCippDevices,
   normalizeCippLicenses,
   normalizeCippMfa,
   normalizeCippUserCounts,
@@ -63,6 +64,9 @@ describe('CIPP', () => {
         };
       }
       if (req.url.includes('ListUserCounts')) return { status: 200, json: { Users: '25', LicUsers: '20', Guests: '3', Gas: '2' } };
+      if (req.url.includes('ListDevices')) {
+        return { status: 200, json: [{ complianceState: 'compliant' }, { complianceState: 'compliant' }, { complianceState: 'noncompliant' }] };
+      }
       if (req.url.includes('ListConditionalAccessPolicies')) return { status: 200, json: [{ state: 'enabled' }, { state: 'disabled' }] };
       if (req.url.includes('ListLicenses')) return { status: 200, json: [{ License: 'BP', CountUsed: 20, CountAvailable: 5 }] };
       return { status: 404, json: {} };
@@ -73,6 +77,8 @@ describe('CIPP', () => {
     expect(by['identity.users_without_mfa']).toBe(1);
     expect(by['identity.users']).toBe(25);
     expect(by['identity.global_admins']).toBe(2);
+    expect(by['devices.m365_managed']).toBe(3);
+    expect(by['devices.compliant_pct']).toBe(66.7);
     expect(by['identity.ca_policies']).toBe(1);
     expect(by['licenses.assigned']).toBe(20);
     expect(by['licenses.unassigned']).toBe(5);
@@ -86,6 +92,9 @@ describe('CIPP', () => {
     expect(normalizeCippMfa([])).toHaveLength(0);
     expect(normalizeCippUserCounts(undefined)).toHaveLength(0);
     expect(normalizeCippLicenses([{ License: 'x' }])).toHaveLength(0);
+    expect(normalizeCippDevices([])).toHaveLength(0);
+    // Devices without a compliance state still count the fleet.
+    expect(normalizeCippDevices([{ id: 1 }]).map((m) => m.key)).toEqual(['devices.m365_managed']);
   });
 });
 

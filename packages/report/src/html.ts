@@ -47,6 +47,7 @@ th{color:#555;font-weight:600;font-size:11px;text-transform:uppercase;letter-spa
 .fn .score{font-size:22px;font-weight:700;color:var(--primary)}
 .headline{font-size:16px;font-weight:600;color:var(--primary);margin:0 0 8px}
 .note{background:#f6f8fa;border-left:3px solid var(--accent);padding:8px 12px;margin:8px 0;white-space:pre-wrap}
+.section-summary{background:#f6f8fa;border-left:3px solid var(--accent);padding:8px 12px;margin:4px 0 10px;color:#333}
 ul{margin:6px 0;padding-left:20px}
 @page{size:Letter;margin:14mm}
 @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
@@ -111,6 +112,7 @@ function renderSection(section: ReportSection): string {
     })
     .join('\n');
   return `<h2>${esc(section.title)}</h2>
+  ${section.summary ? `<p class="section-summary">${esc(section.summary)}</p>` : ''}
   <table><thead><tr><th>Metric</th><th class="num">This quarter</th><th class="num">vs last</th></tr></thead>
   <tbody>${rows}</tbody></table>`;
 }
