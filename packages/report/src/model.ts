@@ -3,6 +3,7 @@ import {
   computeTrends,
   indexTrends,
   parsePeriod,
+  type Brand,
   type Client,
   type CustomSection,
   type DiscussionItem,
@@ -47,6 +48,8 @@ export interface ReportModel {
   /** General meeting notes. */
   notes?: string;
   recommendations: string[];
+  /** Vendor reports / uploads attached to this QBR (rendered as an appendix). */
+  documents: Array<{ name: string; source: string }>;
 }
 
 const SECTION_ORDER: Array<{ category: MetricCategory; title: string }> = [
@@ -68,9 +71,13 @@ export function buildReportModel(args: {
   generatedLabel?: string;
   /** Per-client customization: hidden sections, custom sections, branding. */
   config?: ReportConfig;
+  /** Org-level branding from Settings (Mash IT logo + house colors). */
+  orgBrand?: Brand;
   /** Captured review discussion + responses. */
   discussion?: DiscussionItem[];
   notes?: string;
+  /** Attached vendor reports / uploads for the appendix. */
+  documents?: Array<{ name: string; source: string }>;
 }): ReportModel {
   const { client, current, previous, narrative, config } = args;
   const period = parsePeriod(current.period);
@@ -104,7 +111,7 @@ export function buildReportModel(args: {
     previousPeriod: previous ? { id: parsePeriod(previous.period).id, label: parsePeriod(previous.period).label } : undefined,
     generatedLabel: args.generatedLabel,
     heldBy: args.heldBy,
-    brand: resolveBrand(config?.brand),
+    brand: resolveBrand(config?.brand, args.orgBrand),
     executive: {
       headline: narrative?.headline,
       paragraphs: narrative?.summary_paragraphs ?? [],
@@ -114,8 +121,12 @@ export function buildReportModel(args: {
     trends,
     sections,
     customSections: config?.customSections ?? [],
-    discussion: args.discussion ?? [],
+    // Only items marked for the report, in agenda order.
+    discussion: (args.discussion ?? [])
+      .filter((d) => d.includeInReport !== false)
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)),
     notes: args.notes,
     recommendations,
+    documents: args.documents ?? [],
   };
 }

@@ -142,6 +142,12 @@ export const api = {
       send('POST', `/api/clients/${clientId}/qbr/${period}/meeting`, payload).then(json<{ scheduledAt: string; joinUrl?: string; eventId?: string }>),
     ),
 
+  // Org settings (default branding)
+  getOrgSettings: () =>
+    send('GET', '/api/settings/org').then(json<{ brand: { name?: string; logoDataUri?: string; primary?: string; accent?: string } }>),
+  putOrgSettings: (brand: { name?: string; logoDataUri?: string; primary?: string; accent?: string }) =>
+    send('PUT', '/api/settings/org', { brand }).then(json<{ brand: unknown }>),
+
   // Integrations
   listIntegrations: () => send('GET', '/api/integrations').then(json<{ integrations: ConnectionView[] }>),
   integrationOrgs: (id: string) =>

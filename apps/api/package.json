@@ -15,10 +15,11 @@
     "@mashit/narrative": "*",
     "@mashit/report": "*",
     "@modelcontextprotocol/sdk": "^1.24.0",
+    "pdfmake": "^0.2.20",
     "pptxgenjs": "^3.12.0"
   },
   "scripts": {
-    "build": "esbuild src/functions.ts src/cli.ts src/devserver.ts --bundle --platform=node --format=esm --target=node20 --outdir=dist --external:@azure/functions --external:@azure/data-tables --external:@azure/identity --external:@azure/keyvault-secrets --external:@azure/storage-blob --external:@modelcontextprotocol/sdk --external:playwright --external:pptxgenjs",
+    "build": "esbuild src/functions.ts src/cli.ts src/devserver.ts --bundle --platform=node --format=esm --target=node20 --outdir=dist --external:@azure/functions --external:@azure/data-tables --external:@azure/identity --external:@azure/keyvault-secrets --external:@azure/storage-blob --external:@modelcontextprotocol/sdk --external:pdfmake --external:pptxgenjs",
     "start": "func start",
     "typecheck": "tsc -p tsconfig.json"
   }

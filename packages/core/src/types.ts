@@ -219,6 +219,12 @@ export interface DiscussionItem {
   response?: string;
   disposition?: ActionDisposition;
   owner?: string;
+  /** Pre-wired before the meeting ('planned') vs answered during it ('discussed'). */
+  status?: 'planned' | 'discussed';
+  /** Whether this item lands on the final report (default true). */
+  includeInReport?: boolean;
+  /** Manual ordering for the meeting agenda (lower first). */
+  sortOrder?: number;
   /** Set once pushed to an external system (Halo ticket / Zomentum opportunity). */
   externalRef?: { system: 'halo' | 'zomentum'; id: string; status?: string };
 }

@@ -22,6 +22,7 @@ import {
   isConnectionType,
   loadReportInputs,
   narrativeCacheFor,
+  ORG_SETTINGS_ID,
   secretStoreKind,
   storeDataSource,
   toConnectionView,
@@ -33,6 +34,7 @@ import type { HeaderGet, Principal } from './auth.js';
 import { graphPost, graphTokenFrom, validEmails, type FetchLike } from './graph.js';
 import { directHaloConn, importHaloClients, listOrgs, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
 import { pushAction, type PushInput } from './actions.js';
+import { buildEmailDraft, qbrEmailBody } from './emailDraft.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 
 export interface ApiResult {
@@ -147,14 +149,15 @@ export async function getReportHtml(clientId: string, period: string, ai: string
   }
 }
 export async function getReportPdf(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
-  let html: string;
+  let report;
   try {
-    html = renderQbrHtml(await buildReportFor(clientId, period, ai));
+    report = await buildReportFor(clientId, period, ai);
   } catch (e) {
     return mapBuildError(e); // a missing client shouldn't read as "PDF unavailable"
   }
   try {
-    const pdf = await renderPdf(html, { executablePath: process.env['PLAYWRIGHT_CHROMIUM_PATH'] });
+    // Designed pdfmake document — pure JS, works on the Consumption plan.
+    const pdf = await renderPdf(report.model);
     return { status: 200, pdf };
   } catch (e) {
     return err(501, e instanceof Error ? e.message : 'PDF rendering unavailable');
@@ -172,6 +175,26 @@ export async function getReportDeck(clientId: string, period: string, ai: string
   } catch (e) {
     return err(501, e instanceof Error ? e.message : 'Deck rendering unavailable');
   }
+}
+
+// ── Org settings (Mash IT branding used as the default on every deliverable) ──
+export async function getOrgSettings(): Promise<ApiResult> {
+  const cfg = await getDataStore().getReportConfig(ORG_SETTINGS_ID);
+  return ok({ brand: cfg?.brand ?? {} });
+}
+
+export async function putOrgSettings(body: Record<string, unknown>): Promise<ApiResult> {
+  const raw = (body['brand'] ?? {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof raw[k] === 'string' && raw[k] ? (raw[k] as string) : undefined);
+  const logo = str('logoDataUri');
+  if (logo && !/^data:image\/(png|jpe?g|svg\+xml|webp);base64,/.test(logo)) {
+    return err(400, 'Logo must be an embedded PNG/JPEG/SVG/WebP image.');
+  }
+  if (logo && logo.length > 700_000) return err(400, 'Logo is too large — keep it under 500 KB.');
+  const brand = { name: str('name'), logoDataUri: logo, primary: str('primary'), accent: str('accent') };
+  await getDataStore().putReportConfig({ clientId: ORG_SETTINGS_ID, brand });
+  audit('settings.org', 'settings:org', Object.keys(brand).filter((k) => (brand as Record<string, unknown>)[k]).join(','));
+  return ok({ brand });
 }
 
 // ── Config + discussion ──────────────────────────────────────────────────────
@@ -606,6 +629,39 @@ export async function pushQbrAction(
   }
 }
 
+// ── Email draft (.eml opens in Outlook as an unsent message + PDF attached) ──
+export async function getEmailDraft(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  let report;
+  try {
+    report = await buildReportFor(clientId, period, ai);
+  } catch (e) {
+    return mapBuildError(e);
+  }
+  let pdf: Buffer | undefined;
+  try {
+    pdf = await renderPdf(report.model);
+  } catch {
+    pdf = undefined; // draft still works without the attachment
+  }
+  const client = await getDataStore().getClient(clientId);
+  const brand = report.model.brand;
+  const subject = `${brand.orgName} QBR — ${client?.name ?? clientId} ${report.model.period.label}`;
+  const me = currentActor();
+  const eml = buildEmailDraft({
+    to: client?.primaryContact?.email,
+    subject,
+    bodyText: qbrEmailBody({
+      contactName: client?.primaryContact?.name,
+      periodLabel: report.model.period.label,
+      orgName: brand.orgName,
+      senderName: me !== 'system' && !me.includes('@') ? me : undefined,
+    }),
+    attachment: pdf ? { name: `QBR-${client?.name?.replace(/[^a-zA-Z0-9 -]+/g, '') ?? clientId}-${period}.pdf`, contentType: 'application/pdf', bytes: pdf } : undefined,
+  });
+  audit('qbr.email_draft', `qbr:${clientId}/${period}`, client?.primaryContact?.email ?? 'no recipient');
+  return { status: 200, file: { bytes: eml, contentType: 'message/rfc822', filename: `QBR-${clientId}-${period}.eml` } };
+}
+
 // ── Microsoft Graph (delegated, via the Easy Auth token store) ───────────────
 const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 /** Graph rejects inline attachments over ~3 MB; leave headroom for base64 + envelope. */
@@ -791,11 +847,10 @@ function resolveCurrent(override?: string | null): string {
   return override && /^\d{4}-Q[1-4]$/.test(override) ? override : periodFor(new Date()).id;
 }
 
-// Playwright is an optional external; on Azure Consumption it isn't installed.
-// Variable specifier avoids a hard compile-time dependency (same as renderPdf).
+// PDF rendering rides pdfmake (pure JS) — available everywhere it's installed.
 let _pdfAvailable: Promise<boolean> | undefined;
 function pdfAvailable(): Promise<boolean> {
-  const spec = 'playwright';
+  const spec = 'pdfmake';
   _pdfAvailable ??= import(spec).then(
     () => true,
     () => false,

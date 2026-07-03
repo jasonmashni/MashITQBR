@@ -9,6 +9,7 @@ import {
   IconLogout,
   IconClipboardList,
   IconChevronDown,
+  IconSettings,
 } from '@tabler/icons-react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { api } from './api.js';
@@ -19,6 +20,7 @@ const NAV = [
   { to: '/clients', label: 'Clients', icon: IconUsers, match: (p: string) => p.startsWith('/clients') },
   { to: '/integrations', label: 'Integrations', icon: IconPlugConnected, match: (p: string) => p.startsWith('/integrations') },
   { to: '/audit', label: 'Audit log', icon: IconClipboardList, match: (p: string) => p.startsWith('/audit') },
+  { to: '/settings', label: 'Settings', icon: IconSettings, match: (p: string) => p.startsWith('/settings') },
 ];
 
 const initials = (name: string) =>

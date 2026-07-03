@@ -76,6 +76,7 @@ route('syncQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/sync', (req) => h.
 route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) => h.putStatus(req.params['clientId']!, req.params['period']!, (await body(req))['status']));
 route('putSchedule', 'PUT', 'api/clients/{clientId}/qbr/{period}/schedule', async (req) => h.putSchedule(req.params['clientId']!, req.params['period']!, (await body(req)) as { scheduledAt?: string; joinUrl?: string }));
 route('pushAction', 'POST', 'api/clients/{clientId}/qbr/{period}/actions/push', async (req) => h.pushQbrAction(req.params['clientId']!, req.params['period']!, (await body(req)) as { actionId?: string; target: PushInput['target'] }));
+route('emailDraft', 'GET', 'api/clients/{clientId}/qbr/{period}/email.eml', (req) => h.getEmailDraft(req.params['clientId']!, req.params['period']!, ai(req)));
 route('emailQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/email', async (req) => h.emailQbr(req.params['clientId']!, req.params['period']!, (await body(req)) as never, headerGet(req)));
 route('createMeeting', 'POST', 'api/clients/{clientId}/qbr/{period}/meeting', async (req) => h.createMeeting(req.params['clientId']!, req.params['period']!, (await body(req)) as never, headerGet(req)));
 
@@ -88,6 +89,9 @@ route('testIntegration', 'POST', 'api/integrations/{id}/test', (req) => h.testIn
 route('integrationOrgs', 'GET', 'api/integrations/{id}/orgs', (req) => h.getIntegrationOrgs(req.params['id']!));
 route('haloMeta', 'GET', 'api/integrations/halo/meta', () => h.getHaloMeta());
 route('integrationMappings', 'PUT', 'api/integrations/{id}/mappings', async (req) => h.putIntegrationMappings(req.params['id']!, (await body(req)) as never));
+
+route('getOrgSettings', 'GET', 'api/settings/org', () => h.getOrgSettings());
+route('putOrgSettings', 'PUT', 'api/settings/org', async (req) => h.putOrgSettings(await body(req)));
 
 route('currentPeriod', 'GET', 'api/period/current', () => h.currentPeriod());
 route('system', 'GET', 'api/system', () => h.getSystem());

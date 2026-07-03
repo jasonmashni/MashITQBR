@@ -18,6 +18,7 @@ const Clients = lazy(() => import('./pages/Clients.js').then((m) => ({ default: 
 const Integrations = lazy(() => import('./pages/Integrations.js').then((m) => ({ default: m.Integrations })));
 const Workspace = lazy(() => import('./pages/Workspace.js').then((m) => ({ default: m.Workspace })));
 const Audit = lazy(() => import('./pages/Audit.js').then((m) => ({ default: m.Audit })));
+const Settings = lazy(() => import('./pages/Settings.js').then((m) => ({ default: m.Settings })));
 
 const fallback = (
   <Center h="60vh">
@@ -40,6 +41,7 @@ if (el) {
                 <Route path="clients/:clientId" element={<Workspace />} />
                 <Route path="integrations" element={<Integrations />} />
                 <Route path="audit" element={<Audit />} />
+                <Route path="settings" element={<Settings />} />
               </Route>
             </Routes>
           </Suspense>

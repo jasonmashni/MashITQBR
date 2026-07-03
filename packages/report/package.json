@@ -10,15 +10,20 @@
   },
   "dependencies": {
     "@mashit/core": "*",
-    "@mashit/narrative": "*"
+    "@mashit/narrative": "*",
+    "pdfmake": "^0.2.23"
   },
   "peerDependencies": {
     "playwright": "*",
     "pptxgenjs": "*"
   },
   "peerDependenciesMeta": {
-    "playwright": { "optional": true },
-    "pptxgenjs": { "optional": true }
+    "playwright": {
+      "optional": true
+    },
+    "pptxgenjs": {
+      "optional": true
+    }
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"

@@ -51,6 +51,7 @@ const deployPkg = {
     '@azure/keyvault-secrets': apiPkg.dependencies['@azure/keyvault-secrets'],
     '@azure/storage-blob': apiPkg.dependencies['@azure/storage-blob'],
     '@modelcontextprotocol/sdk': apiPkg.dependencies['@modelcontextprotocol/sdk'],
+    pdfmake: apiPkg.dependencies.pdfmake,
     pptxgenjs: apiPkg.dependencies.pptxgenjs,
   },
 };

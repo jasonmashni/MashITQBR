@@ -31,7 +31,8 @@ body{font-family:${brand.font};color:var(--ink);margin:0;background:var(--bg);fo
 h1{color:var(--primary);font-size:30px;margin:0 0 4px}
 h2{color:var(--primary);font-size:18px;border-bottom:2px solid var(--accent);padding-bottom:4px;margin:24px 0 12px}
 .brandbar{color:var(--accent);font-weight:600;letter-spacing:.04em}
-.logo{max-height:64px;max-width:280px;margin:0 0 16px;display:block}
+.logos{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin:0 0 20px}
+.logo{max-height:64px;max-width:280px;display:block}
 .meta{color:#555;margin:2px 0}
 table{width:100%;border-collapse:collapse;margin:8px 0}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e3e3e3;vertical-align:top}
@@ -52,13 +53,15 @@ ul{margin:6px 0;padding-left:20px}
 `;
 }
 
-function renderLogo(brand: BrandTokens): string {
-  return brand.logoDataUri ? `<img class="logo" src="${esc(brand.logoDataUri)}" alt="${esc(brand.name)} logo">` : '';
+function renderLogos(brand: BrandTokens): string {
+  const org = `<img class="logo" src="${esc(brand.orgLogoDataUri)}" alt="${esc(brand.orgName)} logo">`;
+  const client = brand.logoDataUri ? `<img class="logo" src="${esc(brand.logoDataUri)}" alt="${esc(brand.name)} logo">` : '';
+  return `<div class="logos">${org}${client}</div>`;
 }
 
 function renderCover(m: ReportModel): string {
   return `<section class="page">
-  ${renderLogo(m.brand)}
+  ${renderLogos(m.brand)}
   <div class="brandbar">${esc(m.brand.name)} &middot; Quarterly Business Review</div>
   <h1>${esc(m.client.name)}</h1>
   <p class="meta"><strong>Period:</strong> ${esc(m.period.label)}</p>
@@ -146,6 +149,14 @@ function renderBody(m: ReportModel): string {
 </section>`;
 }
 
+function renderAppendix(m: ReportModel): string {
+  if (!m.documents.length) return '';
+  const item = (d: { name: string; source: string }) => `<li><strong>${esc(d.name)}</strong> <span class="meta">(${esc(d.source)})</span></li>`;
+  return `<section class="page"><h2>Appendix &mdash; Attached Reports</h2>
+  <p class="meta">The following source reports accompany this review:</p>
+  <ul>${m.documents.map(item).join('')}</ul></section>`;
+}
+
 /** Render the full branded QBR report as a single self-contained HTML document. */
 export function renderReportHtml(model: ReportModel): string {
   const brand = model.brand ?? MASH_IT_BRAND;
@@ -160,5 +171,6 @@ ${afterSummary.length ? `<section class="page">${afterSummary.map(renderCustomSe
 ${renderScorecard(model)}
 ${renderBody(model)}
 ${renderDiscussion(model)}
+${renderAppendix(model)}
 </body></html>`;
 }

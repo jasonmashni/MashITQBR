@@ -82,19 +82,26 @@ export function storeDataSource(store: DataStore = getDataStore()): QbrDataSourc
   };
 }
 
+/** Pseudo-clientId under which the org-level settings (Mash IT brand) live. */
+export const ORG_SETTINGS_ID = '__org';
+
 export interface ReportInputs {
   config?: ReportConfig;
+  orgBrand?: import('@mashit/core').Brand;
   discussion?: DiscussionItem[];
   notes?: string;
   narrativeEdits?: import('./types.js').NarrativeEdits;
+  documents?: Array<{ name: string; source: string }>;
 }
 
 /** Load persisted branding/config + discussion + narrative edits for a report build. */
 export async function loadReportInputs(store: DataStore, clientId: string, period: string): Promise<ReportInputs> {
   const config = await store.getReportConfig(clientId);
+  const org = await store.getReportConfig(ORG_SETTINGS_ID);
   const d = await store.getDiscussion(clientId, period);
   const narrative = await store.getNarrative(clientId, period);
-  return { config, discussion: d?.items, notes: d?.notes, narrativeEdits: narrative?.edits };
+  const documents = (await store.listDocuments(clientId, period)).map((doc) => ({ name: doc.name, source: doc.source }));
+  return { config, orgBrand: org?.brand, discussion: d?.items, notes: d?.notes, narrativeEdits: narrative?.edits, documents };
 }
 
 /**

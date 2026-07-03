@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { previousPeriod, type DiscussionItem, type ReportConfig } from '@mashit/core';
+import { previousPeriod, type Brand, type DiscussionItem, type ReportConfig } from '@mashit/core';
 import {
   buildAllowedNumbers,
   buildNarrativeInput,
@@ -42,9 +42,13 @@ export interface BuildQbrOptions {
   generatedLabel?: string;
   /** Per-client report customization (branding + sections). */
   config?: ReportConfig;
+  /** Org-level branding from Settings (Mash IT logo + house colors). */
+  orgBrand?: Brand;
   /** Captured review discussion + notes. */
   discussion?: DiscussionItem[];
   notes?: string;
+  /** Attached vendor reports / uploads (rendered as the appendix). */
+  documents?: Array<{ name: string; source: string }>;
 }
 
 export interface QbrReport {
@@ -131,8 +135,10 @@ export async function buildQbrReport(
     heldBy: opts.heldBy,
     generatedLabel: opts.generatedLabel,
     config: opts.config,
+    orgBrand: opts.orgBrand,
     discussion: opts.discussion,
     notes: opts.notes,
+    documents: opts.documents,
   });
 
   const warnings: string[] = [];

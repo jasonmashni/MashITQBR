@@ -1,7 +1,7 @@
 /**
- * CLI: generate a QBR for a client/period and write HTML (and PDF if Playwright
- * is installed) to an output folder. The fastest way to run the tool — Node
- * only, no Azure tooling.
+ * CLI: generate a QBR for a client/period and write HTML + the designed PDF
+ * to an output folder. The fastest way to run the tool — Node only, no Azure
+ * tooling.
  *
  *   node apps/api/dist/cli.js <clientId> <period> [outDir] [--ai]
  *   e.g. node apps/api/dist/cli.js anp 2026-Q1 out
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
   console.log(`HTML  -> ${htmlPath}`);
 
   try {
-    const pdf = await renderPdf(html, { executablePath: process.env['PLAYWRIGHT_CHROMIUM_PATH'] });
+    const pdf = await renderPdf(report.model);
     const pdfPath = resolve(outDir, `QBR-${clientId}-${period}.pdf`);
     writeFileSync(pdfPath, pdf);
     console.log(`PDF   -> ${pdfPath}`);
