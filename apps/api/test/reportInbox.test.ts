@@ -83,4 +83,15 @@ describe('pollReportInbox', () => {
     expect(patched.some((c) => c.includes('filed'))).toBe(true);
     expect(patched.some((c) => c.includes('unrouted'))).toBe(true);
   });
+
+  it('surfaces the Graph error body when the mailbox read fails (diagnosable from the UI)', async () => {
+    const store = new JsonDataStore(dir);
+    const docs = new LocalDocStore(join(dir, 'docs'));
+    const fetchFn = (async (url: string) => {
+      if (url.includes('/oauth2/v2.0/token')) return { ok: true, status: 200, json: async () => ({ access_token: 't', expires_in: 3600 }) };
+      return { ok: false, status: 403, json: async () => ({ error: { code: 'ErrorAccessDenied', message: 'Access is denied. Check credentials and try again.' } }) };
+    }) as never;
+    const cfg = { mailbox: 'qbr-reports@mashit.net', tenantId: 't', clientId: 'c', clientSecret: 's' };
+    await expect(pollReportInbox(cfg, store, docs, fetchFn)).rejects.toThrow(/Access is denied.*Mail\.ReadWrite/);
+  });
 });

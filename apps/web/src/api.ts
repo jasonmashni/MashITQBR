@@ -60,6 +60,10 @@ let _system: Promise<SystemInfo> | undefined;
 export const api = {
   // System capabilities (memoized)
   system: () => (_system ??= send('GET', '/api/system').then(json<SystemInfo>)),
+  /** Re-read /api/system (e.g. after an inbox poll) and refresh the memo. */
+  systemFresh: () => (_system = send('GET', '/api/system').then(json<SystemInfo>)),
+  /** Drain the shared report mailbox now (the timer does this every 5 min). */
+  pollInbox: () => send('POST', '/api/inbox/poll').then(json<{ processed: number; filed: number; unrouted: number }>),
   me: () => send('GET', '/api/me').then(json<Me>),
   audit: (limit = 100) => send('GET', `/api/audit?limit=${limit}`).then(json<{ events: AuditEvent[] }>),
 

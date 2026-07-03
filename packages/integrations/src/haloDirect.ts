@@ -309,6 +309,13 @@ function inPeriod(row: Json, fields: string[], startMs: number, endMs: number): 
   return Number.isFinite(at) && at >= startMs && at < endMs;
 }
 
+/** True only when the row carries a parseable date that is clearly outside the window. */
+function outsidePeriod(row: Json, fields: string[], startMs: number, endMs: number): boolean {
+  const s = firstStr(row, fields);
+  const at = s ? Date.parse(s) : NaN;
+  return Number.isFinite(at) && (at < startMs || at >= endMs);
+}
+
 /** Per-Halo-client-id ticket + finance tallies for one period. */
 async function collectHaloForId(
   ctx: CollectorContext,
@@ -332,12 +339,53 @@ async function collectHaloForId(
   let closed = 0;
 
   // With a ticket-type allowlist, server-side record counts can't be used —
-  // pull recent tickets and tally locally (types, period, SLA all from rows).
+  // pull the period's rows via the server date window and tally locally
+  // (types, SLA all from rows). A "recent tickets" pull is only the fallback
+  // for instances that ignore datesearch: busy clients have more history
+  // than any sane page cap, so recency alone can miss the quarter entirely.
   if (allowedTypes) {
     let filterUsable = true;
     try {
-      const all = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: false, order: 'dateoccurred', orderdesc: true }, 'tickets', 10);
-      if (all.rows.length > 0 && !all.rows.some((r) => ticketTypeIdOf(r) !== undefined)) {
+      const openedPull = await haloPageAll(http, cfg, 'Tickets', {
+        client_id: haloId,
+        datesearch: 'dateoccurred',
+        startdate: ctx.period.start,
+        enddate: ctx.period.end,
+      }, 'tickets', 10);
+      // Trust the server window, but drop rows whose parseable date clearly
+      // falls outside it (rows without a recognizable date field stay).
+      let openedAll = openedPull.rows.filter((r) => !outsidePeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
+      let closedAll: Json[] = [];
+      let sampledNote: string | undefined;
+
+      if (openedPull.rows.length === 0) {
+        // Some Halo versions ignore datesearch (returning nothing) — verify
+        // against the unfiltered count and fall back to recent tickets.
+        const probe = await haloGet(http, cfg, 'Tickets', { client_id: haloId, open_only: false, pageinate: true, page_size: 1, page_no: 1 });
+        const totalTickets = recordCount(probe, toArray(probe, ['tickets']));
+        if (totalTickets > 0) {
+          const all = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: false, order: 'dateoccurred', orderdesc: true }, 'tickets', 10);
+          openedAll = all.rows.filter((r) => inPeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
+          closedAll = all.rows.filter((r) => inPeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs));
+          if (all.rows.length < all.total) {
+            sampledNote = `Halo${tag}: the server date filter returned nothing — type-filtered tallies counted from the most recent ${all.rows.length} of ${all.total} tickets.`;
+          }
+        }
+      } else {
+        if (openedPull.rows.length < openedPull.total) {
+          sampledNote = `Halo${tag}: type-filtered tallies counted from the first ${openedPull.rows.length} of ${openedPull.total} in-period tickets.`;
+        }
+        const closedPull = await haloPageAll(http, cfg, 'Tickets', {
+          client_id: haloId,
+          datesearch: 'dateclosed',
+          startdate: ctx.period.start,
+          enddate: ctx.period.end,
+        }, 'tickets', 10);
+        closedAll = closedPull.rows.filter((r) => !outsidePeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs));
+      }
+
+      const sample = [...openedAll, ...closedAll];
+      if (sample.length > 0 && !sample.some((r) => ticketTypeIdOf(r) !== undefined)) {
         // This instance's list rows don't expose a type id — filtered tallies
         // would read as a quarter of zeros. Report unavailable instead.
         filterUsable = false;
@@ -346,13 +394,10 @@ async function collectHaloForId(
         );
       } else {
         ok = true;
-        const typed = all.rows.filter(typeMatch);
-        openedRows = typed.filter((r) => inPeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
+        openedRows = openedAll.filter(typeMatch);
         openedTotal = openedRows.length;
-        closed = typed.filter((r) => inPeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs)).length;
-        if (all.rows.length < all.total) {
-          warnings.push(`Halo${tag}: type-filtered tallies counted from the most recent ${all.rows.length} of ${all.total} tickets.`);
-        }
+        closed = closedAll.filter(typeMatch).length;
+        if (sampledNote) warnings.push(sampledNote);
       }
     } catch (e) {
       filterUsable = false;

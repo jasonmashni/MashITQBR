@@ -80,7 +80,17 @@ async function appToken(cfg: InboxConfig, fetchFn: FetchLike): Promise<string> {
   });
   const json = (await res.json().catch(() => ({}))) as Json;
   const token = typeof json['access_token'] === 'string' ? json['access_token'] : '';
-  if (!res.ok || !token) throw new Error(`Report-inbox token exchange failed (${res.status})`);
+  if (!res.ok || !token) {
+    // Entra's error_description says exactly what's wrong (bad secret, wrong
+    // tenant, unknown app) — first line only, it can run to paragraphs.
+    const desc =
+      typeof json['error_description'] === 'string'
+        ? json['error_description'].split(/\r?\n/)[0]
+        : typeof json['error'] === 'string'
+          ? json['error']
+          : '';
+    throw new Error(`Report-inbox token exchange failed (${res.status})${desc ? `: ${desc}` : ''} — check REPORTS_TENANT_ID / REPORTS_CLIENT_ID / REPORTS_CLIENT_SECRET.`);
+  }
   const expiresIn = typeof json['expires_in'] === 'number' ? json['expires_in'] : 3600;
   _token = { value: token, expiresAt: Date.now() + expiresIn * 1000 };
   return token;
@@ -122,7 +132,13 @@ export async function pollReportInbox(
     `${mbx}/mailFolders/inbox/messages?$filter=isRead eq false&$top=25&$select=id,subject,hasAttachments,toRecipients,ccRecipients`,
     { headers },
   );
-  if (!listRes.ok) throw new Error(`Report inbox read failed (${listRes.status}) — check Mail.ReadWrite application permission.`);
+  if (!listRes.ok) {
+    const body = (await listRes.json().catch(() => ({}))) as Json;
+    const graphMsg = ((body['error'] as Json | undefined)?.['message'] ?? '') as string;
+    throw new Error(
+      `Report inbox read failed (${listRes.status})${graphMsg ? `: ${graphMsg}` : ''} — check the Mail.ReadWrite APPLICATION permission (admin-consented) and that REPORTS_MAILBOX is the shared mailbox's exact address.`,
+    );
+  }
   const messages = (((await listRes.json()) as Json)['value'] ?? []) as InboxMessage[];
 
   const clients = await store.listClients();

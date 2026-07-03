@@ -222,16 +222,16 @@ describe('collectHaloDirect', () => {
 });
 
 describe('ticket-type allowlist + SLA', () => {
-  it('counts only the allowed ticket types and tallies SLA outcomes from rows', async () => {
+  it('counts only the allowed ticket types via the server date window and tallies SLA from rows', async () => {
     const period = makePeriod(2026, 2);
-    const tickets = [
+    const inQ2 = [
       { id: 1, tickettype_id: 1, tickettype_name: 'Incident', dateoccurred: '2026-05-01T10:00:00Z', sla_response_state: 'Met' },
       { id: 2, tickettype_id: 1, tickettype_name: 'Incident', dateoccurred: '2026-05-02T10:00:00Z', sla_response_state: 'Breached' },
       { id: 3, tickettype_id: 9, tickettype_name: 'Alert', dateoccurred: '2026-05-03T10:00:00Z' }, // excluded type
       { id: 4, tickettype_id: 2, tickettype_name: 'Service Request', dateoccurred: '2026-04-10T10:00:00Z', dateclosed: '2026-04-12T10:00:00Z', sla_response_state: 'Met' },
-      { id: 5, tickettype_id: 1, tickettype_name: 'Incident', dateoccurred: '2026-01-05T10:00:00Z' }, // outside quarter
     ];
-    const { http } = fakeHttp([
+    const closedInQ2 = [inQ2[3]!];
+    const { http, requests } = fakeHttp([
       tokenRoute(),
       {
         match: (r) => r.url.includes('/api/Tickets'),
@@ -240,7 +240,10 @@ describe('ticket-type allowlist + SLA', () => {
           if (u.searchParams.get('open_only') === 'true') {
             return { status: 200, json: { record_count: 3, tickets: [{ id: 6, tickettype_id: 1 }, { id: 7, tickettype_id: 9 }, { id: 8, tickettype_id: 2 }] } };
           }
-          return { status: 200, json: { record_count: tickets.length, tickets } };
+          // The instance honors datesearch — each window returns its own rows.
+          if (u.searchParams.get('datesearch') === 'dateoccurred') return { status: 200, json: { record_count: inQ2.length, tickets: inQ2 } };
+          if (u.searchParams.get('datesearch') === 'dateclosed') return { status: 200, json: { record_count: closedInQ2.length, tickets: closedInQ2 } };
+          return { status: 200, json: { record_count: 0, tickets: [] } };
         },
       },
       { match: (r) => r.url.includes('/api/ClientContract'), respond: () => ({ status: 200, json: { contracts: [] } }) },
@@ -252,11 +255,45 @@ describe('ticket-type allowlist + SLA', () => {
       { baseUrl: 'https://x.halopsa.com', clientId: 'types-1', clientSecret: 's', ticketTypeIds: ['1', '2'] },
     );
     const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
-    expect(by['tickets.total']).toBe(3); // tickets 1, 2, 4 (type 9 and out-of-quarter excluded)
+    expect(by['tickets.total']).toBe(3); // tickets 1, 2, 4 (type 9 excluded)
     expect(by['tickets.closed']).toBe(1); // ticket 4 closed in Q2
     expect(by['tickets.open']).toBe(2); // open snapshot filtered to types 1 + 2
     expect(by['sla.met_pct']).toBe(66.7); // 2 met of 3 opened-in-period with SLA state
     expect(by['sla.breaches']).toBe(1);
+    // The period tallies came from the server date windows, not a recency pull.
+    expect(requests.some((r) => r.url.includes('datesearch=dateoccurred'))).toBe(true);
+    expect(requests.some((r) => r.url.includes('datesearch=dateclosed'))).toBe(true);
+  });
+
+  it('falls back to recent tickets when the server ignores datesearch, still type-filtered', async () => {
+    const period = makePeriod(2026, 2);
+    const allTickets = [
+      { id: 1, tickettype_id: 1, dateoccurred: '2026-05-01T10:00:00Z', dateclosed: '2026-05-02T10:00:00Z' },
+      { id: 2, tickettype_id: 9, dateoccurred: '2026-05-03T10:00:00Z' }, // excluded type
+      { id: 3, tickettype_id: 1, dateoccurred: '2026-01-05T10:00:00Z' }, // outside quarter
+    ];
+    const { http } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => r.url.includes('/api/Tickets'),
+        respond: (r) => {
+          const u = new URL(r.url);
+          if (u.searchParams.get('datesearch')) return { status: 200, json: { record_count: 0, tickets: [] } };
+          if (u.searchParams.get('open_only') === 'true') return { status: 200, json: { record_count: 0, tickets: [] } };
+          return { status: 200, json: { record_count: allTickets.length, tickets: allTickets } };
+        },
+      },
+      { match: (r) => r.url.includes('/api/ClientContract'), respond: () => ({ status: 200, json: { contracts: [] } }) },
+      { match: (r) => r.url.includes('/api/Invoice'), respond: () => ({ status: 200, json: { invoices: [] } }) },
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'anp', period, externalRef: '35' },
+      http,
+      { baseUrl: 'https://x.halopsa.com', clientId: 'types-3', clientSecret: 's', ticketTypeIds: ['1'] },
+    );
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['tickets.total']).toBe(1); // ticket 1 only (type 9 + out-of-quarter excluded)
+    expect(by['tickets.closed']).toBe(1);
   });
 
   it('tallyHaloSla scans sla-prefixed fields tolerantly', () => {

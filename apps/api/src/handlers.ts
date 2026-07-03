@@ -418,6 +418,10 @@ export async function deleteQbrDocument(clientId: string, period: string, id: st
  * Emails forwarded to {mailbox-local}+{clientId}@… file their attachments as
  * QBR documents for that client.
  */
+// Last inbox-poll outcome (in-memory, per worker) — surfaced on /api/system
+// so Settings shows whether ingestion is actually WORKING, not just configured.
+let _lastInboxPoll: { at: string; ok: boolean; detail: string } | undefined;
+
 export async function pollInbox(): Promise<ApiResult> {
   const cfg = inboxConfigFromEnv();
   if (!cfg) {
@@ -425,12 +429,19 @@ export async function pollInbox(): Promise<ApiResult> {
   }
   try {
     const result = await pollReportInbox(cfg, getDataStore(), getDocStore());
+    _lastInboxPoll = {
+      at: new Date().toISOString(),
+      ok: true,
+      detail: `${result.filed} attachment(s) filed, ${result.unrouted} unrouted of ${result.processed} unread message(s)`,
+    };
     if (result.filed > 0 || result.unrouted > 0) {
       audit('inbox.poll', `mailbox:${cfg.mailbox}`, `${result.filed} filed, ${result.unrouted} unrouted of ${result.processed}`);
     }
     return ok(result);
   } catch (e) {
-    return err(502, e instanceof Error ? e.message : 'Inbox poll failed');
+    const detail = e instanceof Error ? e.message : 'Inbox poll failed';
+    _lastInboxPoll = { at: new Date().toISOString(), ok: false, detail };
+    return err(502, detail);
   }
 }
 
@@ -958,8 +969,9 @@ export async function getSystem(): Promise<ApiResult> {
     ai: !!process.env['ANTHROPIC_API_KEY'],
     pdfAvailable: await pdfAvailable(),
     // The shared report mailbox, when configured — the UI derives each
-    // client's forwarding address from it.
+    // client's forwarding address from it — plus how the last poll went.
     reportsMailbox: inboxConfigFromEnv()?.mailbox ?? null,
+    inboxLastPoll: _lastInboxPoll ?? null,
   });
 }
 

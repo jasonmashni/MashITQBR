@@ -46,6 +46,26 @@ export function Settings() {
   const [primary, setPrimary] = useState('');
   const [accent, setAccent] = useState('');
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [polling, setPolling] = useState(false);
+
+  // Manual inbox check: surfaces the ACTUAL Graph/token error when ingestion
+  // is misconfigured, instead of waiting on the silent 5-minute timer.
+  async function checkInbox() {
+    setPolling(true);
+    try {
+      const r = await api.pollInbox();
+      notifications.show({
+        color: 'teal',
+        title: 'Inbox checked',
+        message: `${r.filed} attachment(s) filed, ${r.unrouted} unrouted, ${r.processed} unread message(s) seen.`,
+      });
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Inbox check failed', message: e instanceof Error ? e.message : 'Unknown error', autoClose: 12000 });
+    } finally {
+      setPolling(false);
+      api.systemFresh().then(setSystem).catch(() => {});
+    }
+  }
 
   useEffect(() => {
     api.system().then(setSystem).catch(() => {});
@@ -148,12 +168,24 @@ export function Settings() {
       <Card withBorder radius="md" padding="lg">
         <Group justify="space-between" mb={4}>
           <Text fw={600}>Report inbox (email ingestion)</Text>
-          {system?.reportsMailbox ? (
-            <Badge color="teal" variant="light">active · {system.reportsMailbox}</Badge>
-          ) : (
-            <Badge color="gray" variant="light">not configured</Badge>
-          )}
+          <Group gap="xs">
+            {system?.reportsMailbox ? (
+              <>
+                <Badge color="teal" variant="light">active · {system.reportsMailbox}</Badge>
+                <Button size="compact-xs" variant="light" loading={polling} onClick={checkInbox}>
+                  Check now
+                </Button>
+              </>
+            ) : (
+              <Badge color="gray" variant="light">not configured</Badge>
+            )}
+          </Group>
         </Group>
+        {system?.inboxLastPoll && (
+          <Text size="xs" c={system.inboxLastPoll.ok ? 'dimmed' : 'red.7'} mb={6}>
+            Last check {new Date(system.inboxLastPoll.at).toLocaleString()} — {system.inboxLastPoll.detail}
+          </Text>
+        )}
         <Text size="sm" c="dimmed" mb="sm">
           Every client gets its own address on one shared mailbox — <Code>qbr-reports+&#123;client-id&#125;@yourdomain</Code>.
           Schedule vendor reports (Check Point, NinjaOne, Dropsuite…) to send there, or forward them yourself, and the

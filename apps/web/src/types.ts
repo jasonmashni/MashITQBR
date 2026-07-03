@@ -192,6 +192,8 @@ export interface SystemInfo {
   pdfAvailable: boolean;
   /** Shared report mailbox (null = inbox ingestion not configured). */
   reportsMailbox: string | null;
+  /** How the last inbox poll went (null = no poll yet since this worker started). */
+  inboxLastPoll?: { at: string; ok: boolean; detail: string } | null;
 }
 
 export interface ConnectionView {
