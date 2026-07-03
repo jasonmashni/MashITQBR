@@ -186,6 +186,16 @@ export function Settings() {
             Last check {new Date(system.inboxLastPoll.at).toLocaleString()} — {system.inboxLastPoll.detail}
           </Text>
         )}
+        {!system?.reportsMailbox && system?.inboxEnvSeen && (
+          <Text size="xs" c="red.7" mb={6}>
+            App settings the API can't see:{' '}
+            {Object.entries(system.inboxEnvSeen)
+              .filter(([, seen]) => !seen)
+              .map(([k]) => k)
+              .join(', ') || 'none — all four are visible; restart the app and refresh this page'}
+            . (Set them under Function App → Environment variables and press <b>Apply</b>.)
+          </Text>
+        )}
         <Text size="sm" c="dimmed" mb="sm">
           Every client gets its own address on one shared mailbox — <Code>qbr-reports+&#123;client-id&#125;@yourdomain</Code>.
           Schedule vendor reports (Check Point, NinjaOne, Dropsuite…) to send there, or forward them yourself, and the

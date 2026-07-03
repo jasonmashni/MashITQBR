@@ -972,6 +972,14 @@ export async function getSystem(): Promise<ApiResult> {
     // client's forwarding address from it — plus how the last poll went.
     reportsMailbox: inboxConfigFromEnv()?.mailbox ?? null,
     inboxLastPoll: _lastInboxPoll ?? null,
+    // Presence only (never values) — lets Settings name exactly which app
+    // setting the API can't see when the inbox reads "not configured".
+    inboxEnvSeen: {
+      REPORTS_MAILBOX: !!process.env['REPORTS_MAILBOX'],
+      REPORTS_TENANT_ID: !!process.env['REPORTS_TENANT_ID'],
+      REPORTS_CLIENT_ID: !!process.env['REPORTS_CLIENT_ID'],
+      REPORTS_CLIENT_SECRET: !!process.env['REPORTS_CLIENT_SECRET'],
+    },
   });
 }
 

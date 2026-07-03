@@ -194,6 +194,8 @@ export interface SystemInfo {
   reportsMailbox: string | null;
   /** How the last inbox poll went (null = no poll yet since this worker started). */
   inboxLastPoll?: { at: string; ok: boolean; detail: string } | null;
+  /** Which REPORTS_* app settings the API process can see (presence only). */
+  inboxEnvSeen?: Record<string, boolean>;
 }
 
 export interface ConnectionView {
