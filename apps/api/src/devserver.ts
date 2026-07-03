@@ -89,6 +89,7 @@ const routes: Route[] = [
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/periods$/, run: (m, _b, url) => h.getPeriods(m[1]!, url.searchParams.get('current')) },
   { method: 'GET', re: /^\/api\/audit$/, run: (_m, _b, url) => h.getAudit(url.searchParams.get('limit')) },
   { method: 'GET', re: /^\/api\/me$/, run: (_m, _b, _url, header) => h.getMe(principalFrom(header)) },
+  { method: 'POST', re: /^\/api\/inbox\/poll$/, run: () => h.pollInbox() },
 ];
 
 const server = createServer(async (req, res) => {

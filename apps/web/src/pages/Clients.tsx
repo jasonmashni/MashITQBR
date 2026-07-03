@@ -18,6 +18,7 @@ import {
   Center,
   ActionIcon,
   Tooltip,
+  SegmentedControl,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
@@ -43,6 +44,7 @@ export function Clients() {
   const [opened, { open, close }] = useDisclosure(false);
   const [draft, setDraft] = useState<Client | null>(null);
   const [isNew, setIsNew] = useState(false);
+  const [filter, setFilter] = useState<'qbr' | 'all'>('qbr');
 
   const load = () => api.listClients().then((d) => setClients(d.clients)).finally(() => setLoading(false));
   useEffect(() => {
@@ -106,10 +108,24 @@ export function Clients() {
       </Group>
 
       <Card withBorder radius="md" padding="lg">
+        <Group justify="space-between" mb="sm">
+          <SegmentedControl
+            size="xs"
+            value={filter}
+            onChange={(v) => setFilter(v as 'qbr' | 'all')}
+            data={[
+              { value: 'qbr', label: `QBR clients (${clients.filter((c) => c.qbrEnabled !== false).length})` },
+              { value: 'all', label: `All (${clients.length})` },
+            ]}
+          />
+          {filter === 'qbr' && clients.some((c) => c.qbrEnabled === false) && (
+            <Text size="xs" c="dimmed">Switch to “All” to enable QBRs on imported clients.</Text>
+          )}
+        </Group>
         {loading ? (
           <Center h={160}><Loader /></Center>
         ) : clients.length === 0 ? (
-          <Text c="dimmed" size="sm">No clients yet. Add one, or connect the MASH MCP and import from Halo.</Text>
+          <Text c="dimmed" size="sm">No clients yet. Add one, or import from Halo.</Text>
         ) : (
           <Table highlightOnHover verticalSpacing="sm">
             <Table.Thead>
@@ -122,7 +138,7 @@ export function Clients() {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {clients.map((c) => (
+              {clients.filter((c) => filter === 'all' || c.qbrEnabled !== false).map((c) => (
                 <Table.Tr key={c.id}>
                   <Table.Td>
                     <Group gap={6}>

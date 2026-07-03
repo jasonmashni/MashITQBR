@@ -8,8 +8,10 @@ import {
   Badge,
   Text,
   Modal,
+  MultiSelect,
   Select,
   TextInput,
+  Textarea,
   PasswordInput,
   Stack,
   Menu,
@@ -35,6 +37,10 @@ interface TypeDef {
   hint: string;
   config: Field[];
   secrets: Field[];
+  /** Show a "dedicated to client" selector (per-tenant credentials). */
+  perClient?: 'required' | 'optional';
+  /** Secret fields rendered as multi-line inputs (e.g. pasted JSON keys). */
+  multilineSecrets?: string[];
   /** Hidden from the Add picker (existing connections still render). */
   legacy?: boolean;
 }
@@ -83,13 +89,37 @@ const TYPES: TypeDef[] = [
   {
     value: 'checkpoint',
     label: 'Check Point HEC',
-    hint: 'Email security & DLP. Create an Infinity Portal API key (service: Email & Collaboration) and paste its Client ID + Access Key.',
+    hint: 'Email security & DLP. Infinity Portal API keys are per-tenant — create the key inside the client\'s tenant and dedicate this connection to that client below. (For the richer report data, forward the emailed Check Point report to the client\'s report inbox instead.)',
+    perClient: 'optional',
     config: [
       { key: 'baseUrl', label: 'SMART API base URL', placeholder: 'https://smart-api-production-1-us.avanan.net' },
       { key: 'clientId', label: 'Infinity Portal Client ID' },
       { key: 'authUrl', label: 'Auth gateway (optional — region override)', placeholder: 'https://cloudinfra-gw-us.portal.checkpoint.com/auth/external' },
     ],
     secrets: [{ key: 'accessKey', label: 'Access Key' }],
+  },
+  {
+    value: 'cipp',
+    label: 'CIPP (Microsoft 365)',
+    hint: 'M365 posture per tenant: MFA registration, user counts, Conditional Access, licenses. Uses the CIPP-API app registration (client credentials).',
+    config: [
+      { key: 'baseUrl', label: 'CIPP instance URL', placeholder: 'https://cipp.mashit.net' },
+      { key: 'tenantId', label: 'Entra tenant ID (your MSP tenant)' },
+      { key: 'clientId', label: 'CIPP-API application (client) ID' },
+    ],
+    secrets: [{ key: 'clientSecret', label: 'Client Secret' }],
+  },
+  {
+    value: 'googleworkspace',
+    label: 'Google Workspace',
+    hint: 'Read-only Directory access for a Google Workspace client: users + 2-Step Verification coverage. Needs a service account with domain-wide delegation; each connection is dedicated to one QBR client.',
+    perClient: 'required',
+    config: [
+      { key: 'adminEmail', label: 'Workspace admin email (impersonated)', placeholder: 'admin@client.com' },
+      { key: 'customer', label: 'Customer ID (optional — defaults to the admin\'s domain)', placeholder: 'my_customer' },
+    ],
+    secrets: [{ key: 'serviceAccountJson', label: 'Service-account JSON key (paste the whole file)' }],
+    multilineSecrets: ['serviceAccountJson'],
   },
   {
     value: 'dropsuite',
@@ -203,9 +233,12 @@ function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved
 
   const orgOptions = (orgs ?? []).map((o) => ({ value: o.id, label: `${o.name} (${o.id})` }));
   // Keep previously saved ids visible even if they aren't in the tool's list.
-  for (const v of Object.values(refs)) {
-    if (v && !orgOptions.some((o) => o.value === v)) orgOptions.push({ value: v, label: `${v} (saved)` });
+  for (const v of Object.values(refs).flatMap((s) => s.split(',').map((x) => x.trim()).filter(Boolean))) {
+    if (!orgOptions.some((o) => o.value === v)) orgOptions.push({ value: v, label: `${v} (saved)` });
   }
+  // Halo clients sometimes split into service + billing entities — allow
+  // mapping one QBR client to several Halo ids (tallies are summed on sync).
+  const multi = conn.type === 'halo';
 
   return (
     <Modal opened onClose={() => onClose(false)} title={`Map clients — ${conn.label}`} size="lg">
@@ -213,6 +246,7 @@ function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved
         <Text size="sm" c="dimmed">
           Tell {typeDef(conn.type)?.label ?? conn.type} which of your QBR clients is which
           {orgs ? ' — pick from the orgs found in the tool.' : ' — enter each client’s id in the tool.'}
+          {multi && ' You can pick multiple Halo entities per client (e.g. a service + a billing entity) — their numbers are combined.'}
         </Text>
         {orgError && <Text size="sm" c="red.7">{orgError}</Text>}
         {loading ? (
@@ -223,7 +257,18 @@ function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved
           clients.map((c) => (
             <Group key={c.id} wrap="nowrap" align="center">
               <Text size="sm" fw={600} w={220} truncate>{c.name}</Text>
-              {orgs ? (
+              {orgs && multi ? (
+                <MultiSelect
+                  style={{ flex: 1 }}
+                  placeholder={refs[c.id] ? undefined : 'Not mapped'}
+                  data={orgOptions}
+                  value={(refs[c.id] ?? '').split(',').map((s) => s.trim()).filter(Boolean)}
+                  onChange={(vals) => setRefs({ ...refs, [c.id]: vals.join(',') })}
+                  searchable
+                  clearable
+                  aria-label={`Map ${c.name}`}
+                />
+              ) : orgs ? (
                 <Select
                   style={{ flex: 1 }}
                   placeholder="Not mapped"
@@ -263,10 +308,11 @@ export function Integrations() {
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ConnectionView | null>(null);
   const [mapping, setMapping] = useState<ConnectionView | null>(null);
+  const [qbrClients, setQbrClients] = useState<Client[]>([]);
   const secretHome = system?.secretStore === 'keyvault' ? 'Azure Key Vault' : 'the local secret file (dev)';
 
   const [editId, setEditId] = useState<string | undefined>();
-  const [type, setType] = useState('mcp');
+  const [type, setType] = useState('halo');
   const [label, setLabel] = useState('');
   const [config, setConfig] = useState<Record<string, string>>({});
   const [secrets, setSecrets] = useState<Record<string, string>>({});
@@ -275,6 +321,7 @@ export function Integrations() {
   useEffect(() => {
     load();
     api.system().then(setSystem).catch(() => {});
+    api.listClients().then((d) => setQbrClients(d.clients.filter((c) => c.qbrEnabled !== false))).catch(() => {});
   }, []);
 
   function openNew() {
@@ -297,6 +344,10 @@ export function Integrations() {
   async function save() {
     if (!label.trim()) {
       notifications.show({ color: 'red', message: 'A label is required.' });
+      return;
+    }
+    if (typeDef(type)?.perClient === 'required' && !config['qbrClientId']) {
+      notifications.show({ color: 'red', message: 'Pick the QBR client this connection belongs to.' });
       return;
     }
     const input: ConnectionInput = { type, label, config, secrets };
@@ -433,15 +484,39 @@ export function Integrations() {
               onChange={(e) => setConfig({ ...config, [f.key]: e.currentTarget.value })}
             />
           ))}
-          {def?.secrets.map((f) => (
-            <PasswordInput
-              key={f.key}
-              label={f.label}
-              placeholder={editId ? 'leave blank to keep current' : ''}
-              value={secrets[f.key] ?? ''}
-              onChange={(e) => setSecrets({ ...secrets, [f.key]: e.currentTarget.value })}
+          {def?.perClient && (
+            <Select
+              label={def.perClient === 'required' ? 'Dedicated to QBR client' : 'Dedicated to QBR client (optional — blank = shared)'}
+              placeholder="Pick a client"
+              data={qbrClients.map((c) => ({ value: c.id, label: c.name }))}
+              value={config['qbrClientId'] || null}
+              onChange={(v) => setConfig({ ...config, qbrClientId: v ?? '' })}
+              searchable
+              clearable={def.perClient === 'optional'}
             />
-          ))}
+          )}
+          {def?.secrets.map((f) =>
+            def.multilineSecrets?.includes(f.key) ? (
+              <Textarea
+                key={f.key}
+                label={f.label}
+                placeholder={editId ? 'leave blank to keep current' : '{ "type": "service_account", ... }'}
+                autosize
+                minRows={3}
+                maxRows={6}
+                value={secrets[f.key] ?? ''}
+                onChange={(e) => setSecrets({ ...secrets, [f.key]: e.currentTarget.value })}
+              />
+            ) : (
+              <PasswordInput
+                key={f.key}
+                label={f.label}
+                placeholder={editId ? 'leave blank to keep current' : ''}
+                value={secrets[f.key] ?? ''}
+                onChange={(e) => setSecrets({ ...secrets, [f.key]: e.currentTarget.value })}
+              />
+            ),
+          )}
           <Group justify="flex-end" mt="sm">
             <Button variant="default" onClick={close}>Cancel</Button>
             <Button onClick={save}>Save</Button>

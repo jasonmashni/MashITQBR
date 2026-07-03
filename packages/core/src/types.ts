@@ -17,6 +17,7 @@ export type IntegrationId =
   | 'dropsuite'
   | 'printix'
   | 'connectsecure'
+  | 'googleworkspace'
   | 'synology'
   | 'manual';
 

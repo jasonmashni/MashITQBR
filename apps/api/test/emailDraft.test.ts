@@ -7,7 +7,7 @@ describe('buildEmailDraft', () => {
       to: 'anne@client.com',
       subject: 'Mash IT QBR — ANP Enertech Q1 2026',
       bodyText: 'Hi Anne,\n\nAttached is your review.',
-      attachment: { name: 'QBR-ANP-2026-Q1.pdf', contentType: 'application/pdf', bytes: Buffer.from('%PDF-1.7 fake') },
+      attachments: [{ name: 'QBR-ANP-2026-Q1.pdf', contentType: 'application/pdf', bytes: Buffer.from('%PDF-1.7 fake') }],
     }).toString('utf8');
 
     // The header Outlook uses to open the file in compose (not read) mode.
@@ -30,6 +30,21 @@ describe('buildEmailDraft', () => {
     expect(eml).toContain('Subject: Plain subject\r\n');
     expect(eml).toContain('Content-Type: text/plain; charset=utf-8');
     expect(eml).not.toContain('multipart/mixed');
+  });
+
+  it('carries every vendor report as its own attachment', () => {
+    const eml = buildEmailDraft({
+      subject: 'QBR',
+      bodyText: 'Hi',
+      attachments: [
+        { name: 'QBR.pdf', contentType: 'application/pdf', bytes: Buffer.from('main') },
+        { name: 'Huntress quarterly.pdf', contentType: 'application/pdf', bytes: Buffer.from('huntress') },
+        { name: 'CheckPoint report.pdf', contentType: 'application/pdf', bytes: Buffer.from('checkpoint') },
+      ],
+    }).toString('utf8');
+    expect(eml.match(/Content-Disposition: attachment/g)?.length).toBe(3);
+    expect(eml).toContain('filename="Huntress quarterly.pdf"');
+    expect(eml).toContain('filename="CheckPoint report.pdf"');
   });
 });
 

@@ -245,7 +245,13 @@ export function Workspace() {
           {period && config && (
             <Stack gap="lg" maw={900}>
               <DataTab clientId={clientId} period={period} config={config} setConfig={setConfig} refresh={refresh} onSaved={() => setRefresh((n) => n + 1)} />
-              <DocumentsCard clientId={clientId} period={period} refresh={refresh} onChanged={() => setRefresh((n) => n + 1)} />
+              <DocumentsCard
+                clientId={clientId}
+                period={period}
+                refresh={refresh}
+                reportsMailbox={system?.reportsMailbox ?? null}
+                onChanged={() => setRefresh((n) => n + 1)}
+              />
             </Stack>
           )}
         </Tabs.Panel>
@@ -726,11 +732,13 @@ function DocumentsCard({
   clientId,
   period,
   refresh,
+  reportsMailbox,
   onChanged,
 }: {
   clientId: string;
   period: string;
   refresh: number;
+  reportsMailbox: string | null;
   onChanged: () => void;
 }) {
   const [docs, setDocs] = useState<DocumentInfo[] | null>(null);
@@ -788,7 +796,7 @@ function DocumentsCard({
           <Title order={5}>Attached reports &amp; documents</Title>
           <Text size="xs" c="dimmed">
             Vendor reports (Huntress attaches automatically on Sync) plus anything you upload — Synology exports, Dropsuite summaries,
-            invoices. All listed in the report appendix.
+            invoices. PDFs are appended to the back of the QBR PDF and everything rides along on the email draft.
           </Text>
         </div>
         <FileButton onChange={upload} accept="application/pdf,image/*,.csv,.xlsx,.docx">
@@ -799,6 +807,18 @@ function DocumentsCard({
           )}
         </FileButton>
       </Group>
+      {reportsMailbox && (
+        <Alert color="teal" variant="light" mb="sm" p="xs">
+          <Text size="xs">
+            This client's report inbox:{' '}
+            <Text span fw={700} style={{ userSelect: 'all' }}>
+              {reportsMailbox.replace('@', `+${clientId}@`)}
+            </Text>
+            {' '}— forward or schedule vendor reports (Check Point, NinjaOne, Dropsuite…) to it and their attachments land here
+            automatically, checked every 5 minutes. Add a quarter tag like “2026-Q3” to the subject to file into a specific quarter.
+          </Text>
+        </Alert>
+      )}
       {docs === null ? (
         <Center h={60}><Loader size="sm" /></Center>
       ) : docs.length === 0 ? (

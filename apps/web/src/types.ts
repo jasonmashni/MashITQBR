@@ -190,6 +190,8 @@ export interface SystemInfo {
   secretStore: 'keyvault' | 'local';
   ai: boolean;
   pdfAvailable: boolean;
+  /** Shared report mailbox (null = inbox ingestion not configured). */
+  reportsMailbox: string | null;
 }
 
 export interface ConnectionView {

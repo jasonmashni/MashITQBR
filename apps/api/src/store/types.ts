@@ -23,6 +23,7 @@ export const CONNECTION_TYPES = [
   'dropsuite',
   'printix',
   'connectsecure',
+  'googleworkspace',
   'synology',
   'manual',
   'mcp',

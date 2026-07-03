@@ -72,11 +72,17 @@ export async function listNinjaOrgs(http: HttpTransport, cfg: NinjaCfg): Promise
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
 /** Query results (`/v2/queries/*`) come back as {results: [...]} with a cursor. */
-async function queryAll(http: HttpTransport, cfg: NinjaCfg, path: string, orgId: string, maxPages = 5): Promise<Json[]> {
+async function queryAll(
+  http: HttpTransport,
+  cfg: NinjaCfg,
+  path: string,
+  extraParams: Record<string, string | number>,
+  maxPages = 5,
+): Promise<Json[]> {
   const out: Json[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < maxPages; page++) {
-    const params: Record<string, string | number> = { df: `org = ${orgId}`, pageSize: 1000 };
+    const params: Record<string, string | number> = { ...extraParams, pageSize: 1000 };
     if (cursor) params['cursor'] = cursor;
     const json = (await ninjaGet(http, cfg, path, params)) as Json | null;
     const rows = toArray<Json>(json, ['results']);
@@ -99,15 +105,21 @@ export function normalizeNinjaAv(rows: Json[]): MetricValue[] {
   ];
 }
 
-/** Normalize pending-patch rows (one per pending patch) into patch metrics. */
-export function normalizeNinjaPatches(rows: Json[], deviceCount: number): MetricValue[] {
-  const devicesWithPending = new Set(rows.map((r) => String(r['deviceId'] ?? ''))).size;
+/**
+ * Quarterly patch compliance from the install history: patches that INSTALLED
+ * vs FAILED during the period. This answers "how well did patching go this
+ * quarter" rather than "how many patches are pending mid-cycle right now".
+ */
+export function normalizeNinjaPatchQuarter(installed: number, failed: number): MetricValue[] {
   const out: MetricValue[] = [
-    metric('patch.pending', 'Pending OS patches', rows.length, { category: 'security', source: 'ninja', unit: 'count', higherIsBetter: false }),
+    metric('patch.installed_quarter', 'Patches installed this quarter', installed, { category: 'security', source: 'ninja', unit: 'count', higherIsBetter: true }),
   ];
-  if (deviceCount > 0) {
+  if (failed > 0) {
+    out.push(metric('patch.failed_quarter', 'Patch failures this quarter', failed, { category: 'security', source: 'ninja', unit: 'count', higherIsBetter: false }));
+  }
+  if (installed + failed > 0) {
     out.push(
-      metric('patch.compliance_pct', 'Patch compliance', round1((100 * Math.max(0, deviceCount - devicesWithPending)) / deviceCount), {
+      metric('patch.compliance_pct', 'Patch success rate (quarter)', round1((100 * installed) / (installed + failed)), {
         category: 'security',
         source: 'ninja',
         unit: '%',
@@ -118,12 +130,47 @@ export function normalizeNinjaPatches(rows: Json[], deviceCount: number): Metric
   return out;
 }
 
+/** Backup usage rows carry organizationId (the endpoint has no org filter). */
+export function normalizeNinjaBackup(rows: Json[], orgId: string): MetricValue[] {
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  const inOrg = rows.filter((r) => String(r['organizationId'] ?? '') === String(orgId));
+  const byDevice = new Map<string, Json>();
+  for (const r of inOrg) byDevice.set(String(r['id'] ?? r['deviceId'] ?? byDevice.size), r);
+  if (byDevice.size === 0) return [];
+  let failing = 0;
+  for (const r of byDevice.values()) {
+    const ok = num(r['lastSuccessfulBackupJob']);
+    const bad = num(r['lastFailedBackupJob']);
+    if (bad > ok) failing++;
+  }
+  const out = [
+    metric('backup.protected_devices', 'Devices with backup', byDevice.size, { category: 'backup', source: 'ninja', unit: 'count', higherIsBetter: true }),
+  ];
+  if (failing > 0) {
+    out.push(metric('backup.failed_jobs', 'Devices with failing backups', failing, { category: 'backup', source: 'ninja', unit: 'count', higherIsBetter: false }));
+  }
+  return out;
+}
+
+/** Devices whose latest health status needs attention (not point-in-time offline). */
+export function normalizeNinjaHealth(rows: Json[]): MetricValue[] {
+  if (rows.length === 0) return [];
+  const unhealthy = rows.filter((r) => {
+    const h = String(r['healthStatus'] ?? '').toUpperCase();
+    return h !== '' && h !== 'HEALTHY' && h !== 'UNKNOWN';
+  }).length;
+  return [
+    metric('endpoints.needs_attention', 'Devices needing attention', unhealthy, { category: 'infrastructure', source: 'ninja', unit: 'count', higherIsBetter: false }),
+  ];
+}
+
 /** Collect NinjaOne endpoint posture for an organization via the direct API. */
 export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransport, cfg: NinjaCfg): Promise<CollectResult> {
   if (!ctx.externalRef) {
     return { source: 'ninja', metrics: [], warnings: ['No NinjaOne organization mapped for this client.'] };
   }
   const orgId = ctx.externalRef;
+  const df = { df: `org = ${orgId}` };
   const metrics: MetricValue[] = [];
   const warnings: string[] = [];
 
@@ -132,37 +179,58 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
   try {
     devices = toArray<Json>(await ninjaGet(http, cfg, `organization/${encodeURIComponent(orgId)}/devices`, { pageSize: 1000 }), ['devices']);
     metrics.push(metric('endpoints.managed', 'Managed devices', devices.length, { category: 'infrastructure', source: 'ninja', unit: 'count' }));
-    const offline = devices.filter((d) => d['offline'] === true).length;
-    if (devices.length > 0) {
-      metrics.push(metric('endpoints.offline', 'Devices offline', offline, { category: 'infrastructure', source: 'ninja', unit: 'count', higherIsBetter: false }));
-    }
   } catch (e) {
     warnings.push(`NinjaOne devices unavailable: ${e instanceof Error ? e.message : 'error'}`);
   }
 
+  // Device health (persistent condition, unlike point-in-time offline).
+  try {
+    const health = await queryAll(http, cfg, 'queries/device-health', df);
+    metrics.push(...normalizeNinjaHealth(health));
+  } catch (e) {
+    warnings.push(`NinjaOne device-health query failed: ${e instanceof Error ? e.message : 'error'}`);
+  }
+
   // Antivirus coverage (org-scoped query).
   try {
-    const av = await queryAll(http, cfg, 'queries/antivirus-status', orgId);
+    const av = await queryAll(http, cfg, 'queries/antivirus-status', df);
     if (av.length > 0) metrics.push(...normalizeNinjaAv(av));
     else warnings.push('NinjaOne antivirus query returned no rows for this organization.');
   } catch (e) {
     warnings.push(`NinjaOne antivirus query failed: ${e instanceof Error ? e.message : 'error'}`);
   }
 
-  // Pending OS patches (org-scoped query; rows are pending patches per device).
+  // Quarterly patch compliance from the install history (INSTALLED vs FAILED
+  // during the period), plus the current pending count as a snapshot.
   try {
-    const patches = await queryAll(http, cfg, 'queries/os-patches', orgId);
-    metrics.push(...normalizeNinjaPatches(patches, devices.length));
+    const installed = await queryAll(http, cfg, 'queries/os-patch-installs', {
+      ...df,
+      status: 'INSTALLED',
+      installedAfter: ctx.period.start,
+      installedBefore: ctx.period.end,
+    });
+    const failed = await queryAll(http, cfg, 'queries/os-patch-installs', {
+      ...df,
+      status: 'FAILED',
+      installedAfter: ctx.period.start,
+      installedBefore: ctx.period.end,
+    });
+    metrics.push(...normalizeNinjaPatchQuarter(installed.length, failed.length));
+  } catch (e) {
+    warnings.push(`NinjaOne patch-install history failed: ${e instanceof Error ? e.message : 'error'}`);
+  }
+  try {
+    const pending = await queryAll(http, cfg, 'queries/os-patches', df);
+    metrics.push(metric('patch.pending', 'Pending OS patches', pending.length, { category: 'security', source: 'ninja', unit: 'count', higherIsBetter: false }));
   } catch (e) {
     warnings.push(`NinjaOne patch query failed: ${e instanceof Error ? e.message : 'error'}`);
   }
 
-  // Backup usage (per-device rows; devices with backup enabled).
+  // Backup usage — the endpoint has no org filter, so filter rows by their
+  // organizationId (counting all rows was wildly wrong for multi-org tenants).
   try {
-    const backup = await queryAll(http, cfg, 'queries/backup/usage', orgId);
-    if (backup.length > 0) {
-      metrics.push(metric('backup.protected_devices', 'Devices with backup', backup.length, { category: 'backup', source: 'ninja', unit: 'count', higherIsBetter: true }));
-    }
+    const backup = await queryAll(http, cfg, 'queries/backup/usage', {});
+    metrics.push(...normalizeNinjaBackup(backup, orgId));
   } catch {
     // Backup module may not be licensed — not worth a warning.
   }

@@ -37,6 +37,8 @@ import { graphPost, graphTokenFrom, validEmails, type FetchLike } from './graph.
 import { directHaloConn, importHaloClients, listOrgs, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
 import { pushAction, type PushInput } from './actions.js';
 import { buildEmailDraft, qbrEmailBody } from './emailDraft.js';
+import { clientInboxAddress, inboxConfigFromEnv, pollReportInbox } from './reportInbox.js';
+import { appendPdfAttachments, loadPdfAttachments } from './pdfMerge.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 
 export interface ApiResult {
@@ -150,18 +152,20 @@ export async function getReportHtml(clientId: string, period: string, ai: string
     return mapBuildError(e);
   }
 }
+/** The full QBR PDF: the designed report with attached PDF reports appended. */
+async function buildFullPdf(clientId: string, period: string, ai: string | null): Promise<Buffer> {
+  const report = await buildReportFor(clientId, period, ai);
+  const pdf = await renderPdf(report.model);
+  // Vendor reports ride at the back of the deliverable (appendix lists them).
+  const attachments = await loadPdfAttachments(getDataStore(), getDocStore(), clientId, period).catch(() => []);
+  return appendPdfAttachments(pdf, attachments);
+}
+
 export async function getReportPdf(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
-  let report;
   try {
-    report = await buildReportFor(clientId, period, ai);
+    return { status: 200, pdf: await buildFullPdf(clientId, period, ai) };
   } catch (e) {
-    return mapBuildError(e); // a missing client shouldn't read as "PDF unavailable"
-  }
-  try {
-    // Designed pdfmake document — pure JS, works on the Consumption plan.
-    const pdf = await renderPdf(report.model);
-    return { status: 200, pdf };
-  } catch (e) {
+    if (e instanceof Error && /^(Unknown client|No metric snapshot)/.test(e.message)) return mapBuildError(e);
     return err(501, e instanceof Error ? e.message : 'PDF rendering unavailable');
   }
 }
@@ -409,6 +413,27 @@ export async function deleteQbrDocument(clientId: string, period: string, id: st
   return ok({ deleted: id });
 }
 
+/**
+ * Poll the shared report mailbox now (the timer does this every 5 minutes).
+ * Emails forwarded to {mailbox-local}+{clientId}@… file their attachments as
+ * QBR documents for that client.
+ */
+export async function pollInbox(): Promise<ApiResult> {
+  const cfg = inboxConfigFromEnv();
+  if (!cfg) {
+    return err(501, 'Report inbox not configured — set REPORTS_MAILBOX, REPORTS_TENANT_ID, REPORTS_CLIENT_ID and REPORTS_CLIENT_SECRET.');
+  }
+  try {
+    const result = await pollReportInbox(cfg, getDataStore(), getDocStore());
+    if (result.filed > 0 || result.unrouted > 0) {
+      audit('inbox.poll', `mailbox:${cfg.mailbox}`, `${result.filed} filed, ${result.unrouted} unrouted of ${result.processed}`);
+    }
+    return ok(result);
+  } catch (e) {
+    return err(502, e instanceof Error ? e.message : 'Inbox poll failed');
+  }
+}
+
 /** Fetch vendor-published report files surfaced during sync and attach them. */
 async function attachSyncDocuments(
   clientId: string,
@@ -632,6 +657,9 @@ export async function pushQbrAction(
 }
 
 // ── Email draft (.eml opens in Outlook as an unsent message + PDF attached) ──
+/** Keep the draft inside typical Exchange send limits. */
+const MAX_EMAIL_ATTACHMENT_TOTAL = 20 * 1024 * 1024;
+
 export async function getEmailDraft(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
   let report;
   try {
@@ -639,14 +667,32 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
   } catch (e) {
     return mapBuildError(e);
   }
-  let pdf: Buffer | undefined;
-  try {
-    pdf = await renderPdf(report.model);
-  } catch {
-    pdf = undefined; // draft still works without the attachment
-  }
-  const client = await getDataStore().getClient(clientId);
+  const store = getDataStore();
+  const client = await store.getClient(clientId);
   const brand = report.model.brand;
+
+  const attachments: Array<{ name: string; contentType: string; bytes: Buffer }> = [];
+  try {
+    // The full deliverable (attached PDF reports already appended at the back).
+    const pdf = await buildFullPdf(clientId, period, ai);
+    attachments.push({ name: `QBR-${client?.name?.replace(/[^a-zA-Z0-9 -]+/g, '') ?? clientId}-${period}.pdf`, contentType: 'application/pdf', bytes: pdf });
+  } catch {
+    // Draft still works without the attachment.
+  }
+  // Every attached report also rides along as its own file (size-capped).
+  try {
+    const docsStore = getDocStore();
+    let total = attachments.reduce((n, a) => n + a.bytes.length, 0);
+    for (const doc of await store.listDocuments(clientId, period)) {
+      const bytes = await docsStore.get(docPath(clientId, period, doc.id, doc.name)).catch(() => undefined);
+      if (!bytes || total + bytes.length > MAX_EMAIL_ATTACHMENT_TOTAL) continue;
+      attachments.push({ name: doc.name, contentType: doc.contentType, bytes });
+      total += bytes.length;
+    }
+  } catch {
+    // Attachments are best-effort.
+  }
+
   const subject = `${brand.orgName} QBR — ${client?.name ?? clientId} ${report.model.period.label}`;
   const me = currentActor();
   const eml = buildEmailDraft({
@@ -658,9 +704,9 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
       orgName: brand.orgName,
       senderName: me !== 'system' && !me.includes('@') ? me : undefined,
     }),
-    attachment: pdf ? { name: `QBR-${client?.name?.replace(/[^a-zA-Z0-9 -]+/g, '') ?? clientId}-${period}.pdf`, contentType: 'application/pdf', bytes: pdf } : undefined,
+    attachments,
   });
-  audit('qbr.email_draft', `qbr:${clientId}/${period}`, client?.primaryContact?.email ?? 'no recipient');
+  audit('qbr.email_draft', `qbr:${clientId}/${period}`, `${client?.primaryContact?.email ?? 'no recipient'} · ${attachments.length} attachment(s)`);
   return { status: 200, file: { bytes: eml, contentType: 'message/rfc822', filename: `QBR-${clientId}-${period}.eml` } };
 }
 
@@ -894,8 +940,13 @@ export async function getSystem(): Promise<ApiResult> {
     secretStore: secretStoreKind(),
     ai: !!process.env['ANTHROPIC_API_KEY'],
     pdfAvailable: await pdfAvailable(),
+    // The shared report mailbox, when configured — the UI derives each
+    // client's forwarding address from it.
+    reportsMailbox: inboxConfigFromEnv()?.mailbox ?? null,
   });
 }
+
+export { clientInboxAddress };
 
 /** The signed-in user (Easy Auth). Local dev (JSON store) gets a fallback identity. */
 export async function getMe(principal: Principal | undefined): Promise<ApiResult> {

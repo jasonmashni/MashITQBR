@@ -17,15 +17,22 @@ function wrap76(b64: string): string {
   return b64.replace(/(.{76})/g, `$1${CRLF}`);
 }
 
+export interface EmailAttachment {
+  name: string;
+  contentType: string;
+  bytes: Buffer;
+}
+
 export interface EmailDraftInput {
   to?: string;
   subject: string;
   bodyText: string;
-  attachment?: { name: string; contentType: string; bytes: Buffer };
+  attachments?: EmailAttachment[];
 }
 
 export function buildEmailDraft(input: EmailDraftInput): Buffer {
   const boundary = `qbr-${Math.random().toString(36).slice(2, 10)}`;
+  const attachments = input.attachments ?? [];
   const lines: string[] = [
     'X-Unsent: 1',
     ...(input.to ? [`To: ${input.to}`] : []),
@@ -33,12 +40,11 @@ export function buildEmailDraft(input: EmailDraftInput): Buffer {
     'MIME-Version: 1.0',
   ];
 
-  if (!input.attachment) {
+  if (attachments.length === 0) {
     lines.push('Content-Type: text/plain; charset=utf-8', 'Content-Transfer-Encoding: base64', '', wrap76(Buffer.from(input.bodyText, 'utf8').toString('base64')));
     return Buffer.from(lines.join(CRLF), 'utf8');
   }
 
-  const name = input.attachment.name.replace(/["\\]/g, '');
   lines.push(
     `Content-Type: multipart/mixed; boundary="${boundary}"`,
     '',
@@ -47,15 +53,19 @@ export function buildEmailDraft(input: EmailDraftInput): Buffer {
     'Content-Transfer-Encoding: base64',
     '',
     wrap76(Buffer.from(input.bodyText, 'utf8').toString('base64')),
-    `--${boundary}`,
-    `Content-Type: ${input.attachment.contentType}; name="${name}"`,
-    `Content-Disposition: attachment; filename="${name}"`,
-    'Content-Transfer-Encoding: base64',
-    '',
-    wrap76(input.attachment.bytes.toString('base64')),
-    `--${boundary}--`,
-    '',
   );
+  for (const att of attachments) {
+    const name = att.name.replace(/["\\]/g, '');
+    lines.push(
+      `--${boundary}`,
+      `Content-Type: ${att.contentType}; name="${encodeHeader(name)}"`,
+      `Content-Disposition: attachment; filename="${encodeHeader(name)}"`,
+      'Content-Transfer-Encoding: base64',
+      '',
+      wrap76(att.bytes.toString('base64')),
+    );
+  }
+  lines.push(`--${boundary}--`, '');
   return Buffer.from(lines.join(CRLF), 'utf8');
 }
 

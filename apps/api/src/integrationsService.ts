@@ -3,9 +3,12 @@ import {
   assembleSnapshot,
   basicAuthHeader,
   checkpointToken,
+  cippToken,
   collectCheckpoint,
+  collectCipp,
   collectConnectSecure,
   collectDropsuite,
+  collectGoogleWorkspace,
   collectHalo,
   collectHaloDirect,
   collectHudu,
@@ -15,7 +18,9 @@ import {
   collectPrintix,
   connectSecureToken,
   FetchHttpTransport,
+  googleWorkspaceToken,
   haloGet,
+  listCippTenants,
   listConnectSecureCompanies,
   listDropsuiteOrgs,
   listHaloClients,
@@ -27,9 +32,11 @@ import {
   runCollectors,
   toArray,
   unwrapMcp,
+  type CippCfg,
   type CollectResult,
   type ConnectSecureCfg,
   type DropsuiteCfg,
+  type GoogleWorkspaceCfg,
   type HaloCfg,
   type HttpTransport,
   type HuduCfg,
@@ -93,6 +100,24 @@ async function connectSecureCfg(secrets: SecretStore, conn: Connection): Promise
   };
 }
 
+async function cippCfg(secrets: SecretStore, conn: Connection): Promise<CippCfg> {
+  return {
+    baseUrl: conn.config['baseUrl'] ?? '',
+    tenantId: conn.config['tenantId'] ?? '',
+    clientId: conn.config['clientId'] ?? '',
+    clientSecret: (await resolveSecret(secrets, conn, 'clientSecret')) ?? '',
+    scope: conn.config['scope'] || undefined,
+  };
+}
+
+async function googleWorkspaceCfg(secrets: SecretStore, conn: Connection): Promise<GoogleWorkspaceCfg> {
+  return {
+    adminEmail: conn.config['adminEmail'] ?? '',
+    customer: conn.config['customer'] || undefined,
+    serviceAccountJson: (await resolveSecret(secrets, conn, 'serviceAccountJson')) ?? '',
+  };
+}
+
 /** True when a connection is configured for the direct API (not the MCP ride-along). */
 const hasDirectCreds = (conn: Connection | undefined): conn is Connection => !!conn && !!conn.config['clientId'];
 
@@ -116,6 +141,17 @@ function byType(conns: Connection[]): Map<string, Connection> {
   const m = new Map<string, Connection>();
   for (const c of conns) if (!m.has(c.type)) m.set(c.type, c);
   return m;
+}
+
+/**
+ * Resolve the connection to use for a type + client. A connection can be
+ * dedicated to one QBR client via config.qbrClientId (per-tenant API keys:
+ * Check Point child tenants, Google Workspace domains); a dedicated match
+ * wins over the shared (unbound) connection.
+ */
+function connFor(conns: Connection[], type: string, clientId: string): Connection | undefined {
+  const ofType = conns.filter((c) => c.type === type);
+  return ofType.find((c) => c.config['qbrClientId'] === clientId) ?? ofType.find((c) => !c.config['qbrClientId']);
 }
 
 /** The first connection usable for direct Halo API calls, if any. */
@@ -197,6 +233,8 @@ export async function listOrgs(intg: Integrations, conn: Connection): Promise<Ex
       return listDropsuiteOrgs(http, await dropsuiteCfg(intg.secrets, conn));
     case 'connectsecure':
       return listConnectSecureCompanies(http, await connectSecureCfg(intg.secrets, conn));
+    case 'cipp':
+      return listCippTenants(http, await cippCfg(intg.secrets, conn));
     case 'huntress': {
       const base = conn.config['baseUrl'] ?? 'https://api.huntress.io/v1';
       const headers = {
@@ -285,6 +323,22 @@ export async function testConnection(intg: Integrations, conn: Connection): Prom
         await connectSecureToken(http, await connectSecureCfg(intg.secrets, conn));
         return { ok: true, message: 'ConnectSecure reachable' };
       }
+      case 'cipp': {
+        const cfg = await cippCfg(intg.secrets, conn);
+        if (!cfg.baseUrl || !cfg.tenantId || !cfg.clientId) {
+          return { ok: false, message: 'CIPP needs the instance URL, Entra tenant id, Client ID and Client Secret.' };
+        }
+        await listCippTenants(http, cfg);
+        return { ok: true, message: 'CIPP reachable' };
+      }
+      case 'googleworkspace': {
+        const cfg = await googleWorkspaceCfg(intg.secrets, conn);
+        if (!cfg.adminEmail || !cfg.serviceAccountJson) {
+          return { ok: false, message: 'Google Workspace needs the admin email and the service-account JSON key.' };
+        }
+        await googleWorkspaceToken(http, cfg);
+        return { ok: true, message: 'Google Workspace reachable' };
+      }
       case 'mcp': {
         if (!intg.mcp) return { ok: false, message: 'MCP connection missing URL' };
         await intg.mcp.callTool('halo_list_clients', { count: 1 });
@@ -348,7 +402,8 @@ export async function syncClientMetrics(
   if (!client) throw new Error(`Unknown client: ${clientId}`);
   const refs = client.integrationRefs ?? {};
   const p = parsePeriod(period);
-  const conns = byType(await intg.store.listConnections());
+  const allConns = await intg.store.listConnections();
+  const conns = { get: (type: string) => connFor(allConns, type, clientId) };
   const http = intg.http ?? new FetchHttpTransport();
   const secrets = intg.secrets;
 
@@ -390,6 +445,22 @@ export async function syncClientMetrics(
     runs.push({ source: 'hudu', run: async () => collectHudu(ctx(refs.hudu), http, await huduCfg(secrets, hudu)) });
   }
 
+  // CIPP runs before Huntress so its M365 MFA coverage wins the dedupe for
+  // Microsoft tenants (Huntress ITDR identity data stays as the fallback).
+  const cipp = conns.get('cipp');
+  if (refs.cipp && cipp) {
+    runs.push({ source: 'cipp', run: async () => collectCipp(ctx(refs.cipp), http, await cippCfg(secrets, cipp)) });
+  }
+
+  // Google Workspace connections are bound to a single client (per-domain
+  // service accounts) — run every connection dedicated to this client.
+  for (const gw of allConns.filter((c) => c.type === 'googleworkspace' && c.config['qbrClientId'] === clientId)) {
+    runs.push({
+      source: 'googleworkspace',
+      run: async () => collectGoogleWorkspace(ctx(gw.config['customer'] || 'my_customer'), http, await googleWorkspaceCfg(secrets, gw)),
+    });
+  }
+
   const huntress = conns.get('huntress');
   if (refs.huntress && huntress) {
     runs.push({
@@ -402,12 +473,14 @@ export async function syncClientMetrics(
     });
   }
 
+  // Check Point Infinity Portal keys are per-tenant — a connection bound to
+  // this client via qbrClientId runs without needing an org mapping.
   const checkpoint = conns.get('checkpoint');
-  if (refs.checkpoint && checkpoint) {
+  if (checkpoint && (refs.checkpoint || checkpoint.config['qbrClientId'] === clientId)) {
     runs.push({
       source: 'checkpoint',
       run: async () =>
-        collectCheckpoint(ctx(refs.checkpoint), http, {
+        collectCheckpoint(ctx(refs.checkpoint ?? clientId), http, {
           baseUrl: checkpoint.config['baseUrl'] ?? '',
           token: await resolveSecret(secrets, checkpoint, 'token'),
           clientId: checkpoint.config['clientId'] || undefined,

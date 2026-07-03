@@ -141,6 +141,83 @@ describe('collectHaloDirect', () => {
     });
     expect(out.warnings[0]).toMatch(/No Halo client mapped/);
   });
+
+  it('sums a comma-separated multi-id mapping (service + billing entities)', async () => {
+    const period = makePeriod(2026, 2);
+    const ticketsFor = (url: string): HttpResponse => {
+      const u = new URL(url);
+      const id = u.searchParams.get('client_id');
+      if (u.searchParams.get('datesearch') === 'dateoccurred') {
+        // Tickets live under 29 only (the "PSC" service entity).
+        return { status: 200, json: { record_count: id === '29' ? 12 : 0, tickets: id === '29' ? [{ tickettype_name: 'Incident' }] : [] } };
+      }
+      if (u.searchParams.get('datesearch') === 'dateclosed') return { status: 200, json: { record_count: id === '29' ? 10 : 0, tickets: [] } };
+      if (u.searchParams.get('open_only') === 'true') return { status: 200, json: { record_count: id === '29' ? 5 : 0, tickets: [] } };
+      // Unfiltered probe (zero-fallback check for id 62): genuinely no tickets.
+      return { status: 200, json: { record_count: 0, tickets: [] } };
+    };
+    const { http } = fakeHttp([
+      tokenRoute(),
+      { match: (r) => r.url.includes('/api/Tickets'), respond: (r) => ticketsFor(r.url) },
+      {
+        match: (r) => r.url.includes('/api/ClientContract'),
+        respond: (r) => ({ status: 200, json: { contracts: r.url.includes('client_id=62') ? [{ monthlyvalue: 3000 }] : [] } }),
+      },
+      {
+        match: (r) => r.url.includes('/api/Invoice'),
+        respond: (r) => ({
+          status: 200,
+          json: { invoices: r.url.includes('client_id=62') ? [{ invoicedate: '2026-05-15', nettotal: 10034.25 }] : [] },
+        }),
+      },
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'mp', period, externalRef: '62, 29' },
+      http,
+      { baseUrl: 'https://x.halopsa.com', clientId: 'multi-1', clientSecret: 's' },
+    );
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    // Tickets from 29 + finance from 62, combined on one QBR.
+    expect(by['tickets.total']).toBe(12);
+    expect(by['tickets.closed']).toBe(10);
+    expect(by['tickets.open']).toBe(5);
+    expect(by['finance.mrr']).toBe(3000);
+    expect(by['finance.quarter_invoiced']).toBe(10034.25);
+  });
+
+  it('falls back to client-side date filtering when the server ignores datesearch', async () => {
+    const period = makePeriod(2026, 2);
+    const allTickets = [
+      { id: 1, tickettype_name: 'Incident', dateoccurred: '2026-05-02T10:00:00Z', dateclosed: '2026-05-03T10:00:00Z' },
+      { id: 2, tickettype_name: 'Service Request', dateoccurred: '2026-06-20T10:00:00Z' },
+      { id: 3, tickettype_name: 'Incident', dateoccurred: '2026-01-05T10:00:00Z', dateclosed: '2026-04-02T10:00:00Z' }, // opened before Q2, closed in Q2
+    ];
+    const { http } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => r.url.includes('/api/Tickets'),
+        respond: (r) => {
+          const u = new URL(r.url);
+          // The buggy instance: any datesearch-filtered call returns nothing.
+          if (u.searchParams.get('datesearch')) return { status: 200, json: { record_count: 0, tickets: [] } };
+          if (u.searchParams.get('open_only') === 'true') return { status: 200, json: { record_count: 2, tickets: [] } };
+          return { status: 200, json: { record_count: allTickets.length, tickets: allTickets } };
+        },
+      },
+      { match: (r) => r.url.includes('/api/ClientContract'), respond: () => ({ status: 200, json: { contracts: [] } }) },
+      { match: (r) => r.url.includes('/api/Invoice'), respond: () => ({ status: 200, json: { invoices: [] } }) },
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'mp', period, externalRef: '29' },
+      http,
+      { baseUrl: 'https://x.halopsa.com', clientId: 'fallback-1', clientSecret: 's' },
+    );
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['tickets.total']).toBe(2); // tickets 1 + 2 opened in Q2
+    expect(by['tickets.closed']).toBe(2); // tickets 1 + 3 closed in Q2
+    expect(by['tickets.open']).toBe(2);
+    expect(by['tickets.incidents']).toBe(1);
+  });
 });
 
 describe('normalizeHaloFinance', () => {

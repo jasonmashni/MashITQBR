@@ -206,50 +206,67 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
   return { metrics, warnings };
 }
 
-/**
- * Collect Halo metrics for a client/period straight from the Halo API:
- * ticket volumes with a real date window, the open-ticket snapshot, and the
- * finance figures (MRR + in-quarter invoiced) that power the admin dashboard.
- */
-export async function collectHaloDirect(ctx: CollectorContext, http: HttpTransport, cfg: HaloCfg): Promise<CollectResult> {
-  if (!ctx.externalRef) {
-    return { source: 'halo', metrics: [], warnings: ['No Halo client mapped for this client.'] };
-  }
-  const clientId = ctx.externalRef;
-  const metrics: MetricValue[] = [];
-  const warnings: string[] = [];
-  const op = (k: string, l: string, v: number, higherIsBetter?: boolean) =>
-    metric(k, l, v, { category: 'operations', source: 'halo', unit: 'count', higherIsBetter });
+const TICKET_OPENED_FIELDS = ['dateoccurred', 'dateoccured', 'datecreated', 'date_occurred'];
+const TICKET_CLOSED_FIELDS = ['dateclosed', 'date_closed', 'closedate'];
 
-  // Tickets opened in the period (+ by-type breakdown from the returned rows).
+function inPeriod(row: Json, fields: string[], startMs: number, endMs: number): boolean {
+  const s = firstStr(row, fields);
+  const at = s ? Date.parse(s) : NaN;
+  return Number.isFinite(at) && at >= startMs && at < endMs;
+}
+
+/** Per-Halo-client-id ticket + finance tallies for one period. */
+async function collectHaloForId(
+  ctx: CollectorContext,
+  http: HttpTransport,
+  cfg: HaloCfg,
+  haloId: string,
+  warnings: string[],
+  tag: string,
+): Promise<{ ok: boolean; openedRows: Json[]; openedTotal: number; closed: number; open: number; contracts: Json[]; invoices: Json[] }> {
+  const startMs = Date.parse(ctx.period.start);
+  const endMs = Date.parse(ctx.period.end) + 24 * 3600 * 1000;
+  let ok = false;
+  let openedRows: Json[] = [];
+  let openedTotal = 0;
+  let closed = 0;
+
+  // Tickets opened in the period via the server-side date window.
   try {
     const opened = await haloPageAll(http, cfg, 'Tickets', {
-      client_id: clientId,
+      client_id: haloId,
       datesearch: 'dateoccurred',
       startdate: ctx.period.start,
       enddate: ctx.period.end,
     }, 'tickets');
-    metrics.push(op('tickets.total', 'Tickets opened', opened.total, false));
-    const counts = new Map<string, number>();
-    for (const row of opened.rows) counts.set(ticketCategory(row), (counts.get(ticketCategory(row)) ?? 0) + 1);
-    if (opened.rows.length > 0) {
-      metrics.push(
-        op('tickets.incidents', 'Incidents', counts.get('incident') ?? 0, false),
-        op('tickets.changes', 'Change requests', counts.get('change') ?? 0),
-        op('tickets.service', 'Service requests', counts.get('service') ?? 0),
-      );
-      if (opened.rows.length < opened.total) {
-        warnings.push(`Ticket by-type breakdown sampled from the first ${opened.rows.length} of ${opened.total} tickets.`);
+    ok = true;
+    openedRows = opened.rows;
+    openedTotal = opened.total;
+
+    if (opened.total === 0) {
+      // Some Halo versions ignore datesearch — verify against the unfiltered
+      // count and fall back to filtering recent tickets locally.
+      const probe = await haloGet(http, cfg, 'Tickets', { client_id: haloId, open_only: false, pageinate: true, page_size: 1, page_no: 1 });
+      const totalTickets = recordCount(probe, toArray(probe, ['tickets']));
+      if (totalTickets > 0) {
+        const all = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: false, order: 'dateoccurred', orderdesc: true }, 'tickets', 10);
+        openedRows = all.rows.filter((r) => inPeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
+        openedTotal = openedRows.length;
+        closed = all.rows.filter((r) => inPeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs)).length;
+        if (all.rows.length < all.total) {
+          warnings.push(`Halo${tag}: the server date filter returned nothing — counted from the most recent ${all.rows.length} of ${all.total} tickets instead.`);
+        }
+        return await withFinance();
       }
     }
   } catch (e) {
-    warnings.push(`Halo ticket volume unavailable: ${e instanceof Error ? e.message : 'error'}`);
+    warnings.push(`Halo${tag} ticket volume unavailable: ${e instanceof Error ? e.message : 'error'}`);
   }
 
   // Tickets closed in the period.
   try {
-    const closed = await haloGet(http, cfg, 'Tickets', {
-      client_id: clientId,
+    const res = await haloGet(http, cfg, 'Tickets', {
+      client_id: haloId,
       datesearch: 'dateclosed',
       startdate: ctx.period.start,
       enddate: ctx.period.end,
@@ -257,32 +274,96 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
       page_size: 1,
       page_no: 1,
     });
-    metrics.push(op('tickets.closed', 'Tickets closed', recordCount(closed, toArray(closed, ['tickets'])), true));
+    closed = recordCount(res, toArray(res, ['tickets']));
   } catch (e) {
-    warnings.push(`Halo closed-ticket count unavailable: ${e instanceof Error ? e.message : 'error'}`);
+    warnings.push(`Halo${tag} closed-ticket count unavailable: ${e instanceof Error ? e.message : 'error'}`);
+  }
+  return withFinance();
+
+  async function withFinance() {
+    let open = 0;
+    try {
+      const res = await haloGet(http, cfg, 'Tickets', { client_id: haloId, open_only: true, pageinate: true, page_size: 1, page_no: 1 });
+      open = recordCount(res, toArray(res, ['tickets']));
+      ok = true;
+    } catch (e) {
+      warnings.push(`Halo${tag} open-ticket snapshot unavailable: ${e instanceof Error ? e.message : 'error'}`);
+    }
+    let contracts: Json[] = [];
+    let invoices: Json[] = [];
+    try {
+      contracts = (await haloPageAll(http, cfg, 'ClientContract', { client_id: haloId }, 'contracts')).rows;
+    } catch (e) {
+      warnings.push(`Halo${tag} contracts unavailable (MRR skipped): ${e instanceof Error ? e.message : 'error'}`);
+    }
+    try {
+      invoices = (await haloPageAll(http, cfg, 'Invoice', { client_id: haloId }, 'invoices')).rows;
+    } catch (e) {
+      warnings.push(`Halo${tag} invoices unavailable (quarterly spend skipped): ${e instanceof Error ? e.message : 'error'}`);
+    }
+    return { ok, openedRows, openedTotal, closed, open, contracts, invoices };
+  }
+}
+
+/**
+ * Collect Halo metrics for a client/period straight from the Halo API:
+ * ticket volumes with a real date window (client-side fallback when the
+ * server ignores it), the open-ticket snapshot, and the finance figures
+ * (MRR + in-quarter invoiced) that power the admin dashboard.
+ *
+ * The mapping may be a comma-separated list of Halo client ids — some
+ * clients split into a service entity and a billing entity (e.g. tickets
+ * under one id, invoices under another) — and the tallies are summed.
+ */
+export async function collectHaloDirect(ctx: CollectorContext, http: HttpTransport, cfg: HaloCfg): Promise<CollectResult> {
+  const ids = (ctx.externalRef ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (ids.length === 0) {
+    return { source: 'halo', metrics: [], warnings: ['No Halo client mapped for this client.'] };
+  }
+  const metrics: MetricValue[] = [];
+  const warnings: string[] = [];
+  const op = (k: string, l: string, v: number, higherIsBetter?: boolean) =>
+    metric(k, l, v, { category: 'operations', source: 'halo', unit: 'count', higherIsBetter });
+
+  const openedRows: Json[] = [];
+  let openedTotal = 0;
+  let closed = 0;
+  let open = 0;
+  let anyTicketData = false;
+  const contracts: Json[] = [];
+  const invoices: Json[] = [];
+  for (const haloId of ids) {
+    const tag = ids.length > 1 ? ` [${haloId}]` : '';
+    const t = await collectHaloForId(ctx, http, cfg, haloId, warnings, tag);
+    anyTicketData ||= t.ok;
+    openedRows.push(...t.openedRows);
+    openedTotal += t.openedTotal;
+    closed += t.closed;
+    open += t.open;
+    contracts.push(...t.contracts);
+    invoices.push(...t.invoices);
   }
 
-  // Open-ticket snapshot right now.
-  try {
-    const open = await haloGet(http, cfg, 'Tickets', { client_id: clientId, open_only: true, pageinate: true, page_size: 1, page_no: 1 });
-    metrics.push(op('tickets.open', 'Open tickets', recordCount(open, toArray(open, ['tickets'])), false));
-  } catch (e) {
-    warnings.push(`Halo open-ticket snapshot unavailable: ${e instanceof Error ? e.message : 'error'}`);
+  // Emit ticket tallies only when the API actually answered — a hard failure
+  // must read as "unavailable" in the warnings, not as a quarter of zeros.
+  if (anyTicketData) {
+    metrics.push(op('tickets.total', 'Tickets opened', openedTotal, false));
+    const counts = new Map<string, number>();
+    for (const row of openedRows) counts.set(ticketCategory(row), (counts.get(ticketCategory(row)) ?? 0) + 1);
+    if (openedRows.length > 0) {
+      metrics.push(
+        op('tickets.incidents', 'Incidents', counts.get('incident') ?? 0, false),
+        op('tickets.changes', 'Change requests', counts.get('change') ?? 0),
+        op('tickets.service', 'Service requests', counts.get('service') ?? 0),
+      );
+      if (openedRows.length < openedTotal) {
+        warnings.push(`Ticket by-type breakdown sampled from the first ${openedRows.length} of ${openedTotal} tickets.`);
+      }
+    }
+    metrics.push(op('tickets.closed', 'Tickets closed', closed, true));
+    metrics.push(op('tickets.open', 'Open tickets', open, false));
   }
 
-  // Finance: MRR from contracts, invoiced-in-quarter from invoices.
-  let contracts: Json[] = [];
-  let invoices: Json[] = [];
-  try {
-    contracts = (await haloPageAll(http, cfg, 'ClientContract', { client_id: clientId }, 'contracts')).rows;
-  } catch (e) {
-    warnings.push(`Halo contracts unavailable (MRR skipped): ${e instanceof Error ? e.message : 'error'}`);
-  }
-  try {
-    invoices = (await haloPageAll(http, cfg, 'Invoice', { client_id: clientId }, 'invoices')).rows;
-  } catch (e) {
-    warnings.push(`Halo invoices unavailable (quarterly spend skipped): ${e instanceof Error ? e.message : 'error'}`);
-  }
   const finance = normalizeHaloFinance({ contracts, invoices, periodStart: ctx.period.start, periodEnd: ctx.period.end });
   metrics.push(...finance.metrics);
   warnings.push(...finance.warnings);

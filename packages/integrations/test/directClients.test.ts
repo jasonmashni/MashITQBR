@@ -13,7 +13,9 @@ import {
   normalizeDropsuiteAccounts,
   normalizeHuduExpirations,
   normalizeNinjaAv,
-  normalizeNinjaPatches,
+  normalizeNinjaBackup,
+  normalizeNinjaHealth,
+  normalizeNinjaPatchQuarter,
   type HttpRequest,
   type HttpResponse,
   type HttpTransport,
@@ -40,12 +42,35 @@ describe('NinjaOne direct', () => {
         return { status: 200, json: { access_token: 'nt', expires_in: 3600 } };
       }
       if (req.url.includes('/v2/organizations')) return { status: 200, json: [{ id: 3, name: 'ANP Enertech' }] };
-      if (req.url.includes('/v2/organization/3/devices')) return { status: 200, json: [{ id: 17, offline: false }, { id: 18, offline: true }] };
+      if (req.url.includes('/v2/organization/3/devices')) return { status: 200, json: [{ id: 17 }, { id: 18 }] };
+      if (req.url.includes('device-health')) {
+        return { status: 200, json: { results: [{ deviceId: 17, healthStatus: 'HEALTHY' }, { deviceId: 18, healthStatus: 'NEEDS_ATTENTION' }] } };
+      }
       if (req.url.includes('antivirus-status')) {
         return { status: 200, json: { results: [{ productState: 'ON', definitionStatus: 'UpToDate' }, { productState: 'OFF', definitionStatus: 'OutOfDate' }] } };
       }
+      if (req.url.includes('os-patch-installs')) {
+        // Quarterly install history: status + period window are passed through.
+        const url = new URL(req.url);
+        expect(url.searchParams.get('installedAfter')).toBe(P.start);
+        expect(url.searchParams.get('installedBefore')).toBe(P.end);
+        const status = url.searchParams.get('status');
+        return { status: 200, json: { results: status === 'INSTALLED' ? [{ id: 1 }, { id: 2 }, { id: 3 }] : [{ id: 4 }] } };
+      }
       if (req.url.includes('os-patches')) return { status: 200, json: { results: [{ deviceId: 17 }, { deviceId: 17 }] } };
-      if (req.url.includes('backup/usage')) return { status: 200, json: { results: [{ deviceId: 17 }] } };
+      if (req.url.includes('backup/usage')) {
+        // No org filter on this endpoint — rows from OTHER orgs must be excluded.
+        return {
+          status: 200,
+          json: {
+            results: [
+              { id: 17, organizationId: 3, lastSuccessfulBackupJob: 100, lastFailedBackupJob: 50 },
+              { id: 18, organizationId: 3, lastSuccessfulBackupJob: 10, lastFailedBackupJob: 90 },
+              { id: 99, organizationId: 7, lastSuccessfulBackupJob: 100 },
+            ],
+          },
+        };
+      }
       return { status: 404, json: {} };
     });
 
@@ -55,19 +80,24 @@ describe('NinjaOne direct', () => {
     const out = await collectNinjaDirect({ clientId: 'anp', period: P, externalRef: '3' }, http, cfg);
     const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
     expect(by['endpoints.managed']).toBe(2);
-    expect(by['endpoints.offline']).toBe(1);
+    expect(by['endpoints.offline']).toBeUndefined(); // point-in-time offline dropped
+    expect(by['endpoints.needs_attention']).toBe(1);
     expect(by['endpoints.av_coverage_pct']).toBe(50);
+    expect(by['patch.installed_quarter']).toBe(3);
+    expect(by['patch.failed_quarter']).toBe(1);
+    expect(by['patch.compliance_pct']).toBe(75); // 3 installed / 4 attempted this quarter
     expect(by['patch.pending']).toBe(2);
-    expect(by['patch.compliance_pct']).toBe(50); // 1 of 2 devices has pending patches
-    expect(by['backup.protected_devices']).toBe(1);
+    expect(by['backup.protected_devices']).toBe(2); // org 7's device excluded
+    expect(by['backup.failed_jobs']).toBe(1); // device 18: last failure newer than last success
     // token exchanged once (cached across the collect's calls)
     expect(requests.filter((r) => r.url.includes('/ws/oauth/token')).length).toBe(1);
   });
 
   it('normalizers handle empty input', () => {
     expect(normalizeNinjaAv([])).toHaveLength(0);
-    const patch = normalizeNinjaPatches([], 0);
-    expect(patch).toHaveLength(1); // pending count only, no compliance without devices
+    expect(normalizeNinjaHealth([])).toHaveLength(0);
+    expect(normalizeNinjaBackup([], '3')).toHaveLength(0);
+    expect(normalizeNinjaPatchQuarter(0, 0).map((m) => m.key)).toEqual(['patch.installed_quarter']);
   });
 });
 

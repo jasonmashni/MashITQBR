@@ -12,4 +12,6 @@ export * from './hudu.js';
 export * from './dropsuite.js';
 export * from './printix.js';
 export * from './connectsecure.js';
+export * from './cipp.js';
+export * from './googleWorkspace.js';
 export * from './collect.js';

@@ -99,10 +99,14 @@ route('overview', 'GET', 'api/overview', (req) => h.getOverview(req.query.get('c
 route('clientPeriods', 'GET', 'api/clients/{clientId}/periods', (req) => h.getPeriods(req.params['clientId']!, req.query.get('current')));
 route('me', 'GET', 'api/me', (req) => h.getMe(principalFrom(headerGet(req))));
 route('audit', 'GET', 'api/audit', (req) => h.getAudit(req.query.get('limit')));
+route('pollInbox', 'POST', 'api/inbox/poll', () => h.pollInbox());
 
 // Keeps a worker warm on the Consumption plan (softens cold starts; timers
 // ride the existing AzureWebJobsStorage and run singleton across instances).
+// The same tick drains the shared report mailbox when it's configured.
 app.timer('keepWarm', {
   schedule: '0 */5 * * * *',
-  handler: async () => {},
+  handler: async () => {
+    await h.pollInbox().catch(() => undefined);
+  },
 });

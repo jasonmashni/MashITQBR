@@ -65,15 +65,23 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
 - **Integrations** — every tool connects **directly with its own API
   credentials**: HaloPSA (Client ID/Secret — tickets with real date windows,
   contracts/invoices for MRR + spend, ticket push), NinjaOne (API client,
-  `monitoring` scope), Hudu (API key — assets + warranty/domain/SSL
-  expirations), Huntress (API key/secret — quarterly summary + MFA), Check
-  Point (Infinity Portal Client ID + Access Key), Dropsuite (reseller token),
-  Printix (tenant + API client), ConnectSecure (pod + Client ID/Secret), and
-  Zomentum. Each connection has **Test** and **Map clients** (pick who's who
-  from the orgs found in the tool). Secrets go to **Key Vault**; only
-  references are stored. Synology ABB has no public API — use manual metrics
-  + document upload. (The legacy MASH-MCP connection still works until you
-  delete it, but new setups should use the direct connections.)
+  `monitoring` scope — devices, health, AV, **quarterly patch compliance**
+  from the install history, org-scoped backup), Hudu (API key — assets +
+  warranty/domain/SSL expirations), Huntress (API key/secret — quarterly
+  summary + MFA), **CIPP** (the CIPP-API app registration — per-tenant M365
+  posture: MFA registration coverage, user counts, Conditional Access,
+  license waste), **Google Workspace** (service account with domain-wide
+  delegation — users + 2-Step Verification coverage; each connection is
+  dedicated to one QBR client), Check Point (Infinity Portal Client ID +
+  Access Key — keys are per-tenant, so dedicate the connection to that
+  client), Dropsuite (reseller token), Printix (tenant + API client),
+  ConnectSecure (pod + Client ID/Secret), and Zomentum. Each connection has
+  **Test** and **Map clients** (pick who's who from the orgs found in the
+  tool) — and **Halo mappings accept multiple entities per client** (service
+  + billing companies get summed; Madison Peds maps to both its Halo
+  records). Secrets go to **Key Vault**; only references are stored. Synology
+  ABB has no public API — use manual metrics + the report inbox. (The legacy
+  MASH-MCP connection still works until you delete it.)
 - **Settings** — upload the **Mash IT logo** once (plus house colors); it
   becomes the default branding on every report, PDF and deck. Until then a
   built-in wordmark is used, so deliverables are never unbranded.
@@ -105,8 +113,39 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
 
 **Email draft** deserves a note: it downloads a ready-to-send `.eml` that
 opens in Outlook desktop as an **unsent draft** — recipient prefilled from the
-client contact, a three-line message, and the branded PDF attached. Review and
-hit Send from your own mailbox; no Graph permissions involved.
+client contact, a three-line message, the branded PDF attached (with the
+attached vendor reports appended to its back pages), and every attached
+report as its own file too. Review and hit Send from your own mailbox; no
+Graph permissions involved.
+
+### The report inbox (email ingestion)
+
+For data the vendor APIs don't expose — the Check Point report, NinjaOne's
+"Endpoint Management Report for QBRs" (Ninja's public API has **no** reports
+endpoint), Dropsuite digests, Synology exports — every client has a **report
+inbox**: forward (or schedule the vendor to send) reports to
+`qbr-reports+{clientId}@yourdomain`, and a 5-minute poll files the
+attachments onto that client's QBR automatically. Put a quarter tag like
+`2026-Q3` in the subject to file into a specific quarter; otherwise the
+current one is used. Filed reports appear in the workspace, the report
+appendix, the back of the PDF, and the email draft. The exact address per
+client is shown on the workspace **Data** tab.
+
+One-time setup:
+
+1. Create a **shared mailbox** (e.g. `qbr-reports@mashit.net`) — plus
+   addressing is on by default in Exchange Online.
+2. **App registration** (a new one, or reuse an automation app): *API
+   permissions → Microsoft Graph → Application* → `Mail.ReadWrite` → **Grant
+   admin consent**. Recommended: scope it to just this mailbox with an
+   [ApplicationAccessPolicy](https://learn.microsoft.com/en-us/graph/auth-limit-mailbox-access).
+3. Function App settings: `REPORTS_MAILBOX`, `REPORTS_TENANT_ID`,
+   `REPORTS_CLIENT_ID`, and `REPORTS_CLIENT_SECRET` (store the secret in Key
+   Vault and use an `@Microsoft.KeyVault(SecretUri=…)` reference).
+
+Messages are marked read and categorized (`QBR: filed` / `QBR: unrouted`) so
+the mailbox itself stays auditable. `POST /api/inbox/poll` triggers a check
+immediately.
 
 The QBR status advances itself (sync → schedule → approve → disposition → push,
 never backwards), and every AI narrative is cached per client/quarter — only a
