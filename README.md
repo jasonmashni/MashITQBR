@@ -17,12 +17,12 @@ centerpiece (the gap across CloudRadial / ScalePad / Strategy Overview).
 
 | Package | Responsibility |
 |---|---|
-| `packages/core` | Domain model, quarter periods, QoQ trend engine, blended **CIS v8 / NIST CSF 2.0** maturity scorecard, seed data from real QBRs |
-| `packages/integrations` | Read-only collectors: MCP (Halo/Ninja/Hudu via MASH MCP) + HTTP (Huntress/Check Point), snapshot assembly |
+| `packages/core` | Domain model, quarter periods, QoQ trend engine, blended **CIS v8 / NIST CSF 2.0** maturity scorecard, dashboard **flags engine**, seed data from real QBRs |
+| `packages/integrations` | **Direct vendor API clients** — HaloPSA, NinjaOne, Hudu, Huntress, Check Point, Dropsuite, Printix, ConnectSecure — plus snapshot assembly (legacy MASH-MCP path kept only as a fallback) |
 | `packages/narrative` | Claude-backed executive narrative with a **figure-verification guardrail** + deterministic offline drafter |
-| `packages/report` | One view-model → branded HTML, Playwright PDF, pptxgenjs deck |
-| `apps/api` | Azure Functions (v4) HTTP API + orchestration, data/secret stores (Table Storage / Key Vault), live sync + workflow pipeline |
-| `apps/web` | React (Vite) + **Mantine v7** admin app (Dashboard, Clients, Integrations, QBR workspace), gated by Entra ID auth |
+| `packages/report` | One view-model → branded HTML, **designed pdfmake PDF**, rebuilt pptxgenjs deck |
+| `apps/api` | Azure Functions (v4) HTTP API + orchestration, data/secret/**document** stores (Table Storage / Key Vault / Blob), live sync + workflow pipeline, Outlook `.eml` drafts |
+| `apps/web` | React (Vite) + **Mantine v7** admin app (Dashboard, Clients, Integrations, QBR workspace, Settings), gated by Entra ID auth |
 | `infra` | Bicep: SWA + Flex-Consumption Functions + Key Vault + Azure SQL + Blob, VNet-isolated |
 
 ## Develop
@@ -44,55 +44,69 @@ cd apps/web && npm install && npm run dev    # http://localhost:5173
 
 The pipeline runs end-to-end with **no credentials** using transcribed seed data,
 the offline narrative drafter, and a local JSON store + secret file. Set
-`ANTHROPIC_API_KEY` to use Claude (`claude-opus-4-8`) for the narrative; install
-`playwright` + `pptxgenjs` to enable PDF/deck export. (`func start` from
-`apps/api` still works for production parity if you have Core Tools v4.)
+`ANTHROPIC_API_KEY` to use Claude (`claude-opus-4-8`) for the narrative. PDF
+(pdfmake) and deck (pptxgenjs) export work out of the box — no Chromium needed.
+(`func start` from `apps/api` still works for production parity if you have
+Core Tools v4.)
 
 ## Using the app
 
 The header shows **who's signed in** (Easy Auth / Entra) with sign-out; every
 mutation is written to the **Audit log** page (who / what / when) for compliance.
 
-- **Dashboard** — one-call rollup of your **QBR-enabled** clients: maturity bar,
-  per-client score + workflow status, current quarter.
+- **Dashboard** — the admin cockpit: one row per QBR client with the **last
+  QBR** (quarter + workflow state + meeting date), **maturity rating**, **MRR**
+  (from Halo contracts), **spend movement QoQ**, and **attention flags**
+  (patch/MFA/AV gaps, failing backups, out-of-warranty devices, critical
+  vulnerabilities, security incidents, maturity drops, spend spikes). Rows
+  click straight into the workspace; report/PDF are one click from here.
 - **Clients** — all clients with a **QBR toggle** (you don't review everyone —
   imports from Halo arrive with QBR off; enable just the ones you do).
-- **Integrations** — add/edit/rotate/test connections. The **MASH MCP** connects
-  with a Client ID + Secret from your MCP server's setup page (OAuth token
-  exchange is automatic; a Token URL override exists for nonstandard setups).
-  Each connection has **Map clients**: it lists the orgs found inside the tool
-  (Halo clients, NinjaOne organizations, Huntress organizations) so you pick
-  who's who from a dropdown. Add the zero-credential **NinjaOne (via MASH MCP)**
-  connection to get the Ninja mapping dropdown. Secrets go to **Key Vault**;
-  only references are stored.
-
-  > **How the MCP data flows:** the MASH MCP tools return formatted text
-  > (built for LLM chat), and the QBR tool parses it — client/org lists,
-  > device rows, and the JSON-per-line query batches. If the MCP server ever
-  > adds `structuredContent` (or JSON text) to its tool results, the QBR tool
-  > prefers it automatically — a worthwhile 3-line change per tool in the MCP
-  > server repo. Two current data limits surface as sync warnings: Halo
-  > quarterly ticket volumes need the Halo API key's **reports scope**
-  > (403 today) or a date-filtered MCP ticket tool, and NinjaOne warranty
-  > fields aren't exposed by the text output (track as manual metrics).
-  > Huntress pulls its rich **quarterly summary report** per organization
-  > (incidents, signals, canaries, recon, firewall, ITDR, SIEM) plus live MFA
-  > coverage from identities.
-- **QBR workspace** (`/clients/:id`) — quarter picker (marks quarters with data),
-  **Sync**, and five tabs:
-  - *Report* — executive summary with an **Edit narrative** editor (save wording
-    changes instantly with no AI call; **Regenerate** re-drafts; **Approve**
-    advances the workflow), maturity ring + radar, QoQ chart, report/PDF/deck,
-    **Email report** (sends from your own M365 mailbox, deck attached).
+- **Integrations** — every tool connects **directly with its own API
+  credentials**: HaloPSA (Client ID/Secret — tickets with real date windows,
+  contracts/invoices for MRR + spend, ticket push), NinjaOne (API client,
+  `monitoring` scope), Hudu (API key — assets + warranty/domain/SSL
+  expirations), Huntress (API key/secret — quarterly summary + MFA), Check
+  Point (Infinity Portal Client ID + Access Key), Dropsuite (reseller token),
+  Printix (tenant + API client), ConnectSecure (pod + Client ID/Secret), and
+  Zomentum. Each connection has **Test** and **Map clients** (pick who's who
+  from the orgs found in the tool). Secrets go to **Key Vault**; only
+  references are stored. Synology ABB has no public API — use manual metrics
+  + document upload. (The legacy MASH-MCP connection still works until you
+  delete it, but new setups should use the direct connections.)
+- **Settings** — upload the **Mash IT logo** once (plus house colors); it
+  becomes the default branding on every report, PDF and deck. Until then a
+  built-in wordmark is used, so deliverables are never unbranded.
+- **QBR workspace** (`/clients/:id`) — quarter picker (marks quarters with
+  data) and a header where every deliverable is one click: **Sync · Report ·
+  PDF · Deck · Email draft**. The tabs follow the QBR lifecycle:
+  - *Overview* — what the client will see: executive summary with the **Edit
+    narrative** editor (save wording instantly with no AI call; **Regenerate**
+    re-drafts; **Approve** advances the workflow), maturity ring + radar, QoQ
+    chart, recommendations, attached reports.
   - *Data* — everything Sync pulled, grouped by source, **reviewed before it
-    enters the QBR**: untick metrics to exclude them everywhere (report,
-    scorecard, AI input), and add **manual metrics** for the API gaps
-    (Synology, SAT, canaries).
-  - *Branding & Sections* — logo, brand colors, section show/hide, custom sections.
-  - *Discussion & Responses* — talking points, client responses, dispositions.
-  - *Schedule & Actions* — **Create Teams meeting** (books your M365 calendar,
-    invites attendees, stores the join link) or paste a link; push dispositioned
-    items to **Halo tickets/opportunities** or **Zomentum opportunities**.
+    enters the QBR**: untick metrics to exclude them everywhere, add **manual
+    metrics** for the API gaps (Synology, SAT), and manage **attached
+    documents** — the Huntress quarterly PDF lands here automatically on
+    Sync; upload anything else (Synology exports, Dropsuite summaries). All
+    attachments are listed in the report appendix.
+  - *Meeting* — **pre-wire the agenda** before the call (quick-add topics,
+    reorder), fill in responses live (items flip planned → discussed), choose
+    dispositions and owners, untick "On report" for internal-only items —
+    answered items flow onto the final report's Discussion & Decisions
+    section. Scheduling lives here too: **Create Teams meeting** (books your
+    M365 calendar, invites attendees) or paste a link.
+  - *Actions* — push outcomes to work: **Halo ticket** opens a form where you
+    set the summary, details, **ticket type, agent, team and priority**
+    (lookup lists come live from Halo); Halo/Zomentum opportunities push
+    one-click.
+  - *Studio* — per-client branding overrides (client logo shows alongside the
+    Mash IT logo), section show/hide, custom sections.
+
+**Email draft** deserves a note: it downloads a ready-to-send `.eml` that
+opens in Outlook desktop as an **unsent draft** — recipient prefilled from the
+client contact, a three-line message, and the branded PDF attached. Review and
+hit Send from your own mailbox; no Graph permissions involved.
 
 The QBR status advances itself (sync → schedule → approve → disposition → push,
 never backwards), and every AI narrative is cached per client/quarter — only a
@@ -100,10 +114,11 @@ data change or explicit Regenerate calls Claude again.
 
 Persistence is a local JSON store + secret file in dev (`.data/`, gitignored;
 override the dir with `QBR_DATA_DIR`); in Azure it uses **Azure Table Storage**
-(app data, references only) + **Key Vault** (secrets). The store/secret backends
-switch automatically when `AzureWebJobsStorage` / `KEY_VAULT_URL` are set —
-`GET /api/system` reports which backends are active plus whether AI and
-server-side PDF are available, and the UI adapts (PDF button, secret-store copy).
+(app data, references only) + **Key Vault** (secrets) + **Blob Storage**
+(attached documents — the `qbr-documents` container is auto-created on the
+Function App's own storage account, no setup). The backends switch
+automatically when `AzureWebJobsStorage` / `KEY_VAULT_URL` are set —
+`GET /api/system` reports which are active plus whether AI is available.
 
 Quarter pickers are driven by `GET /api/period/current` (the UI walks back to
 the most recent quarter with data), and the QBR status advances forward
@@ -132,14 +147,17 @@ setting `KEY_VAULT_URL=https://<vault>.vault.azure.net/` — **without this the
 app falls back to a local secret file, which is dev-only**. App data uses the
 Function App's existing `AzureWebJobsStorage` (Table Storage) — no new resource.
 Turn on **Entra Easy Auth** to lock the app to Mash IT logins (it also powers
-the account menu and audit actor). PDF export is deferred on Consumption (print
-the HTML report from the browser); the report + PPTX deck work. A 5-minute
-keep-warm timer softens cold starts.
+the account menu and audit actor). Report, **PDF** (pdfmake — works on
+Consumption), PPTX deck, and Outlook email drafts all work out of the box. A
+5-minute keep-warm timer softens cold starts.
 
-### Microsoft 365 email + Teams scheduling (one-time)
+### Microsoft 365 Teams scheduling (one-time)
 
-The app sends QBR emails and books Teams meetings **as the signed-in user** via
-the Easy Auth token store — no extra login. Configure once:
+QBR emails need **no setup**: the Email draft button downloads an `.eml` that
+opens in Outlook as an unsent message. The optional Graph integration below is
+only for **Create Teams meeting** (and the legacy server-side send), which run
+**as the signed-in user** via the Easy Auth token store — no extra login.
+Configure once:
 
 1. **App registration** (the one Easy Auth created): *API permissions → Add →
    Microsoft Graph → Delegated* → `User.Read`, `Mail.Send`, `Calendars.ReadWrite`
@@ -180,10 +198,13 @@ Function App (the old separate Static-Web-Apps deploy is gone).
 
 ## Status
 
-Phase 3 — MCP OAuth (Client ID/Secret token exchange), signed-in identity +
-compliance audit log, native M365 (email QBRs from your mailbox, create Teams
-meetings), per-client QBR scoping with integration-centric org mapping, a Data
-review tab (exclusions + manual metrics), a no-regenerate narrative editor, and
-one-call dashboard loading with a keep-warm timer. Next: meeting attendance
-completion, CIPP/Domotz/Dropsuite collectors, scheduled snapshot sync, and the
+Phase 5 — direct vendor API collectors for the whole stack (Halo, Ninja, Hudu,
+Huntress, Check Point, Dropsuite, Printix, ConnectSecure; MASH MCP demoted to
+a legacy fallback), vendor-report aggregation into the QBR (auto-pull + upload
+to Blob, appendix on the report), a designed branded pdfmake PDF + rebuilt
+PowerPoint deck + org-level branding via Settings, Outlook `.eml` email
+drafts, a pre-wireable meeting agenda that flows onto the final report, Halo
+ticket push with full field control, an admin dashboard (last QBR, rating,
+MRR, spend Δ, flags), and a fewer-clicks workspace. Next: CIPP/Domotz
+collectors, scheduled snapshot sync, meeting attendance completion, and the
 client-facing portal — see the build plan for the phased roadmap.

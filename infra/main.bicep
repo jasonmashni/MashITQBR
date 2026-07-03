@@ -224,9 +224,11 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     siteConfig: {
       appSettings: [
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
-        { name: 'KEY_VAULT_URI', value: keyVault.properties.vaultUri }
+        // The app reads KEY_VAULT_URL (must match apps/api/src/store/index.ts).
+        { name: 'KEY_VAULT_URL', value: keyVault.properties.vaultUri }
         { name: 'SQL_CONNECTION_STRING', value: 'Server=tcp:${sql.properties.fullyQualifiedDomainName},1433;Database=qbr;Authentication=Active Directory Managed Identity;Encrypt=True;' }
-        { name: 'QBR_DOCS_CONTAINER', value: '${storage.properties.primaryEndpoints.blob}qbr-documents' }
+        // Container NAME — the doc store resolves the account from AzureWebJobsStorage.
+        { name: 'QBR_DOCS_CONTAINER', value: 'qbr-documents' }
       ]
     }
   }
