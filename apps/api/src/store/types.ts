@@ -21,6 +21,8 @@ export const CONNECTION_TYPES = [
   'cipp',
   'domotz',
   'dropsuite',
+  'printix',
+  'connectsecure',
   'synology',
   'manual',
   'mcp',

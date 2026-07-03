@@ -69,6 +69,7 @@ route('updateIntegration', 'PUT', 'api/integrations/{id}', async (req) => h.save
 route('deleteIntegration', 'DELETE', 'api/integrations/{id}', (req) => h.deleteIntegration(req.params['id']!));
 route('testIntegration', 'POST', 'api/integrations/{id}/test', (req) => h.testIntegration(req.params['id']!));
 route('integrationOrgs', 'GET', 'api/integrations/{id}/orgs', (req) => h.getIntegrationOrgs(req.params['id']!));
+route('haloMeta', 'GET', 'api/integrations/halo/meta', () => h.getHaloMeta());
 route('integrationMappings', 'PUT', 'api/integrations/{id}/mappings', async (req) => h.putIntegrationMappings(req.params['id']!, (await body(req)) as never));
 
 route('currentPeriod', 'GET', 'api/period/current', () => h.currentPeriod());

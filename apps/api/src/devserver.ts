@@ -73,6 +73,7 @@ const routes: Route[] = [
   { method: 'PUT', re: /^\/api\/integrations\/([^/]+)$/, run: (m, b) => h.saveIntegration({ ...(b as unknown as ConnectionInput), id: m[1]! }) },
   { method: 'DELETE', re: /^\/api\/integrations\/([^/]+)$/, run: (m) => h.deleteIntegration(m[1]!) },
   { method: 'POST', re: /^\/api\/integrations\/([^/]+)\/test$/, run: (m) => h.testIntegration(m[1]!) },
+  { method: 'GET', re: /^\/api\/integrations\/halo\/meta$/, run: () => h.getHaloMeta() },
   { method: 'GET', re: /^\/api\/integrations\/([^/]+)\/orgs$/, run: (m) => h.getIntegrationOrgs(m[1]!) },
   { method: 'PUT', re: /^\/api\/integrations\/([^/]+)\/mappings$/, run: (m, b) => h.putIntegrationMappings(m[1]!, b as never) },
   { method: 'GET', re: /^\/api\/period\/current$/, run: () => h.currentPeriod() },

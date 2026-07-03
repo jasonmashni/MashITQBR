@@ -10,7 +10,7 @@ import {
 } from '@mashit/core';
 import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
 import { renderDeck, renderPdf } from '@mashit/report';
-import { FetchHttpTransport, type McpTransport } from '@mashit/integrations';
+import { FetchHttpTransport, fetchHaloMeta, type McpTransport } from '@mashit/integrations';
 import { buildQbrReport, renderQbrHtml } from './service.js';
 import {
   dataStoreKind,
@@ -28,7 +28,7 @@ import { removeConnection, resolveSecret, saveConnection, type ConnectionInput }
 import { currentActor } from './requestContext.js';
 import type { HeaderGet, Principal } from './auth.js';
 import { graphPost, graphTokenFrom, validEmails, type FetchLike } from './graph.js';
-import { importHaloClients, listOrgs, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
+import { directHaloConn, importHaloClients, listOrgs, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
 import { pushAction, type PushInput } from './actions.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 
@@ -335,6 +335,27 @@ export async function getIntegrationOrgs(id: string): Promise<ApiResult> {
   }
 }
 
+/** Halo lookup lists (types/agents/teams/priorities) for the push modal — cached ~5 min. */
+let _haloMeta: { at: number; data: unknown } | undefined;
+export async function getHaloMeta(): Promise<ApiResult> {
+  if (_haloMeta && Date.now() - _haloMeta.at < 5 * 60_000) return ok(_haloMeta.data);
+  const halo = await directHaloConn(getDataStore());
+  if (!halo) return err(404, 'No direct HaloPSA connection configured — add one under Integrations to pick ticket type/agent.');
+  try {
+    const cfg = {
+      baseUrl: halo.config['baseUrl'] ?? '',
+      clientId: halo.config['clientId'] ?? '',
+      clientSecret: (await resolveSecret(getSecretStore(), halo, 'clientSecret')) ?? '',
+      tenant: halo.config['tenant'] || undefined,
+    };
+    const meta = await fetchHaloMeta(new FetchHttpTransport(), cfg);
+    _haloMeta = { at: Date.now(), data: meta };
+    return ok(meta);
+  } catch (e) {
+    return err(502, e instanceof Error ? e.message : 'Halo lookup lists unavailable');
+  }
+}
+
 // ConnectionType → the integrationRefs key the sync pipeline reads. The MCP
 // connection carries Halo, so its mappings land on refs.halo.
 const REF_KEY: Record<string, string> = { mcp: 'halo' };
@@ -414,7 +435,16 @@ export async function putSchedule(clientId: string, period: string, body: { sche
 export async function pushQbrAction(
   clientId: string,
   period: string,
-  body: { actionId?: string; target: PushInput['target']; title?: string; detail?: string },
+  body: {
+    actionId?: string;
+    target: PushInput['target'];
+    title?: string;
+    detail?: string;
+    ticketTypeId?: string;
+    agentId?: string;
+    team?: string;
+    priorityId?: string;
+  },
 ): Promise<ApiResult> {
   try {
     const store = getDataStore();
@@ -429,6 +459,10 @@ export async function pushQbrAction(
       title: body.title ?? item?.topic ?? 'QBR action',
       detail: body.detail ?? item?.response ?? '',
       externalClientRef,
+      ticketTypeId: body.ticketTypeId,
+      agentId: body.agentId,
+      team: body.team,
+      priorityId: body.priorityId,
     });
 
     if (disc && item) {

@@ -35,15 +35,102 @@ interface TypeDef {
   hint: string;
   config: Field[];
   secrets: Field[];
+  /** Hidden from the Add picker (existing connections still render). */
+  legacy?: boolean;
 }
 
 // Field keys align exactly with what the server pipeline reads (see
 // integrationsService.ts / actions.ts / handlers.resolveMcp).
 const TYPES: TypeDef[] = [
   {
+    value: 'halo',
+    label: 'HaloPSA',
+    hint: 'Tickets, contracts & invoices (MRR/spend), and ticket push. Create an API application in Halo (Client Credentials, scope "all") and paste its ID + Secret.',
+    config: [
+      { key: 'baseUrl', label: 'Instance URL', placeholder: 'https://mashit.halopsa.com' },
+      { key: 'clientId', label: 'Client ID' },
+      { key: 'tenant', label: 'Tenant (optional — hosted instances only)', placeholder: 'mashit' },
+    ],
+    secrets: [{ key: 'clientSecret', label: 'Client Secret' }],
+  },
+  {
+    value: 'ninja',
+    label: 'NinjaOne',
+    hint: 'Devices, AV coverage, patching & backup. Create an API client (client credentials, "monitoring" scope) under Administration → Apps → API.',
+    config: [
+      { key: 'baseUrl', label: 'Region URL', placeholder: 'https://app.ninjarmm.com' },
+      { key: 'clientId', label: 'Client ID' },
+    ],
+    secrets: [{ key: 'clientSecret', label: 'Client Secret' }],
+  },
+  {
+    value: 'hudu',
+    label: 'Hudu',
+    hint: 'Documented assets + warranty/domain/SSL expirations. Create an API key under Admin → API.',
+    config: [{ key: 'baseUrl', label: 'Instance URL', placeholder: 'https://mashit.huducloud.com' }],
+    secrets: [{ key: 'apiKey', label: 'API Key' }],
+  },
+  {
+    value: 'huntress',
+    label: 'Huntress',
+    hint: 'EDR / ITDR / SAT posture + the quarterly summary report',
+    config: [{ key: 'baseUrl', label: 'Base URL (includes /v1)', placeholder: 'https://api.huntress.io/v1' }],
+    secrets: [
+      { key: 'apiKey', label: 'API Key' },
+      { key: 'apiSecret', label: 'API Secret' },
+    ],
+  },
+  {
+    value: 'checkpoint',
+    label: 'Check Point HEC',
+    hint: 'Email security & DLP. Create an Infinity Portal API key (service: Email & Collaboration) and paste its Client ID + Access Key.',
+    config: [
+      { key: 'baseUrl', label: 'SMART API base URL', placeholder: 'https://smart-api-production-1-us.avanan.net' },
+      { key: 'clientId', label: 'Infinity Portal Client ID' },
+      { key: 'authUrl', label: 'Auth gateway (optional — region override)', placeholder: 'https://cloudinfra-gw-us.portal.checkpoint.com/auth/external' },
+    ],
+    secrets: [{ key: 'accessKey', label: 'Access Key' }],
+  },
+  {
+    value: 'dropsuite',
+    label: 'Dropsuite',
+    hint: 'Email/M365 backup coverage & health (reseller API, read-only).',
+    config: [{ key: 'baseUrl', label: 'API base URL', placeholder: 'https://api.dropsuite.com' }],
+    secrets: [{ key: 'token', label: 'API token' }],
+  },
+  {
+    value: 'printix',
+    label: 'Printix',
+    hint: 'Print fleet size & health. Register an API client in the Printix admin portal.',
+    config: [
+      { key: 'tenantId', label: 'Tenant ID (GUID)' },
+      { key: 'clientId', label: 'Client ID' },
+    ],
+    secrets: [{ key: 'clientSecret', label: 'Client Secret' }],
+  },
+  {
+    value: 'connectsecure',
+    label: 'ConnectSecure',
+    hint: 'Vulnerability posture (critical/high counts, compliance score) per company.',
+    config: [
+      { key: 'baseUrl', label: 'Pod URL', placeholder: 'https://pod100.myconnectsecure.com' },
+      { key: 'clientId', label: 'Client ID' },
+      { key: 'tenant', label: 'Tenant name (optional)' },
+    ],
+    secrets: [{ key: 'clientSecret', label: 'Client Secret' }],
+  },
+  {
+    value: 'zomentum',
+    label: 'Zomentum',
+    hint: 'Push opportunities',
+    config: [{ key: 'baseUrl', label: 'Base URL', placeholder: 'https://api.zomentum.com' }],
+    secrets: [{ key: 'token', label: 'API bearer token' }],
+  },
+  {
     value: 'mcp',
-    label: 'MASH MCP',
-    hint: 'HaloPSA, NinjaOne & Hudu read tools. Create an MCP Client on your MCP Setup page and paste its Client ID + Secret.',
+    label: 'MASH MCP (legacy)',
+    hint: 'Legacy path — replaced by the direct HaloPSA/NinjaOne/Hudu connections above. Existing MCP connections keep working until deleted.',
+    legacy: true,
     config: [
       { key: 'url', label: 'MCP HTTPS URL', placeholder: 'https://mcpserver.mashit.net/mcp' },
       { key: 'clientId', label: 'Client ID', placeholder: 'mcp-…' },
@@ -54,37 +141,6 @@ const TYPES: TypeDef[] = [
       { key: 'clientSecret', label: 'Client Secret' },
       { key: 'token', label: 'Static bearer token (legacy — leave blank when using Client ID/Secret)' },
     ],
-  },
-  {
-    value: 'ninja',
-    label: 'NinjaOne (via MASH MCP)',
-    hint: 'Rides your MASH MCP connection — add this just to map clients to NinjaOne organizations from a dropdown. No credentials needed.',
-    config: [],
-    secrets: [],
-  },
-  {
-    value: 'huntress',
-    label: 'Huntress',
-    hint: 'EDR / ITDR / SAT posture',
-    config: [{ key: 'baseUrl', label: 'Base URL (includes /v1)', placeholder: 'https://api.huntress.io/v1' }],
-    secrets: [
-      { key: 'apiKey', label: 'API Key' },
-      { key: 'apiSecret', label: 'API Secret' },
-    ],
-  },
-  {
-    value: 'checkpoint',
-    label: 'Check Point HEC',
-    hint: 'Email security & DLP',
-    config: [{ key: 'baseUrl', label: 'Region base URL', placeholder: 'https://smart-api-...cloudinfra.net' }],
-    secrets: [{ key: 'token', label: 'API token' }],
-  },
-  {
-    value: 'zomentum',
-    label: 'Zomentum',
-    hint: 'Push opportunities',
-    config: [{ key: 'baseUrl', label: 'Base URL', placeholder: 'https://api.zomentum.com' }],
-    secrets: [{ key: 'token', label: 'API bearer token' }],
   },
 ];
 
@@ -223,7 +279,7 @@ export function Integrations() {
 
   function openNew() {
     setEditId(undefined);
-    setType('mcp');
+    setType('halo');
     setLabel('');
     setConfig({});
     setSecrets({});
@@ -305,7 +361,7 @@ export function Integrations() {
             <Stack align="center" gap="xs">
               <ThemeIcon size={48} radius="md" variant="light" color="navy"><IconPlugConnected size={26} /></ThemeIcon>
               <Text fw={600}>No integrations yet</Text>
-              <Text c="dimmed" size="sm">Add the MASH MCP to pull Halo/Ninja/Hudu, plus Huntress, Check Point and Zomentum.</Text>
+              <Text c="dimmed" size="sm">Connect HaloPSA, NinjaOne, Hudu, Huntress, Check Point, Dropsuite, Printix and ConnectSecure directly with their API credentials.</Text>
               <Button mt="sm" variant="light" leftSection={<IconPlus size={16} />} onClick={openNew}>Add your first integration</Button>
             </Stack>
           </Center>
@@ -360,7 +416,7 @@ export function Integrations() {
         <Stack>
           <Select
             label="Type"
-            data={TYPES.map((t) => ({ value: t.value, label: t.label }))}
+            data={TYPES.filter((t) => !t.legacy || t.value === type).map((t) => ({ value: t.value, label: t.label }))}
             value={type}
             onChange={(v) => v && setType(v)}
             disabled={!!editId}

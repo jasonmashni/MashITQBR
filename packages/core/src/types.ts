@@ -15,6 +15,8 @@ export type IntegrationId =
   | 'cipp'
   | 'domotz'
   | 'dropsuite'
+  | 'printix'
+  | 'connectsecure'
   | 'synology'
   | 'manual';
 

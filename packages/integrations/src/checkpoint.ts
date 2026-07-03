@@ -57,18 +57,64 @@ export function normalizeCheckpointEvents(events: CheckpointEvent[]): MetricValu
   return out;
 }
 
+export interface CheckpointCfg {
+  /** Harmony Email SMART API base for the region. */
+  baseUrl: string;
+  /** Legacy static bearer token (used when no clientId/accessKey). */
+  token?: string;
+  /** Infinity Portal API key pair — exchanged for a short-lived token. */
+  clientId?: string;
+  accessKey?: string;
+  /** Infinity Portal gateway for the region (override for tests). */
+  authUrl?: string;
+}
+
+const cpTokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+/**
+ * Exchange an Infinity Portal API key (clientId + accessKey) for a bearer
+ * token at the region gateway. Tokens are short-lived (~30 min) — cached here.
+ */
+export async function checkpointToken(http: HttpTransport, cfg: CheckpointCfg): Promise<string> {
+  if (!cfg.clientId || !cfg.accessKey) {
+    if (cfg.token) return cfg.token;
+    throw new Error('Check Point needs either a Client ID + Access Key or a legacy token.');
+  }
+  const key = `${cfg.authUrl ?? cfg.baseUrl}|${cfg.clientId}`;
+  const cached = cpTokenCache.get(key);
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
+
+  const res = await http.request({
+    method: 'POST',
+    url: cfg.authUrl ?? 'https://cloudinfra-gw-us.portal.checkpoint.com/auth/external',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ clientId: cfg.clientId, accessKey: cfg.accessKey }),
+  });
+  const json = (res.json ?? {}) as Record<string, unknown>;
+  const token = ((json['data'] as Record<string, unknown> | undefined)?.['token'] ?? json['token']) as string | undefined;
+  if (res.status < 200 || res.status >= 300 || typeof token !== 'string' || !token) {
+    throw new Error(`Check Point token exchange failed (${res.status})`);
+  }
+  cpTokenCache.set(key, { token, expiresAt: Date.now() + 25 * 60_000 });
+  return token;
+}
+
 /** Collect Check Point HEC email-security metrics for the period. */
 export async function collectCheckpoint(
   ctx: CollectorContext,
   http: HttpTransport,
-  cfg: { baseUrl: string; token: string },
+  cfg: CheckpointCfg,
 ): Promise<CollectResult> {
+  const token = await checkpointToken(http, cfg);
   const res = await http.request({
     method: 'POST',
     url: `${cfg.baseUrl}/event/query`,
-    headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ startDate: ctx.period.start, endDate: ctx.period.end, saas: 'office365_emails' }),
   });
+  if (res.status < 200 || res.status >= 300) {
+    return { source: 'checkpoint', metrics: [], warnings: [`Check Point responded ${res.status} to event/query.`] };
+  }
   const events = extractEvents(res.json);
   return { source: 'checkpoint', metrics: normalizeCheckpointEvents(events), warnings: [] };
 }

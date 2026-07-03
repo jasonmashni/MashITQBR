@@ -1,6 +1,6 @@
-import { FetchHttpTransport, unwrapMcp, type HttpTransport } from '@mashit/integrations';
+import { createHaloTicket, FetchHttpTransport, unwrapMcp, type HttpTransport } from '@mashit/integrations';
 import { resolveSecret } from './connections.js';
-import type { Integrations } from './integrationsService.js';
+import { directHaloConn, type Integrations } from './integrationsService.js';
 
 export type PushTarget = 'halo_ticket' | 'halo_opportunity' | 'zomentum_opportunity';
 
@@ -10,6 +10,11 @@ export interface PushInput {
   detail: string;
   /** The client's id in the target system (Halo client id / Zomentum client id). */
   externalClientRef?: string;
+  /** Halo ticket fields (from the push modal — all optional). */
+  ticketTypeId?: string;
+  agentId?: string;
+  team?: string;
+  priorityId?: string;
 }
 
 export interface PushResult {
@@ -30,14 +35,34 @@ function idFrom(obj: unknown, keys: string[]): string {
 
 /**
  * Push a dispositioned QBR action to the target system and return its external
- * id (to persist on the action). Halo goes through the MASH MCP write tools;
- * Zomentum via its REST API with a bearer token from the secret store.
+ * id (to persist on the action). Halo tickets go through the direct HaloPSA
+ * API with full field control (type/agent/team/priority); the MASH MCP write
+ * tools remain as a legacy fallback. Zomentum via its REST API.
  */
 export async function pushAction(intg: Integrations, input: PushInput): Promise<PushResult> {
   const http: HttpTransport = intg.http ?? new FetchHttpTransport();
 
   if (input.target === 'halo_ticket' || input.target === 'halo_opportunity') {
-    if (!intg.mcp) throw new Error('No MASH MCP connection configured for Halo actions.');
+    const halo = await directHaloConn(intg.store);
+    if (halo && input.target === 'halo_ticket') {
+      const cfg = {
+        baseUrl: halo.config['baseUrl'] ?? '',
+        clientId: halo.config['clientId'] ?? '',
+        clientSecret: (await resolveSecret(intg.secrets, halo, 'clientSecret')) ?? '',
+        tenant: halo.config['tenant'] || undefined,
+      };
+      const created = await createHaloTicket(http, cfg, {
+        summary: input.title,
+        details: input.detail,
+        clientId: input.externalClientRef,
+        ticketTypeId: input.ticketTypeId,
+        agentId: input.agentId,
+        team: input.team,
+        priorityId: input.priorityId,
+      });
+      return { system: 'halo', id: created.id, status: created.status };
+    }
+    if (!intg.mcp) throw new Error('No Halo connection configured for Halo actions.');
     const tool = input.target === 'halo_ticket' ? 'halo_create_ticket' : 'halo_create_opportunity';
     const raw = await intg.mcp.callTool(tool, {
       summary: input.title,

@@ -2,18 +2,40 @@ import { parsePeriod, type Client, type MetricSnapshot } from '@mashit/core';
 import {
   assembleSnapshot,
   basicAuthHeader,
+  checkpointToken,
   collectCheckpoint,
+  collectConnectSecure,
+  collectDropsuite,
   collectHalo,
+  collectHaloDirect,
+  collectHudu,
   collectHuntress,
   collectNinja,
+  collectNinjaDirect,
+  collectPrintix,
+  connectSecureToken,
   FetchHttpTransport,
+  haloGet,
+  listConnectSecureCompanies,
+  listDropsuiteOrgs,
+  listHaloClients,
+  listHuduCompanies,
+  listNinjaOrgs,
+  ninjaToken,
   parseIdNameList,
+  printixToken,
   runCollectors,
   toArray,
   unwrapMcp,
   type CollectResult,
+  type ConnectSecureCfg,
+  type DropsuiteCfg,
+  type HaloCfg,
   type HttpTransport,
+  type HuduCfg,
   type McpTransport,
+  type NinjaCfg,
+  type PrintixCfg,
 } from '@mashit/integrations';
 import { resolveSecret } from './connections.js';
 import type { Connection, DataStore, SecretStore } from './store/index.js';
@@ -21,11 +43,58 @@ import type { Connection, DataStore, SecretStore } from './store/index.js';
 export interface Integrations {
   store: DataStore;
   secrets: SecretStore;
-  /** Resolved MASH MCP transport (built from the 'mcp' connection). */
+  /** Legacy MASH MCP transport (only used when no direct connection exists). */
   mcp?: McpTransport;
   /** HTTP transport for direct-REST integrations; defaults to fetch. */
   http?: HttpTransport;
 }
+
+// ── Per-vendor config resolution (connection record + secret store) ─────────
+
+async function haloCfg(secrets: SecretStore, conn: Connection): Promise<HaloCfg> {
+  return {
+    baseUrl: conn.config['baseUrl'] ?? '',
+    clientId: conn.config['clientId'] ?? '',
+    clientSecret: (await resolveSecret(secrets, conn, 'clientSecret')) ?? '',
+    tenant: conn.config['tenant'] || undefined,
+  };
+}
+
+async function ninjaCfg(secrets: SecretStore, conn: Connection): Promise<NinjaCfg> {
+  return {
+    baseUrl: conn.config['baseUrl'] || undefined,
+    clientId: conn.config['clientId'] ?? '',
+    clientSecret: (await resolveSecret(secrets, conn, 'clientSecret')) ?? '',
+  };
+}
+
+async function huduCfg(secrets: SecretStore, conn: Connection): Promise<HuduCfg> {
+  return { baseUrl: conn.config['baseUrl'] ?? '', apiKey: (await resolveSecret(secrets, conn, 'apiKey')) ?? '' };
+}
+
+async function dropsuiteCfg(secrets: SecretStore, conn: Connection): Promise<DropsuiteCfg> {
+  return { baseUrl: conn.config['baseUrl'] || undefined, token: (await resolveSecret(secrets, conn, 'token')) ?? '' };
+}
+
+async function printixCfg(secrets: SecretStore, conn: Connection, tenantId?: string): Promise<PrintixCfg> {
+  return {
+    tenantId: tenantId ?? conn.config['tenantId'] ?? '',
+    clientId: conn.config['clientId'] ?? '',
+    clientSecret: (await resolveSecret(secrets, conn, 'clientSecret')) ?? '',
+  };
+}
+
+async function connectSecureCfg(secrets: SecretStore, conn: Connection): Promise<ConnectSecureCfg> {
+  return {
+    baseUrl: conn.config['baseUrl'] ?? '',
+    clientId: conn.config['clientId'] ?? '',
+    clientSecret: (await resolveSecret(secrets, conn, 'clientSecret')) ?? '',
+    tenant: conn.config['tenant'] || undefined,
+  };
+}
+
+/** True when a connection is configured for the direct API (not the MCP ride-along). */
+const hasDirectCreds = (conn: Connection | undefined): conn is Connection => !!conn && !!conn.config['clientId'];
 
 interface HaloClientRow {
   id?: number | string;
@@ -34,11 +103,8 @@ interface HaloClientRow {
   sector_name?: string;
 }
 
-/**
- * Rows from halo_list_clients: JSON when the server returns structured output,
- * else parsed from the formatted-text list (`[id] Name` lines).
- */
-async function fetchHaloClients(mcp: McpTransport): Promise<HaloClientRow[]> {
+/** Legacy path: rows from the MASH MCP's halo_list_clients formatted text. */
+async function fetchHaloClientsMcp(mcp: McpTransport): Promise<HaloClientRow[]> {
   const payload = unwrapMcp(await mcp.callTool('halo_list_clients', { count: 500 }));
   if (typeof payload === 'string') {
     return parseIdNameList(payload).map((r) => ({ id: r.id, name: r.name }));
@@ -46,10 +112,32 @@ async function fetchHaloClients(mcp: McpTransport): Promise<HaloClientRow[]> {
   return toArray<HaloClientRow>(payload, ['clients']);
 }
 
-/** Import clients from Halo via MCP and upsert them into the store. */
+function byType(conns: Connection[]): Map<string, Connection> {
+  const m = new Map<string, Connection>();
+  for (const c of conns) if (!m.has(c.type)) m.set(c.type, c);
+  return m;
+}
+
+/** The first connection usable for direct Halo API calls, if any. */
+export async function directHaloConn(store: DataStore): Promise<Connection | undefined> {
+  const conn = byType(await store.listConnections()).get('halo');
+  return hasDirectCreds(conn) ? conn : undefined;
+}
+
+/** Import clients from Halo (direct API preferred; legacy MCP fallback) and upsert them. */
 export async function importHaloClients(intg: Integrations): Promise<Client[]> {
-  if (!intg.mcp) throw new Error('No MASH MCP connection configured — add one under Integrations.');
-  const rows = await fetchHaloClients(intg.mcp);
+  const http = intg.http ?? new FetchHttpTransport();
+  const halo = await directHaloConn(intg.store);
+
+  let rows: HaloClientRow[];
+  if (halo) {
+    rows = await listHaloClients(http, await haloCfg(intg.secrets, halo));
+  } else if (intg.mcp) {
+    rows = await fetchHaloClientsMcp(intg.mcp);
+  } else {
+    throw new Error('No Halo connection configured — add one under Integrations.');
+  }
+
   const clients: Client[] = [];
   for (const r of rows) {
     if (r.id === undefined) continue;
@@ -70,12 +158,6 @@ export async function importHaloClients(intg: Integrations): Promise<Client[]> {
   return clients;
 }
 
-function byType(conns: Connection[]): Map<string, Connection> {
-  const m = new Map<string, Connection>();
-  for (const c of conns) if (!m.has(c.type)) m.set(c.type, c);
-  return m;
-}
-
 export interface ExternalOrg {
   id: string;
   name: string;
@@ -88,49 +170,61 @@ export interface ExternalOrg {
  */
 export async function listOrgs(intg: Integrations, conn: Connection): Promise<ExternalOrg[] | null> {
   const http = intg.http ?? new FetchHttpTransport();
-  if (conn.type === 'mcp') {
-    if (!intg.mcp) throw new Error('No MASH MCP transport available.');
-    const rows = await fetchHaloClients(intg.mcp);
-    return rows
-      .filter((r) => r.id !== undefined)
-      .map((r) => ({ id: String(r.id), name: r.name ?? r.client_name ?? `Client ${String(r.id)}` }));
-  }
-  if (conn.type === 'ninja') {
-    // NinjaOne rides the MASH MCP transport; a 'ninja' connection exists just
-    // so the org-mapping dropdown can target refs.ninja.
-    if (!intg.mcp) throw new Error('NinjaOne mapping needs the MASH MCP connection configured.');
-    const payload = unwrapMcp(await intg.mcp.callTool('ninja_list_organizations', {}));
-    if (typeof payload === 'string') return parseIdNameList(payload);
-    return toArray<{ id?: number | string; name?: string }>(payload, ['organizations'])
-      .filter((r) => r.id !== undefined)
-      .map((r) => ({ id: String(r.id), name: r.name ?? `Org ${String(r.id)}` }));
-  }
-  if (conn.type === 'huntress') {
-    const base = conn.config['baseUrl'] ?? 'https://api.huntress.io/v1';
-    const headers = {
-      Authorization: basicAuthHeader(
-        (await resolveSecret(intg.secrets, conn, 'apiKey')) ?? '',
-        (await resolveSecret(intg.secrets, conn, 'apiSecret')) ?? '',
-      ),
-      Accept: 'application/json',
-    };
-    const out: ExternalOrg[] = [];
-    // Huntress paginates via page_token/next_page_token; cap defensively
-    // (account rate limit is 60 req/min).
-    let token: string | undefined;
-    for (let page = 0; page < 20; page++) {
-      const url = `${base}/organizations?limit=500${token ? `&page_token=${encodeURIComponent(token)}` : ''}`;
-      const res = await http.request({ method: 'GET', url, headers });
-      if (res.status < 200 || res.status >= 300) throw new Error(`Huntress responded ${res.status}`);
-      const rows = toArray<{ id?: number | string; name?: string }>(res.json, ['organizations']);
-      for (const r of rows) if (r.id !== undefined) out.push({ id: String(r.id), name: r.name ?? `Org ${String(r.id)}` });
-      const next = (res.json as { pagination?: { next_page_token?: string | null } } | null)?.pagination?.next_page_token;
-      if (!next || rows.length === 0) break;
-      token = String(next);
+  switch (conn.type) {
+    case 'halo': {
+      if (!hasDirectCreds(conn)) throw new Error('Add the Halo Client ID + Secret to list clients.');
+      const rows = await listHaloClients(http, await haloCfg(intg.secrets, conn));
+      return rows.filter((r) => r.id !== undefined).map((r) => ({ id: String(r.id), name: r.name ?? r.client_name ?? `Client ${String(r.id)}` }));
     }
-    return out;
+    case 'mcp': {
+      if (!intg.mcp) throw new Error('No MASH MCP transport available.');
+      const rows = await fetchHaloClientsMcp(intg.mcp);
+      return rows.filter((r) => r.id !== undefined).map((r) => ({ id: String(r.id), name: r.name ?? r.client_name ?? `Client ${String(r.id)}` }));
+    }
+    case 'ninja': {
+      if (hasDirectCreds(conn)) return listNinjaOrgs(http, await ninjaCfg(intg.secrets, conn));
+      // Legacy: NinjaOne riding the MASH MCP transport.
+      if (!intg.mcp) throw new Error('Add NinjaOne API credentials (or configure the MASH MCP) to list organizations.');
+      const payload = unwrapMcp(await intg.mcp.callTool('ninja_list_organizations', {}));
+      if (typeof payload === 'string') return parseIdNameList(payload);
+      return toArray<{ id?: number | string; name?: string }>(payload, ['organizations'])
+        .filter((r) => r.id !== undefined)
+        .map((r) => ({ id: String(r.id), name: r.name ?? `Org ${String(r.id)}` }));
+    }
+    case 'hudu':
+      return listHuduCompanies(http, await huduCfg(intg.secrets, conn));
+    case 'dropsuite':
+      return listDropsuiteOrgs(http, await dropsuiteCfg(intg.secrets, conn));
+    case 'connectsecure':
+      return listConnectSecureCompanies(http, await connectSecureCfg(intg.secrets, conn));
+    case 'huntress': {
+      const base = conn.config['baseUrl'] ?? 'https://api.huntress.io/v1';
+      const headers = {
+        Authorization: basicAuthHeader(
+          (await resolveSecret(intg.secrets, conn, 'apiKey')) ?? '',
+          (await resolveSecret(intg.secrets, conn, 'apiSecret')) ?? '',
+        ),
+        Accept: 'application/json',
+      };
+      const out: ExternalOrg[] = [];
+      // Huntress paginates via page_token/next_page_token; cap defensively
+      // (account rate limit is 60 req/min).
+      let token: string | undefined;
+      for (let page = 0; page < 20; page++) {
+        const url = `${base}/organizations?limit=500${token ? `&page_token=${encodeURIComponent(token)}` : ''}`;
+        const res = await http.request({ method: 'GET', url, headers });
+        if (res.status < 200 || res.status >= 300) throw new Error(`Huntress responded ${res.status}`);
+        const rows = toArray<{ id?: number | string; name?: string }>(res.json, ['organizations']);
+        for (const r of rows) if (r.id !== undefined) out.push({ id: String(r.id), name: r.name ?? `Org ${String(r.id)}` });
+        const next = (res.json as { pagination?: { next_page_token?: string | null } } | null)?.pagination?.next_page_token;
+        if (!next || rows.length === 0) break;
+        token = String(next);
+      }
+      return out;
+    }
+    default:
+      return null; // no listable orgs — free-text mapping
   }
-  return null; // no listable orgs — free-text mapping
 }
 
 export interface TestOutcome {
@@ -148,15 +242,53 @@ export async function testConnection(intg: Integrations, conn: Connection): Prom
   const http = intg.http ?? new FetchHttpTransport();
   try {
     switch (conn.type) {
+      case 'halo': {
+        if (!hasDirectCreds(conn)) return { ok: false, message: 'Halo needs the instance URL, Client ID and Client Secret.' };
+        await haloGet(http, await haloCfg(intg.secrets, conn), 'Client', { pageinate: true, page_size: 1, page_no: 1 });
+        return { ok: true, message: 'HaloPSA reachable' };
+      }
+      case 'ninja': {
+        if (hasDirectCreds(conn)) {
+          await ninjaToken(http, await ninjaCfg(intg.secrets, conn));
+          return { ok: true, message: 'NinjaOne reachable' };
+        }
+        if (!intg.mcp) return { ok: false, message: 'Add NinjaOne API credentials (Client ID + Secret with the monitoring scope).' };
+        await intg.mcp.callTool('ninja_list_organizations', {});
+        return { ok: true, message: 'NinjaOne reachable via MASH MCP (legacy — add direct API credentials)' };
+      }
+      case 'hudu': {
+        const cfg = await huduCfg(intg.secrets, conn);
+        if (!cfg.baseUrl || !cfg.apiKey) return { ok: false, message: 'Hudu needs the instance URL and an API key.' };
+        await listHuduCompanies(http, { ...cfg });
+        return { ok: true, message: 'Hudu reachable' };
+      }
+      case 'checkpoint': {
+        const clientId = conn.config['clientId'];
+        const accessKey = await resolveSecret(intg.secrets, conn, 'accessKey');
+        const token = await resolveSecret(intg.secrets, conn, 'token');
+        if (clientId && accessKey) {
+          await checkpointToken(http, { baseUrl: conn.config['baseUrl'] ?? '', clientId, accessKey, authUrl: conn.config['authUrl'] || undefined });
+          return { ok: true, message: 'Check Point Infinity Portal reachable' };
+        }
+        if (token) return { ok: true, note: 'Saved with a legacy token. Live test runs on next sync.' };
+        return { ok: false, message: 'Check Point needs an Infinity Portal Client ID + Access Key.' };
+      }
+      case 'dropsuite': {
+        await listDropsuiteOrgs(http, await dropsuiteCfg(intg.secrets, conn));
+        return { ok: true, message: 'Dropsuite reachable' };
+      }
+      case 'printix': {
+        await printixToken(http, await printixCfg(intg.secrets, conn));
+        return { ok: true, message: 'Printix reachable' };
+      }
+      case 'connectsecure': {
+        await connectSecureToken(http, await connectSecureCfg(intg.secrets, conn));
+        return { ok: true, message: 'ConnectSecure reachable' };
+      }
       case 'mcp': {
         if (!intg.mcp) return { ok: false, message: 'MCP connection missing URL' };
         await intg.mcp.callTool('halo_list_clients', { count: 1 });
-        return { ok: true, message: 'MASH MCP reachable' };
-      }
-      case 'ninja': {
-        if (!intg.mcp) return { ok: false, message: 'NinjaOne rides the MASH MCP — configure the MCP connection first.' };
-        await intg.mcp.callTool('ninja_list_organizations', {});
-        return { ok: true, message: 'NinjaOne reachable via MASH MCP' };
+        return { ok: true, message: 'MASH MCP reachable (legacy — direct API connections are preferred)' };
       }
       case 'huntress': {
         // Convention: baseUrl includes /v1 (matches collectHuntress).
@@ -194,9 +326,10 @@ export async function testConnection(intg: Integrations, conn: Connection): Prom
 
 /**
  * Pull live metrics for a client/period from every mapped tool, assemble a
- * snapshot, and persist it. Halo/Ninja read via the MASH MCP; Huntress and
- * Check Point read directly with credentials resolved from the secret store.
- * The client's per-tool external ids live on `client.integrationRefs`.
+ * snapshot, and persist it. Every vendor is called directly with credentials
+ * from the secret store; the MASH MCP is only a legacy fallback for Halo and
+ * Ninja when no direct connection exists. The client's per-tool external ids
+ * live on `client.integrationRefs`.
  */
 export async function syncClientMetrics(
   intg: Integrations,
@@ -210,16 +343,44 @@ export async function syncClientMetrics(
   const p = parsePeriod(period);
   const conns = byType(await intg.store.listConnections());
   const http = intg.http ?? new FetchHttpTransport();
+  const secrets = intg.secrets;
 
   const runs: Array<{ source: CollectResult['source']; run: () => Promise<CollectResult> }> = [];
+  const ctx = (externalRef: string | undefined) => ({ clientId, period: p, externalRef });
 
-  if (refs.halo && intg.mcp) {
+  const halo = conns.get('halo');
+  if (refs.halo && hasDirectCreds(halo)) {
+    runs.push({ source: 'halo', run: async () => collectHaloDirect(ctx(refs.halo), http, await haloCfg(secrets, halo)) });
+  } else if (refs.halo && intg.mcp) {
     const mcp = intg.mcp;
-    runs.push({ source: 'halo', run: () => collectHalo({ clientId, period: p, externalRef: refs.halo }, mcp) });
+    runs.push({
+      source: 'halo',
+      run: async () => {
+        const out = await collectHalo(ctx(refs.halo), mcp);
+        out.warnings.push('Halo is syncing via the legacy MASH MCP — add a direct HaloPSA connection for full ticket history and finance data.');
+        return out;
+      },
+    });
   }
-  if (refs.ninja && intg.mcp) {
+
+  const ninja = conns.get('ninja');
+  if (refs.ninja && hasDirectCreds(ninja)) {
+    runs.push({ source: 'ninja', run: async () => collectNinjaDirect(ctx(refs.ninja), http, await ninjaCfg(secrets, ninja)) });
+  } else if (refs.ninja && intg.mcp) {
     const mcp = intg.mcp;
-    runs.push({ source: 'ninja', run: () => collectNinja({ clientId, period: p, externalRef: refs.ninja }, mcp) });
+    runs.push({
+      source: 'ninja',
+      run: async () => {
+        const out = await collectNinja(ctx(refs.ninja), mcp);
+        out.warnings.push('NinjaOne is syncing via the legacy MASH MCP — add a direct NinjaOne connection for richer data.');
+        return out;
+      },
+    });
+  }
+
+  const hudu = conns.get('hudu');
+  if (refs.hudu && hudu) {
+    runs.push({ source: 'hudu', run: async () => collectHudu(ctx(refs.hudu), http, await huduCfg(secrets, hudu)) });
   }
 
   const huntress = conns.get('huntress');
@@ -227,13 +388,9 @@ export async function syncClientMetrics(
     runs.push({
       source: 'huntress',
       run: async () => {
-        const apiKey = (await resolveSecret(intg.secrets, huntress, 'apiKey')) ?? '';
-        const apiSecret = (await resolveSecret(intg.secrets, huntress, 'apiSecret')) ?? '';
-        return collectHuntress({ clientId, period: p, externalRef: refs.huntress }, http, {
-          baseUrl: huntress.config['baseUrl'],
-          apiKey,
-          apiSecret,
-        });
+        const apiKey = (await resolveSecret(secrets, huntress, 'apiKey')) ?? '';
+        const apiSecret = (await resolveSecret(secrets, huntress, 'apiSecret')) ?? '';
+        return collectHuntress(ctx(refs.huntress), http, { baseUrl: huntress.config['baseUrl'], apiKey, apiSecret });
       },
     });
   }
@@ -242,14 +399,30 @@ export async function syncClientMetrics(
   if (refs.checkpoint && checkpoint) {
     runs.push({
       source: 'checkpoint',
-      run: async () => {
-        const token = (await resolveSecret(intg.secrets, checkpoint, 'token')) ?? '';
-        return collectCheckpoint({ clientId, period: p, externalRef: refs.checkpoint }, http, {
+      run: async () =>
+        collectCheckpoint(ctx(refs.checkpoint), http, {
           baseUrl: checkpoint.config['baseUrl'] ?? '',
-          token,
-        });
-      },
+          token: await resolveSecret(secrets, checkpoint, 'token'),
+          clientId: checkpoint.config['clientId'] || undefined,
+          accessKey: await resolveSecret(secrets, checkpoint, 'accessKey'),
+          authUrl: checkpoint.config['authUrl'] || undefined,
+        }),
     });
+  }
+
+  const dropsuite = conns.get('dropsuite');
+  if (refs.dropsuite && dropsuite) {
+    runs.push({ source: 'dropsuite', run: async () => collectDropsuite(ctx(refs.dropsuite), http, await dropsuiteCfg(secrets, dropsuite)) });
+  }
+
+  const printix = conns.get('printix');
+  if (printix && (refs.printix || printix.config['tenantId'])) {
+    runs.push({ source: 'printix', run: async () => collectPrintix(ctx(refs.printix), http, await printixCfg(secrets, printix, refs.printix)) });
+  }
+
+  const connectsecure = conns.get('connectsecure');
+  if (refs.connectsecure && connectsecure) {
+    runs.push({ source: 'connectsecure', run: async () => collectConnectSecure(ctx(refs.connectsecure), http, await connectSecureCfg(secrets, connectsecure)) });
   }
 
   const results = await runCollectors(runs);
