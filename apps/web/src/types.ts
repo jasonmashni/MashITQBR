@@ -32,6 +32,12 @@ export interface SnapshotView {
   metrics: MetricRow[];
 }
 
+/** An attention flag on a dashboard row. */
+export interface ClientFlag {
+  severity: 'red' | 'amber';
+  label: string;
+}
+
 /** One row of GET /api/overview. */
 export interface OverviewRow {
   clientId: string;
@@ -42,6 +48,11 @@ export interface OverviewRow {
   score: number | null;
   rating: Rating;
   status: string;
+  meetingAt: string | null;
+  mrr: number | null;
+  spend: number | null;
+  spendDeltaPct: number | null;
+  flags: ClientFlag[];
 }
 
 /** One row of GET /api/clients/{id}/periods. */
@@ -119,6 +130,12 @@ export interface DiscussionItem {
   response?: string;
   disposition?: string;
   owner?: string;
+  /** Pre-wired before the meeting vs answered during it. */
+  status?: 'planned' | 'discussed';
+  /** Whether this item lands on the final report (default true). */
+  includeInReport?: boolean;
+  /** Agenda order (lower first). */
+  sortOrder?: number;
   externalRef?: { system: string; id: string; status?: string };
 }
 export interface Discussion {

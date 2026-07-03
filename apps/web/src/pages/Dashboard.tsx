@@ -1,55 +1,61 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
-  SimpleGrid,
-  Card,
-  Text,
-  Group,
-  Title,
-  ThemeIcon,
-  Table,
+  ActionIcon,
   Anchor,
-  Loader,
+  Badge,
+  Card,
   Center,
+  Group,
+  Loader,
   Stack,
-  Button,
+  Table,
+  Text,
+  Title,
+  Tooltip,
 } from '@mantine/core';
-import { BarChart } from '@mantine/charts';
-import { IconUsers, IconPlugConnected, IconCalendarStats, IconArrowRight } from '@tabler/icons-react';
-import { api } from '../api.js';
+import { IconFileText, IconFileTypePdf, IconArrowUpRight, IconArrowDownRight } from '@tabler/icons-react';
+import { api, reportUrls } from '../api.js';
 import type { OverviewRow } from '../types.js';
 import { RatingBadge, StatusBadge } from '../ui.js';
 
-function StatCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: React.ReactNode }) {
+const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+
+function SpendDelta({ pct }: { pct: number | null }) {
+  if (pct === null) return <Text size="sm" c="dimmed">—</Text>;
+  const up = pct > 0;
+  const flat = Math.abs(pct) < 0.05;
+  if (flat) return <Text size="sm" c="dimmed">flat</Text>;
   return (
-    <Card withBorder padding="lg" radius="md">
-      <Group>
-        <ThemeIcon size={44} radius="md" variant="light" color="navy">
-          {icon}
-        </ThemeIcon>
-        <div>
-          <Text size="xs" c="dimmed" tt="uppercase" fw={600}>{label}</Text>
-          <Text fw={700} size="xl">{value}</Text>
-        </div>
-      </Group>
-    </Card>
+    <Group gap={2} wrap="nowrap">
+      {up ? <IconArrowUpRight size={15} color="var(--mantine-color-red-7)" /> : <IconArrowDownRight size={15} color="var(--mantine-color-teal-7)" />}
+      <Text size="sm" fw={600} c={up ? 'red.7' : 'teal.7'}>
+        {up ? '+' : ''}
+        {pct}%
+      </Text>
+    </Group>
   );
 }
 
+/**
+ * The admin cockpit: every QBR client with the things that actually drive the
+ * day — last QBR + workflow state, maturity rating, MRR, spend movement, and
+ * attention flags. One click lands in the client workspace.
+ */
 export function Dashboard() {
   const [rows, setRows] = useState<OverviewRow[]>([]);
   const [period, setPeriod] = useState('');
-  const [integrations, setIntegrations] = useState(0);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   useEffect(() => {
     let live = true;
-    Promise.all([api.overview(), api.listIntegrations()])
-      .then(([o, i]) => {
+    api
+      .overview()
+      .then((o) => {
         if (!live) return;
         setRows(o.clients);
         setPeriod(o.currentPeriod);
-        setIntegrations(i.integrations.length);
       })
       .catch(() => {})
       .finally(() => live && setLoading(false));
@@ -58,90 +64,119 @@ export function Dashboard() {
     };
   }, []);
 
-  const chartData = rows
-    .filter((r) => r.score !== null)
-    .map((r) => ({ name: r.name.length > 16 ? r.name.slice(0, 15) + '…' : r.name, score: r.score }));
-  // YYYY-QN ids sort lexicographically, so the max is the newest scored quarter.
-  const dataThrough = rows.map((r) => r.period).filter(Boolean).sort().at(-1);
+  const totalMrr = rows.reduce((sum, r) => sum + (r.mrr ?? 0), 0);
+  const flagged = rows.filter((r) => r.flags.length > 0).length;
 
   return (
     <Stack gap="lg">
-      <Group justify="space-between">
-        <Title order={2}>Dashboard</Title>
-        <Text c="dimmed">{period && `Current period ${period}`}</Text>
+      <Group justify="space-between" align="flex-end">
+        <div>
+          <Title order={2}>Dashboard</Title>
+          <Text c="dimmed" size="sm">
+            {period && `Current period ${period}`}
+            {totalMrr > 0 && ` · ${money(totalMrr)} MRR across QBR clients`}
+            {flagged > 0 && ` · ${flagged} client${flagged === 1 ? '' : 's'} flagged`}
+          </Text>
+        </div>
       </Group>
 
-      <SimpleGrid cols={{ base: 1, sm: 3 }}>
-        <StatCard icon={<IconUsers size={24} />} label="QBR clients" value={rows.length} />
-        <StatCard icon={<IconPlugConnected size={24} />} label="Integrations" value={integrations} />
-        <StatCard
-          icon={<IconCalendarStats size={24} />}
-          label="Current quarter"
-          value={
-            <>
-              {period || '—'}
-              {dataThrough && dataThrough !== period && (
-                <Text span size="xs" c="dimmed" ml={8}>data through {dataThrough}</Text>
-              )}
-            </>
-          }
-        />
-      </SimpleGrid>
-
       <Card withBorder radius="md" padding="lg">
-        <Title order={4} mb="md">Security maturity by client</Title>
         {loading ? (
-          <Center h={200}><Loader /></Center>
-        ) : chartData.length === 0 ? (
-          <Text c="dimmed" size="sm">No scored QBRs yet. Import clients, enable QBR on the ones you review, and run a Sync.</Text>
-        ) : (
-          <BarChart
-            h={260}
-            data={chartData}
-            dataKey="name"
-            series={[{ name: 'score', label: 'Maturity', color: 'navy.7' }]}
-            yAxisProps={{ domain: [0, 100] }}
-            barProps={{ radius: 4 }}
-            withLegend={false}
-          />
-        )}
-      </Card>
-
-      <Card withBorder radius="md" padding="lg">
-        <Title order={4} mb="md">QBR clients</Title>
-        {loading ? (
-          <Center h={120}><Loader /></Center>
+          <Center h={160}>
+            <Loader />
+          </Center>
         ) : rows.length === 0 ? (
-          <Text c="dimmed" size="sm">No QBR-enabled clients yet — flip the QBR toggle on the Clients page.</Text>
+          <Text c="dimmed" size="sm">
+            No QBR-enabled clients yet — flip the QBR toggle on the Clients page.
+          </Text>
         ) : (
-          <Table highlightOnHover verticalSpacing="sm">
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Client</Table.Th>
-                <Table.Th>Industry</Table.Th>
-                <Table.Th>Maturity</Table.Th>
-                <Table.Th>Status</Table.Th>
-                <Table.Th />
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {rows.map((r) => (
-                <Table.Tr key={r.clientId}>
-                  <Table.Td>
-                    <Anchor component={Link} to={`/clients/${r.clientId}`} fw={600}>{r.name}</Anchor>
-                  </Table.Td>
-                  <Table.Td>{r.industry ?? '—'}</Table.Td>
-                  <Table.Td>{r.period ? <RatingBadge rating={r.rating} score={r.score} /> : <Text size="sm" c="dimmed">no data</Text>}</Table.Td>
-                  <Table.Td><StatusBadge status={r.status} /></Table.Td>
-                  <Table.Td ta="right">
-                    <Button component={Link} to={`/clients/${r.clientId}`} size="xs" variant="subtle" rightSection={<IconArrowRight size={14} />}>
-                      Open
-                    </Button>
-                  </Table.Td>
+          <Table.ScrollContainer minWidth={860}>
+            <Table highlightOnHover verticalSpacing="sm">
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Client</Table.Th>
+                  <Table.Th>Last QBR</Table.Th>
+                  <Table.Th>Maturity</Table.Th>
+                  <Table.Th ta="right">MRR</Table.Th>
+                  <Table.Th>Spend Δ QoQ</Table.Th>
+                  <Table.Th>Flags</Table.Th>
+                  <Table.Th />
                 </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+              </Table.Thead>
+              <Table.Tbody>
+                {rows.map((r) => {
+                  const urls = r.period ? reportUrls(r.clientId, r.period) : null;
+                  return (
+                    <Table.Tr key={r.clientId} style={{ cursor: 'pointer' }} onClick={() => navigate(`/clients/${r.clientId}`)}>
+                      <Table.Td>
+                        <Anchor component={Link} to={`/clients/${r.clientId}`} fw={600} onClick={(e) => e.stopPropagation()}>
+                          {r.name}
+                        </Anchor>
+                        <Text size="xs" c="dimmed">
+                          {r.industry ?? ''}
+                          {r.hipaa ? ' · HIPAA' : ''}
+                        </Text>
+                      </Table.Td>
+                      <Table.Td>
+                        {r.period ? (
+                          <>
+                            <Text size="sm" fw={600}>{r.period}</Text>
+                            <Group gap={6} mt={2}>
+                              <StatusBadge status={r.status} />
+                              {r.meetingAt && (
+                                <Text size="xs" c="dimmed">{new Date(r.meetingAt).toLocaleDateString()}</Text>
+                              )}
+                            </Group>
+                          </>
+                        ) : (
+                          <Text size="sm" c="dimmed">no data — run a Sync</Text>
+                        )}
+                      </Table.Td>
+                      <Table.Td>{r.period ? <RatingBadge rating={r.rating} score={r.score} /> : <Text size="sm" c="dimmed">—</Text>}</Table.Td>
+                      <Table.Td ta="right">
+                        <Text size="sm" fw={600}>{r.mrr !== null ? money(r.mrr) : '—'}</Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <SpendDelta pct={r.spendDeltaPct} />
+                        {r.spend !== null && (
+                          <Text size="xs" c="dimmed">{money(r.spend)} this qtr</Text>
+                        )}
+                      </Table.Td>
+                      <Table.Td maw={260}>
+                        {r.flags.length === 0 ? (
+                          <Text size="sm" c="dimmed">—</Text>
+                        ) : (
+                          <Group gap={4}>
+                            {r.flags.map((f) => (
+                              <Badge key={f.label} size="sm" variant="light" color={f.severity === 'red' ? 'red' : 'yellow'}>
+                                {f.label}
+                              </Badge>
+                            ))}
+                          </Group>
+                        )}
+                      </Table.Td>
+                      <Table.Td ta="right" onClick={(e) => e.stopPropagation()}>
+                        {urls && (
+                          <Group gap={4} justify="flex-end" wrap="nowrap">
+                            <Tooltip label="Open report">
+                              <ActionIcon component="a" href={urls.html} target="_blank" variant="subtle" aria-label={`Report for ${r.name}`}>
+                                <IconFileText size={17} />
+                              </ActionIcon>
+                            </Tooltip>
+                            <Tooltip label="Download PDF">
+                              <ActionIcon component="a" href={urls.pdf} target="_blank" variant="subtle" aria-label={`PDF for ${r.name}`}>
+                                <IconFileTypePdf size={17} />
+                              </ActionIcon>
+                            </Tooltip>
+                          </Group>
+                        )}
+                      </Table.Td>
+                    </Table.Tr>
+                  );
+                })}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
         )}
       </Card>
     </Stack>

@@ -1,9 +1,11 @@
 import {
   advanceStatus,
+  computeFlags,
   computeScorecard,
   isQbrStatus,
   lastPeriods,
   periodFor,
+  previousPeriod,
   type MetricCategory,
   type MetricValue,
   type QbrStatus,
@@ -791,10 +793,17 @@ export function currentPeriod(): ApiResult {
   return ok({ period: periodFor(new Date()).id });
 }
 
+/** Numeric metric lookup on a snapshot. */
+function snapshotNum(s: { metrics: Array<{ key: string; value: unknown }> } | undefined, key: string): number | null {
+  const v = s?.metrics.find((m) => m.key === key)?.value;
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
 /**
- * Dashboard rollup in one call: for each QBR-enabled client, the newest
- * snapshot within the last 4 quarters scored with computeScorecard only —
- * no narrative or report build.
+ * Admin dashboard rollup in one call: for each QBR-enabled client, the newest
+ * snapshot within the last 4 quarters scored with computeScorecard, plus the
+ * numbers an admin actually works from — last QBR + workflow state, rating,
+ * MRR, spend vs last quarter, and attention flags. No narrative/report build.
  */
 export async function getOverview(currentOverride?: string | null): Promise<ApiResult> {
   const store = getDataStore();
@@ -815,8 +824,23 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
           break;
         }
       }
+      const previous = period ? await ds.getSnapshot(client.id, previousPeriod(period).id) : undefined;
       const scorecard = snapshot ? computeScorecard(snapshot) : undefined;
+      const prevScorecard = previous ? computeScorecard(previous) : undefined;
       const qbr = period ? await store.getQbr(client.id, period) : undefined;
+
+      const mrr = snapshotNum(snapshot, 'finance.mrr');
+      const spendNow = snapshotNum(snapshot, 'finance.quarter_invoiced');
+      const spendPrev = snapshotNum(previous, 'finance.quarter_invoiced');
+      const spendDeltaPct =
+        spendNow !== null && spendPrev !== null && spendPrev !== 0 ? Math.round(((spendNow - spendPrev) / spendPrev) * 1000) / 10 : null;
+
+      const rating = scorecard?.overall.rating ?? 'unknown';
+      const flags = computeFlags(snapshot, previous, {
+        current: rating,
+        previous: prevScorecard?.overall.rating,
+      });
+
       return {
         clientId: client.id,
         name: client.name,
@@ -824,8 +848,13 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
         hipaa: client.hipaa,
         period: period ?? null,
         score: scorecard?.overall.score ?? null,
-        rating: scorecard?.overall.rating ?? 'unknown',
+        rating,
         status: qbr?.status ?? 'draft',
+        meetingAt: qbr?.meeting?.scheduledAt ?? null,
+        mrr,
+        spend: spendNow,
+        spendDeltaPct,
+        flags,
       };
     }),
   );
