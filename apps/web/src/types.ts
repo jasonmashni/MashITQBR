@@ -128,6 +128,27 @@ export interface Discussion {
   notes?: string;
 }
 
+/** A vendor report / uploaded file attached to a QBR. */
+export interface DocumentInfo {
+  id: string;
+  clientId: string;
+  period: string;
+  name: string;
+  source: string;
+  contentType: string;
+  size: number;
+  uploadedAt: string;
+  uploadedBy: string;
+}
+
+/** Halo lookup lists for the push-ticket modal. */
+export interface HaloMeta {
+  ticketTypes: Array<{ id: string; name: string }>;
+  agents: Array<{ id: string; name: string }>;
+  teams: Array<{ id: string; name: string }>;
+  priorities: Array<{ id: string; name: string }>;
+}
+
 /** The signed-in user reported by GET /api/me. */
 export interface Me {
   name: string;

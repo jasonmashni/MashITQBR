@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { AuditEvent, ClientConnectionMap, Connection, DataStore, NarrativeRecord, QbrRecord } from './types.js';
+import type { AuditEvent, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, QbrRecord } from './types.js';
 
 interface JsonShape {
   clients: Record<string, Client>;
@@ -12,11 +12,13 @@ interface JsonShape {
   discussions: Record<string, QbrDiscussion>;
   snapshots: Record<string, MetricSnapshot>;
   narratives: Record<string, NarrativeRecord>;
+  /** Attached document metadata, keyed clientId:period. */
+  documents: Record<string, DocumentRecord[]>;
   /** Newest first, capped locally. */
   audit: AuditEvent[];
 }
 
-const EMPTY: JsonShape = { clients: {}, connections: {}, maps: {}, qbrs: {}, configs: {}, discussions: {}, snapshots: {}, narratives: {}, audit: [] };
+const EMPTY: JsonShape = { clients: {}, connections: {}, maps: {}, qbrs: {}, configs: {}, discussions: {}, snapshots: {}, narratives: {}, documents: {}, audit: [] };
 const pk = (a: string, b: string) => `${a}:${b}`;
 
 /** File-backed DataStore for local development. */
@@ -132,6 +134,27 @@ export class JsonDataStore implements DataStore {
     s.narratives[pk(record.clientId, record.period)] = record;
     this.write(s);
     return record;
+  }
+
+  async listDocuments(clientId: string, period: string): Promise<DocumentRecord[]> {
+    return this.read().documents[pk(clientId, period)] ?? [];
+  }
+  async getDocument(clientId: string, period: string, id: string): Promise<DocumentRecord | undefined> {
+    return (await this.listDocuments(clientId, period)).find((d) => d.id === id);
+  }
+  async putDocument(record: DocumentRecord): Promise<DocumentRecord> {
+    const s = this.read();
+    const key = pk(record.clientId, record.period);
+    const rest = (s.documents[key] ?? []).filter((d) => d.id !== record.id);
+    s.documents[key] = [...rest, record];
+    this.write(s);
+    return record;
+  }
+  async deleteDocument(clientId: string, period: string, id: string): Promise<void> {
+    const s = this.read();
+    const key = pk(clientId, period);
+    s.documents[key] = (s.documents[key] ?? []).filter((d) => d.id !== id);
+    this.write(s);
   }
 
   async appendAudit(event: AuditEvent): Promise<void> {

@@ -14,6 +14,8 @@ export interface CollectResult {
   metrics: MetricValue[];
   /** Human-readable notes about data that couldn't be collected (gaps, manual entry needed). */
   warnings: string[];
+  /** Vendor-generated report files the sync should fetch and attach to the QBR. */
+  documents?: Array<{ name: string; url: string }>;
 }
 
 /**

@@ -14,8 +14,10 @@ import { FetchHttpTransport, fetchHaloMeta, type McpTransport } from '@mashit/in
 import { buildQbrReport, renderQbrHtml } from './service.js';
 import {
   dataStoreKind,
+  docPath,
   ensureSeeded,
   getDataStore,
+  getDocStore,
   getSecretStore,
   isConnectionType,
   loadReportInputs,
@@ -23,6 +25,7 @@ import {
   secretStoreKind,
   storeDataSource,
   toConnectionView,
+  type DocumentRecord,
 } from './store/index.js';
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
 import { currentActor } from './requestContext.js';
@@ -38,6 +41,8 @@ export interface ApiResult {
   html?: string;
   pdf?: Buffer;
   pptx?: Buffer;
+  /** Arbitrary file download (attached documents, .eml drafts). */
+  file?: { bytes: Buffer; contentType: string; filename: string };
 }
 const ok = (json: unknown): ApiResult => ({ status: 200, json });
 const err = (status: number, message: string): ApiResult => ({ status, json: { error: message } });
@@ -291,6 +296,121 @@ export async function putManualMetrics(clientId: string, period: string, body: R
   return ok({ metrics: updated.metrics.length, manual: manual.length });
 }
 
+// ── Attached documents (vendor reports + uploads) ────────────────────────────
+/** Keep uploads/auto-pulls comfortably inside Functions request limits. */
+const MAX_DOCUMENT_BYTES = 15 * 1024 * 1024;
+
+export async function listQbrDocuments(clientId: string, period: string): Promise<ApiResult> {
+  const docs = await getDataStore().listDocuments(clientId, period);
+  return ok({ documents: docs.sort((a, b) => (a.uploadedAt < b.uploadedAt ? 1 : -1)) });
+}
+
+/** Store one document (bytes → content store, metadata → data store). */
+async function storeDocument(input: {
+  clientId: string;
+  period: string;
+  name: string;
+  contentType: string;
+  bytes: Buffer;
+  source: string;
+}): Promise<DocumentRecord> {
+  const store = getDataStore();
+  // Same source+name replaces the previous version (re-syncs stay tidy).
+  const existing = (await store.listDocuments(input.clientId, input.period)).find(
+    (d) => d.source === input.source && d.name === input.name,
+  );
+  const id = existing?.id ?? Math.random().toString(36).slice(2, 10);
+  const record: DocumentRecord = {
+    id,
+    clientId: input.clientId,
+    period: input.period,
+    name: input.name,
+    source: input.source,
+    contentType: input.contentType,
+    size: input.bytes.length,
+    uploadedAt: new Date().toISOString(),
+    uploadedBy: currentActor(),
+  };
+  await getDocStore().put(docPath(input.clientId, input.period, id, input.name), input.bytes, input.contentType);
+  await store.putDocument(record);
+  return record;
+}
+
+export async function uploadQbrDocument(
+  clientId: string,
+  period: string,
+  body: { name?: string; contentType?: string; dataBase64?: string },
+): Promise<ApiResult> {
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const data = typeof body.dataBase64 === 'string' ? body.dataBase64 : '';
+  if (!name || !data) return err(400, 'A file name and base64 content are required.');
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(data, 'base64');
+  } catch {
+    return err(400, 'Invalid base64 content.');
+  }
+  if (bytes.length === 0) return err(400, 'Empty file.');
+  if (bytes.length > MAX_DOCUMENT_BYTES) {
+    return err(400, `File is too large (${Math.round(bytes.length / 1024 / 1024)} MB) — the limit is 15 MB.`);
+  }
+  const record = await storeDocument({
+    clientId,
+    period,
+    name,
+    contentType: body.contentType || 'application/octet-stream',
+    bytes,
+    source: 'upload',
+  });
+  audit('document.upload', `qbr:${clientId}/${period}`, `${name} (${Math.round(bytes.length / 1024)} KB)`);
+  return ok(record);
+}
+
+export async function downloadQbrDocument(clientId: string, period: string, id: string): Promise<ApiResult> {
+  const record = await getDataStore().getDocument(clientId, period, id);
+  if (!record) return err(404, 'Unknown document');
+  const bytes = await getDocStore().get(docPath(clientId, period, record.id, record.name));
+  if (!bytes) return err(404, 'Document content missing');
+  return { status: 200, file: { bytes, contentType: record.contentType, filename: record.name } };
+}
+
+export async function deleteQbrDocument(clientId: string, period: string, id: string): Promise<ApiResult> {
+  const store = getDataStore();
+  const record = await store.getDocument(clientId, period, id);
+  if (!record) return err(404, 'Unknown document');
+  await getDocStore().delete(docPath(clientId, period, record.id, record.name));
+  await store.deleteDocument(clientId, period, id);
+  audit('document.delete', `qbr:${clientId}/${period}`, record.name);
+  return ok({ deleted: id });
+}
+
+/** Fetch vendor-published report files surfaced during sync and attach them. */
+async function attachSyncDocuments(
+  clientId: string,
+  period: string,
+  documents: Array<{ source: string; name: string; url: string }>,
+  warnings: string[],
+): Promise<void> {
+  for (const doc of documents) {
+    try {
+      const res = await fetch(doc.url);
+      if (!res.ok) throw new Error(`fetch responded ${res.status}`);
+      const bytes = Buffer.from(await res.arrayBuffer());
+      if (bytes.length === 0 || bytes.length > MAX_DOCUMENT_BYTES) throw new Error(`unexpected size ${bytes.length}`);
+      await storeDocument({
+        clientId,
+        period,
+        name: doc.name,
+        contentType: res.headers.get('content-type') || 'application/pdf',
+        bytes,
+        source: doc.source,
+      });
+    } catch (e) {
+      warnings.push(`[${doc.source}] Report "${doc.name}" could not be fetched: ${e instanceof Error ? e.message : 'error'}`);
+    }
+  }
+}
+
 // ── Integrations ─────────────────────────────────────────────────────────────
 export async function listIntegrations(): Promise<ApiResult> {
   return ok({ integrations: (await getDataStore().listConnections()).map(toConnectionView) });
@@ -398,14 +518,16 @@ export async function importHalo(): Promise<ApiResult> {
 
 export async function syncQbr(clientId: string, period: string): Promise<ApiResult> {
   try {
-    const { snapshot, warnings } = await syncClientMetrics(await buildIntegrations(), clientId, period);
+    const { snapshot, warnings, documents } = await syncClientMetrics(await buildIntegrations(), clientId, period);
+    // Vendor-published report files (e.g. the Huntress quarterly PDF) attach automatically.
+    await attachSyncDocuments(clientId, period, documents, warnings);
     const store = getDataStore();
     const existing = await store.getQbr(clientId, period);
     // Forward-only: a re-sync must not demote a scheduled/completed QBR.
     const status = advanceStatus(existing?.status, 'data_synced');
     await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() });
     audit('qbr.sync', `qbr:${clientId}/${period}`, `${snapshot.metrics.length} metric(s)`);
-    return ok({ metrics: snapshot.metrics.length, warnings });
+    return ok({ metrics: snapshot.metrics.length, warnings, documents: documents.length });
   } catch (e) {
     return err(400, e instanceof Error ? e.message : 'Sync failed');
   }

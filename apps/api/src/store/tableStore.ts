@@ -1,6 +1,6 @@
 import { TableClient, odata, type TableEntity } from '@azure/data-tables';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { AuditEvent, ClientConnectionMap, Connection, DataStore, NarrativeRecord, QbrRecord } from './types.js';
+import type { AuditEvent, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, QbrRecord } from './types.js';
 
 const TABLES = {
   clients: 'qbrClients',
@@ -11,6 +11,7 @@ const TABLES = {
   discussions: 'qbrDiscussions',
   snapshots: 'qbrSnapshots',
   narratives: 'qbrNarratives',
+  documents: 'qbrDocuments',
   audit: 'qbrAudit',
 } as const;
 
@@ -108,6 +109,18 @@ export class TableDataStore implements DataStore {
   // cached AI narratives
   getNarrative = (clientId: string, period: string) => this.get<NarrativeRecord>(TABLES.narratives, clientId, period);
   putNarrative = (n: NarrativeRecord) => this.put(TABLES.narratives, n.clientId, n.period, n);
+
+  // attached documents — partition per client:period so a QBR's set is one range read
+  listDocuments = (clientId: string, period: string) => this.list<DocumentRecord>(TABLES.documents, `${clientId}:${period}`);
+  getDocument = (clientId: string, period: string, id: string) => this.get<DocumentRecord>(TABLES.documents, `${clientId}:${period}`, id);
+  putDocument = (d: DocumentRecord) => this.put(TABLES.documents, `${d.clientId}:${d.period}`, d.id, d);
+  async deleteDocument(clientId: string, period: string, id: string): Promise<void> {
+    try {
+      await this.table(TABLES.documents).deleteEntity(`${clientId}:${period}`, id);
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+    }
+  }
 
   // compliance audit trail — a fixed partition with descending-time rowKeys
   // makes "latest N" a single-partition, single-page range read.

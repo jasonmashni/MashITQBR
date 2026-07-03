@@ -331,12 +331,19 @@ export async function testConnection(intg: Integrations, conn: Connection): Prom
  * Ninja when no direct connection exists. The client's per-tool external ids
  * live on `client.integrationRefs`.
  */
+/** A vendor-generated report file surfaced by a collector during sync. */
+export interface SyncDocument {
+  source: string;
+  name: string;
+  url: string;
+}
+
 export async function syncClientMetrics(
   intg: Integrations,
   clientId: string,
   period: string,
   capturedAt: string = new Date().toISOString(),
-): Promise<{ snapshot: MetricSnapshot; warnings: string[] }> {
+): Promise<{ snapshot: MetricSnapshot; warnings: string[]; documents: SyncDocument[] }> {
   const client = await intg.store.getClient(clientId);
   if (!client) throw new Error(`Unknown client: ${clientId}`);
   const refs = client.integrationRefs ?? {};
@@ -431,5 +438,6 @@ export async function syncClientMetrics(
     warnings.push('No integrations mapped for this client — configure connections and set the client\'s external ids.');
   }
   await intg.store.putSnapshot(snapshot);
-  return { snapshot, warnings };
+  const documents = results.flatMap((r) => (r.documents ?? []).map((d) => ({ source: r.source, name: d.name, url: d.url })));
+  return { snapshot, warnings, documents };
 }

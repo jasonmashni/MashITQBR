@@ -156,6 +156,7 @@ export async function collectHuntress(
   const headers = { Authorization: basicAuthHeader(cfg.apiKey, cfg.apiSecret), Accept: 'application/json' };
   const org = encodeURIComponent(ctx.externalRef);
   const metrics: MetricValue[] = [];
+  const documents: Array<{ name: string; url: string }> = [];
 
   // 1) Quarterly summary report for the period (fallback: newest monthly in-period).
   try {
@@ -166,8 +167,13 @@ export async function collectHuntress(
       if (reports.length > 0) warnings.push('No Huntress quarterly summary for this period yet — using the latest monthly summary.');
     }
     const report = reports[0];
-    if (report) metrics.push(...normalizeHuntressSummary(report));
-    else warnings.push('No Huntress summary report found for this period (they generate after the period closes).');
+    if (report) {
+      metrics.push(...normalizeHuntressSummary(report));
+      // Huntress publishes the rendered summary PDF at report.url — attach it to the QBR.
+      if (typeof report.url === 'string' && report.url) {
+        documents.push({ name: `Huntress ${report.type ?? 'summary'} ${ctx.period.id}.pdf`, url: report.url });
+      }
+    } else warnings.push('No Huntress summary report found for this period (they generate after the period closes).');
   } catch (e) {
     warnings.push(`Huntress summary reports unavailable: ${e instanceof Error ? e.message : 'error'}`);
   }
@@ -200,5 +206,5 @@ export async function collectHuntress(
   }
 
   if (metrics.length === 0) warnings.push('Huntress returned no usable data for this organization.');
-  return { source: 'huntress', metrics, warnings };
+  return { source: 'huntress', metrics, warnings, documents };
 }

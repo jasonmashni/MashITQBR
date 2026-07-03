@@ -15,6 +15,17 @@ function toResponse(r: ApiResult): HttpResponseInit {
   if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...sec }, body: r.html };
   if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf', ...sec }, body: r.pdf };
   if (r.pptx !== undefined) return { status: r.status, headers: { 'Content-Type': PPTX, 'Content-Disposition': 'attachment', ...sec }, body: r.pptx };
+  if (r.file !== undefined) {
+    return {
+      status: r.status,
+      headers: {
+        'Content-Type': r.file.contentType,
+        'Content-Disposition': `attachment; filename="${r.file.filename.replace(/["\\]/g, '')}"`,
+        ...sec,
+      },
+      body: r.file.bytes,
+    };
+  }
   return { status: r.status, jsonBody: r.json, headers: sec };
 }
 
@@ -47,6 +58,12 @@ route('regenNarrative', 'POST', 'api/clients/{clientId}/qbr/{period}/narrative/r
 // Data review
 route('getMetrics', 'GET', 'api/clients/{clientId}/qbr/{period}/metrics', (req) => h.getMetrics(req.params['clientId']!, req.params['period']!));
 route('putMetrics', 'PUT', 'api/clients/{clientId}/qbr/{period}/metrics', async (req) => h.putManualMetrics(req.params['clientId']!, req.params['period']!, await body(req)));
+
+// Attached documents
+route('listDocs', 'GET', 'api/clients/{clientId}/qbr/{period}/documents', (req) => h.listQbrDocuments(req.params['clientId']!, req.params['period']!));
+route('uploadDoc', 'POST', 'api/clients/{clientId}/qbr/{period}/documents', async (req) => h.uploadQbrDocument(req.params['clientId']!, req.params['period']!, (await body(req)) as never));
+route('downloadDoc', 'GET', 'api/clients/{clientId}/qbr/{period}/documents/{docId}', (req) => h.downloadQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
+route('deleteDoc', 'DELETE', 'api/clients/{clientId}/qbr/{period}/documents/{docId}', (req) => h.deleteQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
 
 // Config + discussion
 route('getConfig', 'GET', 'api/clients/{clientId}/config', (req) => h.getConfig(req.params['clientId']!));

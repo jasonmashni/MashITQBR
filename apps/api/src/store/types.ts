@@ -92,6 +92,25 @@ export interface NarrativeRecord {
   updatedAt: string;
 }
 
+/**
+ * Metadata for a vendor report / uploaded document attached to a QBR.
+ * The file bytes live in the document content store (Blob Storage in Azure,
+ * local files in dev); this record is the register the UI and report read.
+ */
+export interface DocumentRecord {
+  id: string;
+  clientId: string;
+  period: string;
+  /** Display file name (also the download name). */
+  name: string;
+  /** Where it came from: 'upload' or the vendor integration id. */
+  source: string;
+  contentType: string;
+  size: number;
+  uploadedAt: string;
+  uploadedBy: string;
+}
+
 /** One compliance audit entry (who did what to what, when). */
 export interface AuditEvent {
   id: string;
@@ -143,6 +162,12 @@ export interface DataStore {
   // cached AI narratives
   getNarrative(clientId: string, period: string): Promise<NarrativeRecord | undefined>;
   putNarrative(record: NarrativeRecord): Promise<NarrativeRecord>;
+
+  // attached documents (metadata; bytes live in the document content store)
+  listDocuments(clientId: string, period: string): Promise<DocumentRecord[]>;
+  getDocument(clientId: string, period: string, id: string): Promise<DocumentRecord | undefined>;
+  putDocument(record: DocumentRecord): Promise<DocumentRecord>;
+  deleteDocument(clientId: string, period: string, id: string): Promise<void>;
 
   // compliance audit trail
   appendAudit(event: AuditEvent): Promise<void>;

@@ -60,6 +60,10 @@ const routes: Route[] = [
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/narrative\/regenerate$/, run: (m) => h.regenerateNarrative(m[1]!, m[2]!) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/metrics$/, run: (m) => h.getMetrics(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/metrics$/, run: (m, b) => h.putManualMetrics(m[1]!, m[2]!, b) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents$/, run: (m) => h.listQbrDocuments(m[1]!, m[2]!) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents$/, run: (m, b) => h.uploadQbrDocument(m[1]!, m[2]!, b as never) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)$/, run: (m) => h.downloadQbrDocument(m[1]!, m[2]!, m[3]!) },
+  { method: 'DELETE', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)$/, run: (m) => h.deleteQbrDocument(m[1]!, m[2]!, m[3]!) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m) => h.getDiscussion(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m, b) => h.putDiscussion(m[1]!, m[2]!, b) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/sync$/, run: (m) => h.syncQbr(m[1]!, m[2]!) },
@@ -111,6 +115,14 @@ const server = createServer(async (req, res) => {
       if (result.html !== undefined) { res.writeHead(result.status, { 'Content-Type': 'text/html; charset=utf-8', ...cors }); return res.end(result.html); }
       if (result.pdf !== undefined) { res.writeHead(result.status, { 'Content-Type': 'application/pdf', ...cors }); return res.end(result.pdf); }
       if (result.pptx !== undefined) { res.writeHead(result.status, { 'Content-Type': PPTX, 'Content-Disposition': 'attachment', ...cors }); return res.end(result.pptx); }
+      if (result.file !== undefined) {
+        res.writeHead(result.status, {
+          'Content-Type': result.file.contentType,
+          'Content-Disposition': `attachment; filename="${result.file.filename.replace(/["\\]/g, '')}"`,
+          ...cors,
+        });
+        return res.end(result.file.bytes);
+      }
       res.writeHead(result.status, { 'Content-Type': 'application/json', ...cors });
       return res.end(JSON.stringify(result.json));
     }

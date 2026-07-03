@@ -8,6 +8,7 @@ import type { DataStore } from './types.js';
 
 export * from './types.js';
 export * from './secretStore.js';
+export * from './docStore.js';
 export { JsonDataStore } from './jsonStore.js';
 export { TableDataStore } from './tableStore.js';
 

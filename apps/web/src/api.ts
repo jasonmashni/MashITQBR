@@ -5,6 +5,8 @@ import type {
   Client,
   ConnectionView,
   Discussion,
+  DocumentInfo,
+  HaloMeta,
   Me,
   MetricRow,
   OverviewRow,
@@ -101,17 +103,35 @@ export const api = {
   putDiscussion: (clientId: string, period: string, disc: Discussion) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/discussion`, disc).then(json<Discussion>),
 
+  // Attached documents (vendor reports + uploads)
+  listDocuments: (clientId: string, period: string) =>
+    send('GET', `/api/clients/${clientId}/qbr/${period}/documents`).then(json<{ documents: DocumentInfo[] }>),
+  uploadDocument: (clientId: string, period: string, body: { name: string; contentType: string; dataBase64: string }) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/documents`, body).then(json<DocumentInfo>),
+  deleteDocument: (clientId: string, period: string, id: string) =>
+    send('DELETE', `/api/clients/${clientId}/qbr/${period}/documents/${id}`).then(json<{ deleted: string }>),
+
   // Workflow
   sync: (clientId: string, period: string) =>
-    send('POST', `/api/clients/${clientId}/qbr/${period}/sync`).then(json<{ metrics: number; warnings: string[] }>),
+    send('POST', `/api/clients/${clientId}/qbr/${period}/sync`).then(json<{ metrics: number; warnings: string[]; documents?: number }>),
   putStatus: (clientId: string, period: string, status: string) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/status`, { status }).then(json<unknown>),
   putSchedule: (clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/schedule`, body).then(json<unknown>),
+  haloMeta: () => send('GET', '/api/integrations/halo/meta').then(json<HaloMeta>),
   pushAction: (
     clientId: string,
     period: string,
-    body: { actionId?: string; target: string; title?: string; detail?: string },
+    body: {
+      actionId?: string;
+      target: string;
+      title?: string;
+      detail?: string;
+      ticketTypeId?: string;
+      agentId?: string;
+      team?: string;
+      priorityId?: string;
+    },
   ) => send('POST', `/api/clients/${clientId}/qbr/${period}/actions/push`, body).then(json<{ system: string; id: string; status?: string }>),
 
   // Microsoft 365 (delegated Graph via Easy Auth — token refreshed transparently)
@@ -138,4 +158,8 @@ export const reportUrls = (clientId: string, period: string) => ({
   html: `/api/clients/${clientId}/qbr/${period}/report.html`,
   pdf: `/api/clients/${clientId}/qbr/${period}/report.pdf`,
   deck: `/api/clients/${clientId}/qbr/${period}/deck.pptx`,
+  email: `/api/clients/${clientId}/qbr/${period}/email.eml`,
 });
+
+export const documentUrl = (clientId: string, period: string, id: string) =>
+  `/api/clients/${clientId}/qbr/${period}/documents/${id}`;
