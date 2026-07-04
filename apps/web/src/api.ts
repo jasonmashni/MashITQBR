@@ -57,11 +57,19 @@ async function withAuthRefresh<T>(run: () => Promise<T>): Promise<T> {
 // Capabilities don't change while the app is open — fetch once, share everywhere.
 let _system: Promise<SystemInfo> | undefined;
 
+// Some hosts have refused to register the /api/system function while serving
+// every other route — the alias route answers identically, so fall back.
+async function fetchSystem(): Promise<SystemInfo> {
+  const res = await send('GET', '/api/system');
+  if (res.ok) return res.json() as Promise<SystemInfo>;
+  return send('GET', '/api/system-info').then(json<SystemInfo>);
+}
+
 export const api = {
   // System capabilities (memoized)
-  system: () => (_system ??= send('GET', '/api/system').then(json<SystemInfo>)),
-  /** Re-read /api/system (e.g. after an inbox poll) and refresh the memo. */
-  systemFresh: () => (_system = send('GET', '/api/system').then(json<SystemInfo>)),
+  system: () => (_system ??= fetchSystem()),
+  /** Re-read the system info (e.g. after an inbox poll) and refresh the memo. */
+  systemFresh: () => (_system = fetchSystem()),
   /** Drain the shared report mailbox now (the timer does this every 5 min). */
   pollInbox: () => send('POST', '/api/inbox/poll').then(json<{ processed: number; filed: number; unrouted: number }>),
   me: () => send('GET', '/api/me').then(json<Me>),

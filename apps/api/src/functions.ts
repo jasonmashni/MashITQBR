@@ -94,7 +94,12 @@ route('getOrgSettings', 'GET', 'api/settings/org', () => h.getOrgSettings());
 route('putOrgSettings', 'PUT', 'api/settings/org', async (req) => h.putOrgSettings(await body(req)));
 
 route('currentPeriod', 'GET', 'api/period/current', () => h.currentPeriod());
-route('system', 'GET', 'api/system', () => h.getSystem());
+// Function NAME deliberately not "system" — observed in the field: a function
+// registered under that name never turned up on the deployed host (its route
+// fell through to the SPA catch-all) while every neighbor registered fine.
+// The alias route is belt-and-braces; the web client falls back to it.
+route('systemInfo', 'GET', 'api/system', () => h.getSystem());
+route('systemInfoAlias', 'GET', 'api/system-info', () => h.getSystem());
 route('overview', 'GET', 'api/overview', (req) => h.getOverview(req.query.get('current')));
 route('clientPeriods', 'GET', 'api/clients/{clientId}/periods', (req) => h.getPeriods(req.params['clientId']!, req.query.get('current')));
 route('me', 'GET', 'api/me', (req) => h.getMe(principalFrom(headerGet(req))));
