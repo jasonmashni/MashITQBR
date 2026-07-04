@@ -106,6 +106,34 @@ export function normalizeHuntressUsage(u: HuntressUsages): MetricValue[] {
   return out;
 }
 
+export interface HuntressIdentity {
+  email?: string;
+  mfa_enabled?: boolean;
+  enabled?: boolean;
+  billable?: boolean;
+  licensed?: boolean;
+}
+
+/**
+ * Scope identities to the ones an executive MFA number should describe:
+ * enabled, licensed/billable when the API exposes such a flag, and belonging
+ * to the organization's DOMINANT email domain — tenants accumulate guest and
+ * external identities that make raw coverage misleading (a "54% MFA" that is
+ * really 95% of actual staff).
+ */
+export function scopeHuntressIdentities<T extends HuntressIdentity>(identities: T[]): T[] {
+  let active = identities.filter((i) => i.enabled !== false);
+  const hasLicenseFlag = active.some((i) => typeof i.billable === 'boolean' || typeof i.licensed === 'boolean');
+  if (hasLicenseFlag) active = active.filter((i) => i.billable === true || i.licensed === true);
+  const counts = new Map<string, number>();
+  for (const i of active) {
+    const domain = (i.email ?? '').split('@')[1]?.toLowerCase();
+    if (domain) counts.set(domain, (counts.get(domain) ?? 0) + 1);
+  }
+  const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  return dominant ? active.filter((i) => (i.email ?? '').toLowerCase().endsWith(`@${dominant}`)) : active;
+}
+
 /** MFA coverage from per-identity records (null when none). */
 export function mfaCoveragePct(identities: Array<{ mfa_enabled?: boolean; enabled?: boolean }>): number | null {
   const active = identities.filter((i) => i.enabled !== false);
@@ -188,18 +216,24 @@ export async function collectHuntress(
   }
 
   // 3) MFA coverage from identities (feeds the scorecard's Identity function).
+  // Scoped to licensed identities on the org's dominant domain — the raw
+  // tenant list includes guests/externals that make the number misleading.
   try {
-    const identities = await pageAll<{ mfa_enabled?: boolean; enabled?: boolean }>(
-      http,
-      `${base}/identities?organization_id=${org}`,
-      headers,
-      'identities',
-    );
-    const pct = mfaCoveragePct(identities);
+    const identities = await pageAll<HuntressIdentity>(http, `${base}/identities?organization_id=${org}`, headers, 'identities');
+    const scoped = scopeHuntressIdentities(identities);
+    const pct = mfaCoveragePct(scoped);
     if (pct !== null) {
-      metrics.push(
-        metric('identity.mfa_coverage_pct', 'MFA coverage', pct, { category: 'identity', source: 'huntress', unit: '%', higherIsBetter: true }),
-      );
+      const details = scoped
+        .slice(0, 100)
+        .map((i) => ({ identity: i.email ?? '', mfa: i.mfa_enabled === true ? 'yes' : 'NO' }))
+        .sort((a, b) => a.mfa.localeCompare(b.mfa)); // the gaps float to the top
+      metrics.push({
+        ...metric('identity.mfa_coverage_pct', 'MFA coverage (licensed users)', pct, { category: 'identity', source: 'huntress', unit: '%', higherIsBetter: true }),
+        details,
+      });
+      if (scoped.length < identities.length) {
+        warnings.push(`MFA coverage scoped to ${scoped.length} licensed primary-domain identities (of ${identities.length} in the tenant).`);
+      }
     }
   } catch (e) {
     warnings.push(`Huntress identities unavailable (MFA coverage skipped): ${e instanceof Error ? e.message : 'error'}`);

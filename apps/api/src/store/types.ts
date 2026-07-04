@@ -112,6 +112,32 @@ export interface DocumentRecord {
   uploadedBy: string;
 }
 
+/** Kanban columns for client opportunities/initiatives surfaced in QBRs. */
+export const OPPORTUNITY_STATUSES = ['idea', 'discussing', 'approved', 'pushed', 'closed'] as const;
+export type OpportunityStatus = (typeof OPPORTUNITY_STATUSES)[number];
+
+/**
+ * A per-client opportunity / future initiative — "client mentioned a new
+ * location", "server refresh next year" — flagged during a QBR (or added
+ * directly) and tracked on the client's board across quarters until it's
+ * pushed to Halo as an opportunity/ticket or closed.
+ */
+export interface OpportunityRecord {
+  id: string;
+  clientId: string;
+  title: string;
+  detail?: string;
+  status: OpportunityStatus;
+  /** The QBR quarter it came out of (e.g. "2026-Q2"), when flagged from one. */
+  sourcePeriod?: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy?: string;
+  /** Set once pushed to Halo: the created opportunity/ticket id. */
+  externalRef?: string;
+  externalKind?: 'halo_ticket' | 'halo_opportunity' | 'zomentum_opportunity';
+}
+
 /** One compliance audit entry (who did what to what, when). */
 export interface AuditEvent {
   id: string;
@@ -169,6 +195,11 @@ export interface DataStore {
   getDocument(clientId: string, period: string, id: string): Promise<DocumentRecord | undefined>;
   putDocument(record: DocumentRecord): Promise<DocumentRecord>;
   deleteDocument(clientId: string, period: string, id: string): Promise<void>;
+
+  // opportunity board (per client, cross-quarter)
+  listOpportunities(clientId: string): Promise<OpportunityRecord[]>;
+  putOpportunity(record: OpportunityRecord): Promise<OpportunityRecord>;
+  deleteOpportunity(clientId: string, id: string): Promise<void>;
 
   // compliance audit trail
   appendAudit(event: AuditEvent): Promise<void>;

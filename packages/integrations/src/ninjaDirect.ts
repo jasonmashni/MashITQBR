@@ -145,24 +145,36 @@ export function normalizeNinjaPatchQuarter(installed: number, failed: number): M
   return out;
 }
 
-/** Fields on a backup-usage row that prove data is ACTUALLY backed up. */
-const BACKUP_EVIDENCE_FIELDS = [
-  'totalSize',
-  'totalSizeOnDisk',
+/**
+ * Usage sizes on a backup row (live-verified: they nest under
+ * references.backupUsage). Any positive size — or a successful job when
+ * includeLastBackupJobTimes is on — proves data is actually backed up.
+ */
+const BACKUP_SIZE_FIELDS = [
   'revisionsTotalSize',
-  'backupTotalSize',
-  'usedStorage',
-  'usedBytes',
-  'totalFiles',
-  'fileCount',
-  'lastSuccessfulBackupJob',
+  'cloudTotalSize',
+  'localTotalSize',
+  'revisionsCurrentSize',
+  'cloudFileFolderSize',
+  'cloudImageSize',
+  'cloudImageV2Size',
+  'cloudNetworkShareSize',
+  'localFileFolderSize',
+  'localImageSize',
+  'localImageV2Size',
 ];
+
+/** The nested usage object on a backup-usage row (tolerates flat rows too). */
+function backupUsageOf(row: Json): Json {
+  const nested = (row['references'] as Json | undefined)?.['backupUsage'] ?? row['backupUsage'];
+  return nested && typeof nested === 'object' && !Array.isArray(nested) ? (nested as Json) : row;
+}
 
 /**
  * Backup usage rows carry organizationId (the endpoint has no org filter) —
  * and the endpoint returns a row for EVERY device when the backup module is
- * on, with zero usage for devices that have no backup plan. Only devices
- * with real backup evidence count as protected.
+ * on, with all-zero usage for devices that have no backup plan or data.
+ * Only devices with real backup evidence count as protected.
  */
 export function normalizeNinjaBackup(rows: Json[], orgId: string, deviceName?: (id: string) => string | undefined): MetricValue[] {
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -173,11 +185,14 @@ export function normalizeNinjaBackup(rows: Json[], orgId: string, deviceName?: (
   const protectedRows: Array<Record<string, string | number>> = [];
   let failing = 0;
   for (const [id, r] of byDevice) {
-    const hasBackup = BACKUP_EVIDENCE_FIELDS.some((f) => num(r[f]) > 0);
+    const usage = backupUsageOf(r);
+    const hasBackup = BACKUP_SIZE_FIELDS.some((f) => num(usage[f]) > 0) || num(usage['lastSuccessfulBackupJob']) > 0 || num(r['lastSuccessfulBackupJob']) > 0;
     if (!hasBackup) continue;
-    protectedRows.push({ device: deviceName?.(id) ?? id });
-    const ok = num(r['lastSuccessfulBackupJob']);
-    const bad = num(r['lastFailedBackupJob']);
+    const name = typeof r['systemName'] === 'string' && r['systemName'] ? (r['systemName'] as string) : (deviceName?.(id) ?? id);
+    const gb = Math.round((num(usage['revisionsTotalSize']) / 1024 ** 3) * 10) / 10;
+    protectedRows.push(gb > 0 ? { device: name, backedUpGB: gb } : { device: name });
+    const ok = num(usage['lastSuccessfulBackupJob']) || num(r['lastSuccessfulBackupJob']);
+    const bad = num(usage['lastFailedBackupJob']) || num(r['lastFailedBackupJob']);
     if (bad > ok) failing++;
   }
   const out: MetricValue[] = [
@@ -192,17 +207,6 @@ export function normalizeNinjaBackup(rows: Json[], orgId: string, deviceName?: (
   return out;
 }
 
-/** Devices whose latest health status needs attention (not point-in-time offline). */
-export function normalizeNinjaHealth(rows: Json[]): MetricValue[] {
-  if (rows.length === 0) return [];
-  const unhealthy = rows.filter((r) => {
-    const h = String(r['healthStatus'] ?? '').toUpperCase();
-    return h !== '' && h !== 'HEALTHY' && h !== 'UNKNOWN';
-  }).length;
-  return [
-    metric('endpoints.needs_attention', 'Devices needing attention', unhealthy, { category: 'infrastructure', source: 'ninja', unit: 'count', higherIsBetter: false }),
-  ];
-}
 
 /** Collect NinjaOne endpoint posture for an organization via the direct API. */
 export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransport, cfg: NinjaCfg): Promise<CollectResult> {
@@ -242,7 +246,12 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
     const deviceRows = devices.slice(0, 100).map((d) => {
       const name = firstStrOf(d, ['systemName', 'dnsName', 'displayName', 'name']) ?? `#${String(d['id'] ?? '')}`;
       deviceNames.set(String(d['id'] ?? ''), name);
-      return { name, role: roleNames.get(String(d['nodeRoleId'] ?? '')) ?? String(d['nodeRoleId'] ?? '') };
+      return {
+        name,
+        role: roleNames.get(String(d['nodeRoleId'] ?? '')) ?? String(d['nodeRoleId'] ?? ''),
+        // Deep link into the NinjaOne device dashboard.
+        url: `${base(cfg)}/#/deviceDashboard/${String(d['id'] ?? '')}/overview`,
+      };
     });
     for (const d of devices) {
       const id = String(d['id'] ?? '');
@@ -260,13 +269,8 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
   // Query rows carry deviceId — scope them to the role-filtered device set.
   const scoped = (rows: Json[]) => (allowedIds ? rows.filter((r) => allowedIds.has(String(r['deviceId'] ?? r['id'] ?? ''))) : rows);
 
-  // Device health (persistent condition, unlike point-in-time offline).
-  try {
-    const health = scoped(await queryAll(http, cfg, 'queries/device-health', df));
-    metrics.push(...normalizeNinjaHealth(health));
-  } catch (e) {
-    warnings.push(`NinjaOne device-health query failed: ${e instanceof Error ? e.message : 'error'}`);
-  }
+  // (Deliberately NO "devices needing attention" — that's a technician queue
+  // signal, not an executive QBR metric.)
 
   // Antivirus coverage (org-scoped query).
   try {
@@ -306,7 +310,7 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
   // Backup usage — the endpoint has no org filter, so filter rows by their
   // organizationId (counting all rows was wildly wrong for multi-org tenants).
   try {
-    const backup = scoped(await queryAll(http, cfg, 'queries/backup/usage', {}));
+    const backup = scoped(await queryAll(http, cfg, 'queries/backup/usage', { includeLastBackupJobTimes: 'true' }));
     metrics.push(...normalizeNinjaBackup(backup, orgId, (id) => deviceNames.get(id)));
   } catch {
     // Backup module may not be licensed — not worth a warning.

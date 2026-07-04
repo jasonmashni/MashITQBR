@@ -84,7 +84,11 @@ async function huduCfg(secrets: SecretStore, conn: Connection): Promise<HuduCfg>
 }
 
 async function dropsuiteCfg(secrets: SecretStore, conn: Connection): Promise<DropsuiteCfg> {
-  return { baseUrl: conn.config['baseUrl'] || undefined, token: (await resolveSecret(secrets, conn, 'token')) ?? '' };
+  return {
+    baseUrl: conn.config['baseUrl'] || undefined,
+    resellerToken: (await resolveSecret(secrets, conn, 'resellerToken')) ?? (await resolveSecret(secrets, conn, 'token')) ?? '',
+    accessToken: (await resolveSecret(secrets, conn, 'accessToken')) ?? '',
+  };
 }
 
 async function printixCfg(secrets: SecretStore, conn: Connection, tenantId?: string): Promise<PrintixCfg> {

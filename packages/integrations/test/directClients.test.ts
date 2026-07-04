@@ -14,7 +14,6 @@ import {
   normalizeHuduExpirations,
   normalizeNinjaAv,
   normalizeNinjaBackup,
-  normalizeNinjaHealth,
   normalizeNinjaPatchQuarter,
   type HttpRequest,
   type HttpResponse,
@@ -81,7 +80,7 @@ describe('NinjaOne direct', () => {
     const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
     expect(by['endpoints.managed']).toBe(2);
     expect(by['endpoints.offline']).toBeUndefined(); // point-in-time offline dropped
-    expect(by['endpoints.needs_attention']).toBe(1);
+    expect(by['endpoints.needs_attention']).toBeUndefined(); // tech-queue signal, not a QBR metric
     expect(by['endpoints.av_coverage_pct']).toBe(50);
     expect(by['patch.installed_quarter']).toBe(3);
     expect(by['patch.failed_quarter']).toBe(1);
@@ -95,20 +94,23 @@ describe('NinjaOne direct', () => {
 
   it('normalizers handle empty input', () => {
     expect(normalizeNinjaAv([])).toHaveLength(0);
-    expect(normalizeNinjaHealth([])).toHaveLength(0);
     expect(normalizeNinjaBackup([], '3')).toHaveLength(0);
     expect(normalizeNinjaPatchQuarter(0, 0).map((m) => m.key)).toEqual(['patch.installed_quarter']);
   });
 
-  it('counts only devices with real backup evidence — zero-usage rows are unprotected', () => {
-    // backup/usage returns a row for EVERY device when the module is on.
+  it('counts only devices with real backup evidence — usage nests under references.backupUsage', () => {
+    // backup/usage returns a row for EVERY device (live-verified shape): the
+    // sizes nest under references.backupUsage and are all zero without a plan.
+    const zeroUsage = { revisionsTotalSize: 0, cloudTotalSize: 0, localTotalSize: 0 };
     const rows = [
-      { id: 1, organizationId: 3 },
-      { id: 2, organizationId: 3, totalSize: 0, totalFiles: 0 },
-      { id: 3, organizationId: 3, totalSize: 52_428_800 },
+      { id: 1, organizationId: 3, systemName: 'MP-01', references: { backupUsage: zeroUsage } },
+      { id: 2, organizationId: 3, systemName: 'MP-02', references: { backupUsage: zeroUsage } },
+      { id: 3, organizationId: 3, systemName: 'MP-10-Hazelwood', references: { backupUsage: { ...zeroUsage, revisionsTotalSize: 52_428_800, cloudTotalSize: 52_428_800 } } },
     ];
-    const by = Object.fromEntries(normalizeNinjaBackup(rows, '3').map((m) => [m.key, m.value]));
+    const metrics = normalizeNinjaBackup(rows, '3');
+    const by = Object.fromEntries(metrics.map((m) => [m.key, m.value]));
     expect(by['backup.protected_devices']).toBe(1);
+    expect(metrics.find((m) => m.key === 'backup.protected_devices')!.details![0]!['device']).toBe('MP-10-Hazelwood');
   });
 
   it('scopes devices and every query to the selected device roles', async () => {
@@ -143,12 +145,12 @@ describe('NinjaOne direct', () => {
     );
     const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
     expect(by['endpoints.managed']).toBe(1); // the VMware host is out of scope
-    expect(by['endpoints.needs_attention']).toBe(0); // device 18's health row filtered
     expect(by['endpoints.av_coverage_pct']).toBe(100); // only device 17's AV row counts
     expect(by['patch.pending']).toBe(1);
-    expect(by['backup.protected_devices']).toBe(1);
     const managed = out.metrics.find((m) => m.key === 'endpoints.managed')!;
-    expect(managed.details).toEqual([{ name: 'ANP-PC-01', role: 'Windows Desktop' }]);
+    expect(managed.details).toHaveLength(1);
+    expect(managed.details![0]).toMatchObject({ name: 'ANP-PC-01', role: 'Windows Desktop' });
+    expect(String(managed.details![0]!['url'])).toContain('/#/deviceDashboard/17/');
   });
 });
 
@@ -208,27 +210,38 @@ describe('Check Point Infinity Portal auth', () => {
   });
 });
 
-describe('Dropsuite', () => {
-  it('normalizes account rows into seats + health', () => {
+describe('Dropsuite (sub-reseller API)', () => {
+  it('normalizes account rows into seats + health (errors object = failing)', () => {
     const by = Object.fromEntries(
       normalizeDropsuiteAccounts([
-        { status: 'active', last_backup_status: 'success' },
-        { status: 'active', last_backup_status: 'failed' },
-        { status: 'suspended', last_backup_status: 'success' },
+        { email: 'a@mp.com', current_backup_status: 'Completed', errors: {} },
+        { email: 'b@mp.com', current_backup_status: 'Running', errors: { host: 'connection timed out' } },
+        { email: 'old@mp.com', deactivated_since: '2026-01-01', errors: {} },
       ]).map((m) => [m.key, m.value]),
     );
     expect(by['backup.protected_accounts']).toBe(2);
     expect(by['backup.failed_jobs']).toBe(1);
-    expect(by['backup.success_pct']).toBe(66.7);
+    expect(by['backup.success_pct']).toBe(50);
   });
 
-  it('collects accounts for a mapped organization', async () => {
-    const { http } = fakeHttp((req) => {
-      expect(req.headers?.['Authorization']).toBe('Bearer dt');
-      return { status: 200, json: { accounts: [{ status: 'active', last_backup_status: 'success' }] } };
+  it('finds the mapped tenant user, then reads /accounts with THAT user token', async () => {
+    const { http, requests } = fakeHttp((req) => {
+      expect(req.headers?.['X-Reseller-Token']).toBe('rt');
+      if (req.url.endsWith('/users')) {
+        expect(req.headers?.['X-Access-Token']).toBe('admin-token');
+        return { status: 200, json: [{ id: 29, email: 'backup@madisonpeds.com', authentication_token: 'user-token' }] };
+      }
+      expect(req.headers?.['X-Access-Token']).toBe('user-token');
+      return { status: 200, json: [{ email: 'a@madisonpeds.com', current_backup_status: 'Completed', errors: {} }] };
     });
-    const out = await collectDropsuite({ clientId: 'anp', period: P, externalRef: 'org-1' }, http, { token: 'dt' });
-    expect(out.metrics.length).toBeGreaterThan(0);
+    const out = await collectDropsuite(
+      { clientId: 'mp', period: P, externalRef: '29' },
+      http,
+      { baseUrl: 'https://dropsuite.us/api', resellerToken: 'rt', accessToken: 'admin-token' },
+    );
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['backup.protected_accounts']).toBe(1);
+    expect(requests.some((r) => r.url.endsWith('/accounts'))).toBe(true);
   });
 });
 

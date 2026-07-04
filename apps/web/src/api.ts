@@ -9,6 +9,7 @@ import type {
   HaloMeta,
   Me,
   MetricRow,
+  Opportunity,
   OverviewRow,
   PeriodInfo,
   QbrResponse,
@@ -135,6 +136,14 @@ export const api = {
     send('PUT', `/api/clients/${clientId}/qbr/${period}/status`, { status }).then(json<unknown>),
   putSchedule: (clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/schedule`, body).then(json<unknown>),
+  // Opportunity board
+  listOpportunities: (clientId: string) => send('GET', `/api/clients/${clientId}/opportunities`).then(json<{ opportunities: Opportunity[] }>),
+  saveOpportunity: (clientId: string, body: Partial<Opportunity>) =>
+    send('POST', `/api/clients/${clientId}/opportunities`, body).then(json<{ opportunity: Opportunity }>),
+  deleteOpportunity: (clientId: string, id: string) => send('DELETE', `/api/clients/${clientId}/opportunities/${id}`).then(json<unknown>),
+  pushOpportunity: (clientId: string, id: string, body: { target: string; ticketTypeId?: string; agentId?: string; team?: string; priorityId?: string }) =>
+    send('POST', `/api/clients/${clientId}/opportunities/${id}/push`, body).then(json<{ opportunity: Opportunity; pushed: { system: string; id: string } }>),
+
   haloMeta: (connectionId?: string) =>
     send('GET', `/api/integrations/halo/meta${connectionId ? `?connectionId=${encodeURIComponent(connectionId)}` : ''}`).then(json<HaloMeta>),
   ninjaMeta: (connectionId?: string) =>

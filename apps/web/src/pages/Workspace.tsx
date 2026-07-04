@@ -17,7 +17,6 @@ import {
   Center,
   TextInput,
   Textarea,
-  ColorInput,
   Checkbox,
   Fieldset,
   ActionIcon,
@@ -53,6 +52,9 @@ import {
   IconArrowUp,
   IconArrowDown,
   IconPaperclip,
+  IconBulb,
+  IconDownload,
+  IconExternalLink,
 } from '@tabler/icons-react';
 import { api, documentUrl, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
@@ -63,6 +65,7 @@ import type {
   DocumentInfo,
   HaloMeta,
   MetricRow,
+  Opportunity,
   QbrResponse,
   ReportConfig,
   ReportModel,
@@ -82,6 +85,21 @@ const SECTIONS: Array<[string, string]> = [
 const DISPOSITIONS = ['pending', 'create_opportunity', 'create_ticket', 'accept_risk', 'no_action'];
 const STATUSES = ['draft', 'data_synced', 'narrative_approved', 'scheduled', 'completed', 'dispositioned', 'actions_pushed', 'archived'];
 const RING_COLOR: Record<string, string> = { green: 'teal', amber: 'yellow', red: 'red', unknown: 'gray' };
+
+/** Download a metric's drill-down rows as a CSV (client-side, no round trip). */
+function exportDetailsCsv(m: MetricRow) {
+  const rows = m.details ?? [];
+  if (rows.length === 0) return;
+  const cols = Object.keys(rows[0]!);
+  const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const csv = [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${m.key.replace(/[^a-z0-9.-]+/gi, '_')}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
 /**
  * The QBR workspace, organized around the working flow: everything you
@@ -222,6 +240,7 @@ export function Workspace() {
           <Tabs.Tab value="data">Data</Tabs.Tab>
           <Tabs.Tab value="meeting">Meeting</Tabs.Tab>
           <Tabs.Tab value="actions">Actions</Tabs.Tab>
+          <Tabs.Tab value="board">Opportunities</Tabs.Tab>
           <Tabs.Tab value="studio">Studio</Tabs.Tab>
         </Tabs.List>
 
@@ -274,6 +293,10 @@ export function Workspace() {
           <ActionsTab clientId={clientId} period={period} disc={disc} onChanged={() => setRefresh((n) => n + 1)} />
         </Tabs.Panel>
 
+        <Tabs.Panel value="board">
+          <OpportunitiesTab clientId={clientId} period={period} />
+        </Tabs.Panel>
+
         <Tabs.Panel value="studio">
           {config && <StudioTab config={config} setConfig={setConfig} clientId={clientId} onSaved={() => setRefresh((n) => n + 1)} />}
         </Tabs.Panel>
@@ -313,6 +336,16 @@ function OverviewTab({
           previous: t.previous ?? 0,
           current: t.current ?? 0,
         })),
+    [model.trends],
+  );
+  // High-level spend picture for the client-facing overview.
+  const spendData = useMemo(
+    () =>
+      model.trends
+        .filter((t) => t.current !== null && (t.key.startsWith('finance.invoiced.') || t.key.startsWith('finance.recurring.')))
+        .map((t) => ({ label: t.label.length > 26 ? t.label.slice(0, 25) + '…' : t.label, amount: t.current ?? 0 }))
+        .sort((a, b) => b.amount - a.amount)
+        .slice(0, 8),
     [model.trends],
   );
 
@@ -400,6 +433,20 @@ function OverviewTab({
               { name: 'previous', label: 'Previous', color: 'gray.5' },
               { name: 'current', label: 'Current', color: 'navy.7' },
             ]}
+          />
+        </Card>
+      )}
+
+      {spendData.length > 0 && (
+        <Card withBorder radius="md" padding="lg">
+          <Title order={5} mb="md">IT spend breakdown</Title>
+          <BarChart
+            h={Math.max(160, spendData.length * 40)}
+            data={spendData}
+            dataKey="label"
+            orientation="vertical"
+            series={[{ name: 'amount', label: 'USD', color: 'teal.7' }]}
+            valueFormatter={(v) => `$${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
           />
         </Card>
       )}
@@ -711,28 +758,47 @@ function DataTab({
         size="xl"
       >
         {detail?.details?.length ? (
-          <Table.ScrollContainer minWidth={520}>
-            <Table striped verticalSpacing={4} stickyHeader>
-              <Table.Thead>
-                <Table.Tr>
-                  {Object.keys(detail.details[0]!).map((k) => (
-                    <Table.Th key={k} tt="capitalize">{k}</Table.Th>
-                  ))}
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {detail.details.map((row, i) => (
-                  <Table.Tr key={i}>
-                    {Object.keys(detail.details![0]!).map((k) => (
-                      <Table.Td key={k}>
-                        <Text size="sm">{String(row[k] ?? '')}</Text>
-                      </Table.Td>
+          <>
+            <Group justify="flex-end" mb="xs">
+              <Button size="compact-xs" variant="light" leftSection={<IconDownload size={14} />} onClick={() => exportDetailsCsv(detail)}>
+                Export CSV
+              </Button>
+            </Group>
+            <Table.ScrollContainer minWidth={520}>
+              <Table striped verticalSpacing={4} stickyHeader>
+                <Table.Thead>
+                  <Table.Tr>
+                    {Object.keys(detail.details[0]!).filter((k) => k !== 'url').map((k) => (
+                      <Table.Th key={k} tt="capitalize">{k}</Table.Th>
                     ))}
+                    {detail.details.some((r) => typeof r['url'] === 'string' && r['url']) && <Table.Th w={40} />}
                   </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </Table.ScrollContainer>
+                </Table.Thead>
+                <Table.Tbody>
+                  {detail.details.map((row, i) => (
+                    <Table.Tr key={i}>
+                      {Object.keys(detail.details![0]!).filter((k) => k !== 'url').map((k) => (
+                        <Table.Td key={k}>
+                          <Text size="sm">{String(row[k] ?? '')}</Text>
+                        </Table.Td>
+                      ))}
+                      {detail.details!.some((r) => typeof r['url'] === 'string' && r['url']) && (
+                        <Table.Td>
+                          {typeof row['url'] === 'string' && row['url'] && (
+                            <Tooltip label="Open in the source tool">
+                              <ActionIcon component="a" href={row['url']} target="_blank" variant="subtle" size="sm" aria-label="Open in source tool">
+                                <IconExternalLink size={14} />
+                              </ActionIcon>
+                            </Tooltip>
+                          )}
+                        </Table.Td>
+                      )}
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Table.ScrollContainer>
+          </>
         ) : null}
         {typeof detail?.value === 'number' && (detail.details?.length ?? 0) < detail.value && (
           <Text size="xs" c="dimmed" mt="xs">
@@ -960,6 +1026,16 @@ function MeetingTab({
     setDisc({ ...disc, items });
   }
 
+  // "Client mentioned a new location" → one click lands it on the board.
+  async function flagOpportunity(it: DiscussionItem) {
+    try {
+      await api.saveOpportunity(clientId, { title: it.topic || 'QBR opportunity', detail: it.response, sourcePeriod: period });
+      notifications.show({ color: 'teal', message: 'Added to the Opportunities board.' });
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Could not flag', message: e instanceof Error ? e.message : 'Unknown error' });
+    }
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -1015,6 +1091,9 @@ function MeetingTab({
               <Group justify="space-between" align="flex-start" wrap="nowrap">
                 <TextInput style={{ flex: 1 }} placeholder="Topic / question / decision" value={it.topic} onChange={(e) => update(i, { topic: e.currentTarget.value })} />
                 <Group gap={4} wrap="nowrap">
+                  <Tooltip label="Flag as opportunity (adds to the board)">
+                    <ActionIcon variant="subtle" color="yellow" aria-label="Flag as opportunity" onClick={() => flagOpportunity(it)}><IconBulb size={16} /></ActionIcon>
+                  </Tooltip>
                   <ActionIcon variant="subtle" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}><IconArrowUp size={16} /></ActionIcon>
                   <ActionIcon variant="subtle" aria-label="Move down" disabled={i === disc.items.length - 1} onClick={() => move(i, 1)}><IconArrowDown size={16} /></ActionIcon>
                   <ActionIcon color="red" variant="subtle" aria-label="Remove item" onClick={() => setDisc({ ...disc, items: disc.items.filter((x) => x.id !== it.id) })}><IconTrash size={16} /></ActionIcon>
@@ -1435,20 +1514,21 @@ function StudioTab({
       <Card withBorder radius="md" padding="lg">
         <Title order={5} mb={4}>Client branding</Title>
         <Text size="xs" c="dimmed" mb="md">
-          The Mash IT logo and colors come from Settings; anything set here layers on top for this client. The client logo shows
-          alongside the Mash IT logo on the report, PDF and deck.
+          Reports always use the Mash IT theme (colors and logo from Settings) — the client's logo shows alongside it on the
+          report, PDF and deck for the personal touch.
         </Text>
         <Stack>
-          <TextInput label="Brand name override" value={brand.name ?? ''} onChange={(e) => setConfig({ ...config, brand: { ...brand, name: e.currentTarget.value } })} />
-          <Group grow>
-            <ColorInput label="Primary color" value={brand.primary ?? ''} placeholder="from Settings" onChange={(v) => setConfig({ ...config, brand: { ...brand, primary: v } })} />
-            <ColorInput label="Accent color" value={brand.accent ?? ''} placeholder="from Settings" onChange={(v) => setConfig({ ...config, brand: { ...brand, accent: v } })} />
-          </Group>
+          <TextInput label="Client display name override" value={brand.name ?? ''} onChange={(e) => setConfig({ ...config, brand: { ...brand, name: e.currentTarget.value } })} />
           <Group align="flex-end">
             <FileButton accept="image/*" onChange={onLogo}>
               {(props) => <Button variant="default" {...props}>Upload client logo</Button>}
             </FileButton>
             {brand.logoDataUri && <Image src={brand.logoDataUri} h={40} w="auto" fit="contain" alt="logo" />}
+            {brand.logoDataUri && (
+              <Button variant="subtle" color="red" onClick={() => setConfig({ ...config, brand: { ...brand, logoDataUri: undefined } })}>
+                Remove logo
+              </Button>
+            )}
           </Group>
         </Stack>
       </Card>
@@ -1501,6 +1581,158 @@ function StudioTab({
       </Card>
 
       <Group><Button loading={saving} onClick={save}>Save</Button></Group>
+    </Stack>
+  );
+}
+
+// ── Opportunities board: cross-quarter initiatives per client ─────────────────
+const OPP_COLUMNS: Array<[Opportunity['status'], string, string]> = [
+  ['idea', 'Ideas', 'gray'],
+  ['discussing', 'In discussion', 'grape'],
+  ['approved', 'Approved', 'teal'],
+  ['pushed', 'Pushed to PSA', 'green'],
+  ['closed', 'Closed', 'dark'],
+];
+
+function OpportunitiesTab({ clientId, period }: { clientId: string; period: string }) {
+  const [items, setItems] = useState<Opportunity[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [title, setTitle] = useState('');
+
+  const load = () =>
+    api
+      .listOpportunities(clientId)
+      .then((d) => setItems(d.opportunities))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+
+  useEffect(() => {
+    setLoading(true);
+    let live = true;
+    api
+      .listOpportunities(clientId)
+      .then((d) => live && setItems(d.opportunities))
+      .catch(() => {})
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [clientId]);
+
+  async function add() {
+    const t = title.trim();
+    if (!t) return;
+    try {
+      await api.saveOpportunity(clientId, { title: t, sourcePeriod: period });
+      setTitle('');
+      await load();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Could not add', message: e instanceof Error ? e.message : 'Unknown error' });
+    }
+  }
+
+  async function setStatus(o: Opportunity, status: Opportunity['status']) {
+    try {
+      await api.saveOpportunity(clientId, { ...o, status });
+      await load();
+    } catch (e) {
+      notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Update failed' });
+    }
+  }
+
+  async function remove(o: Opportunity) {
+    await api.deleteOpportunity(clientId, o.id).catch(() => {});
+    await load();
+  }
+
+  async function push(o: Opportunity, target: 'halo_opportunity' | 'halo_ticket') {
+    try {
+      const r = await api.pushOpportunity(clientId, o.id, { target });
+      notifications.show({ color: 'teal', message: `${r.pushed.system} #${r.pushed.id} created.` });
+      await load();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Push failed', message: e instanceof Error ? e.message : 'Unknown error', autoClose: 10000 });
+    }
+  }
+
+  if (loading) return <Center h={160}><Loader /></Center>;
+
+  return (
+    <Stack gap="lg">
+      <Card withBorder radius="md" padding="lg">
+        <Title order={5} mb={4}>Opportunity board</Title>
+        <Text size="xs" c="dimmed" mb="sm">
+          Everything the client mentions that could become work — a new location, a refresh, a project — flagged from the
+          Meeting tab's agenda (the bulb icon) or added here. Cards live across quarters, carry the QBR they came from, and
+          push to Halo as opportunities or tickets when they're real.
+        </Text>
+        <Group wrap="nowrap">
+          <TextInput
+            style={{ flex: 1 }}
+            placeholder="Add an opportunity — e.g. New location opening in the fall"
+            value={title}
+            onChange={(e) => setTitle(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') add();
+            }}
+          />
+          <Button variant="light" leftSection={<IconPlus size={14} />} onClick={add}>Add to board</Button>
+        </Group>
+      </Card>
+
+      <SimpleGrid cols={{ base: 1, sm: 2, lg: 5 }} spacing="sm">
+        {OPP_COLUMNS.map(([status, label, color]) => {
+          const cards = items.filter((o) => o.status === status);
+          return (
+            <Stack key={status} gap="xs">
+              <Group gap={6}>
+                <Badge variant="light" color={color}>{label}</Badge>
+                <Text size="xs" c="dimmed">{cards.length}</Text>
+              </Group>
+              {cards.map((o) => (
+                <Card key={o.id} withBorder radius="md" padding="sm">
+                  <Text size="sm" fw={600}>{o.title}</Text>
+                  {o.detail && <Text size="xs" c="dimmed" lineClamp={3}>{o.detail}</Text>}
+                  <Group gap={4} mt={6}>
+                    {o.sourcePeriod && <Badge size="xs" variant="outline" color="gray">{o.sourcePeriod} QBR</Badge>}
+                    {o.externalRef && <Badge size="xs" color="green" variant="light">halo #{o.externalRef}</Badge>}
+                  </Group>
+                  <Group gap={2} mt={8} justify="space-between" wrap="nowrap">
+                    <Select
+                      size="xs"
+                      w={124}
+                      data={OPP_COLUMNS.map(([v, l]) => ({ value: v, label: l }))}
+                      value={o.status}
+                      onChange={(v) => v && v !== o.status && setStatus(o, v as Opportunity['status'])}
+                      aria-label="Status"
+                      allowDeselect={false}
+                    />
+                    <Group gap={2} wrap="nowrap">
+                      {!o.externalRef && (
+                        <>
+                          <Tooltip label="Create Halo opportunity">
+                            <ActionIcon variant="subtle" aria-label="Push as Halo opportunity" onClick={() => push(o, 'halo_opportunity')}>
+                              <IconTargetArrow size={15} />
+                            </ActionIcon>
+                          </Tooltip>
+                          <Tooltip label="Create Halo ticket">
+                            <ActionIcon variant="subtle" aria-label="Push as Halo ticket" onClick={() => push(o, 'halo_ticket')}>
+                              <IconTicket size={15} />
+                            </ActionIcon>
+                          </Tooltip>
+                        </>
+                      )}
+                      <ActionIcon color="red" variant="subtle" aria-label="Delete opportunity" onClick={() => remove(o)}>
+                        <IconTrash size={15} />
+                      </ActionIcon>
+                    </Group>
+                  </Group>
+                </Card>
+              ))}
+            </Stack>
+          );
+        })}
+      </SimpleGrid>
     </Stack>
   );
 }

@@ -404,7 +404,7 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
   // Long labels (raw line descriptions) are trimmed to stay table-friendly.
   // rowsByName carries each category's backing lines for drill-down; rows for
   // folded-away categories land on the Other entry.
-  const emitBreakdown = (entries: Array<[string, number]>, keyPrefix: string, labelPrefix: string, rowsByName?: Map<string, DetailRow[]>) => {
+  const emitBreakdown = (entries: Array<[string, number]>, keyPrefix: string, labelOf: (name: string) => string, rowsByName?: Map<string, DetailRow[]>) => {
     const topNames = new Set(entries.map(([n]) => n));
     const otherRows: DetailRow[] = [];
     if (rowsByName) {
@@ -425,7 +425,7 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
       }
     }
     for (const [slug, { name, amount, rows }] of bySlug) {
-      metrics.push({ ...spend(`${keyPrefix}.${slug}`, `${labelPrefix} — ${name}`, amount), details: rows.slice(0, DETAIL_CAP) });
+      metrics.push({ ...spend(`${keyPrefix}.${slug}`, labelOf(name), amount), details: rows.slice(0, DETAIL_CAP) });
     }
   };
 
@@ -475,7 +475,7 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
           `Halo contract items carried no recognizable labels${sampleItemKeys ? ` (item fields seen: ${sampleItemKeys})` : ''} — recurring breakdown suppressed until parsing is tuned for this instance.`,
         );
       } else {
-        emitBreakdown(folded, 'finance.recurring', 'Monthly recurring', recurringRows);
+        emitBreakdown(folded, 'finance.recurring', (n) => `${n} (monthly)`, recurringRows);
       }
     } else {
       warnings.push(
@@ -543,7 +543,9 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
         `Halo invoice line categories unrecognized${sampleLineKeys ? ` (line fields seen: ${sampleLineKeys})` : ''} — assign item groups in Halo (or share a sample line) to enable the spend breakdown.`,
       );
     } else {
-      emitBreakdown(folded, 'finance.invoiced', 'Invoiced', categoryRows);
+      // No "Invoiced —" prefix: these render inside the IT Spend section where
+      // the context is already clear, and the shorter label reads better.
+      emitBreakdown(folded, 'finance.invoiced', (n) => n, categoryRows);
     }
   } else if (counted > 0) {
     warnings.push('Halo invoices carried no line items — the invoice breakdown needs line-level data (categories come from Halo item groups).');
@@ -825,12 +827,15 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
   // Emit ticket tallies only when the API actually answered — a hard failure
   // must read as "unavailable" in the warnings, not as a quarter of zeros.
   if (anyTicketData) {
-    // Drill-down: the actual tickets behind the count (capped).
+    // Drill-down: the actual tickets behind the count (capped), each deep-
+    // linked into Halo.
+    const haloBase = cfg.baseUrl.replace(/\/+$/, '');
     const ticketRows: DetailRow[] = openedRows.slice(0, DETAIL_CAP).map((r) => ({
       id: String(r['id'] ?? ''),
       summary: clip(firstStr(r, ['summary', 'subject']) ?? ''),
       type: firstStr(r, ['tickettype_name', 'type']) ?? (ticketTypeIdOf(r) !== undefined ? `type ${ticketTypeIdOf(r)!}` : ''),
       opened: (firstStr(r, TICKET_OPENED_FIELDS) ?? '').slice(0, 10),
+      url: `${haloBase}/ticket?id=${String(r['id'] ?? '')}`,
     }));
     metrics.push({ ...op('tickets.total', 'Tickets opened', openedTotal, false), details: ticketRows });
     const counts = new Map<string, number>();
@@ -879,9 +884,11 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
     }
   }
   if (assetsOk) {
+    const assetBase = cfg.baseUrl.replace(/\/+$/, '');
     const typed = assetRows.map((r) => ({
       name: clip(firstStr(r, ['inventory_number', 'name', 'key_field', 'device_name', 'dnsname']) ?? `#${String(r['id'] ?? '')}`, 60),
       type: firstStr(r, ['assettype_name', 'asset_type_name', 'typename', 'assettype']) ?? 'Other',
+      url: `${assetBase}/asset?id=${String(r['id'] ?? '')}`,
     }));
     typed.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
     metrics.push({

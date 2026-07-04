@@ -196,10 +196,15 @@ export async function pollReportInbox(
     const attachments = attRes.ok ? ((((await attRes.json()) as Json)['value'] ?? []) as Json[]) : [];
     for (const att of attachments) {
       if (att['@odata.type'] !== '#microsoft.graph.fileAttachment') continue;
+      // Skip signature clutter: inline images and tiny image files (Outlook
+      // logos/social icons) are not reports.
+      if (att['isInline'] === true) continue;
       const name = typeof att['name'] === 'string' ? (att['name'] as string) : 'report';
+      const contentType = typeof att['contentType'] === 'string' ? (att['contentType'] as string) : '';
       const contentBytes = typeof att['contentBytes'] === 'string' ? (att['contentBytes'] as string) : '';
       if (!contentBytes) continue;
       const bytes = Buffer.from(contentBytes, 'base64');
+      if ((contentType.startsWith('image/') || /\.(png|gif|jpe?g|bmp|ico)$/i.test(name)) && bytes.length < 100 * 1024) continue;
       if (bytes.length === 0 || bytes.length > MAX_ATTACHMENT_BYTES) continue;
 
       // Same source+name replaces the previous copy (weekly forwards stay tidy).

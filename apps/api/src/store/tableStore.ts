@@ -1,6 +1,6 @@
 import { TableClient, odata, type TableEntity } from '@azure/data-tables';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { AuditEvent, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, QbrRecord } from './types.js';
+import type { AuditEvent, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, OpportunityRecord, QbrRecord } from './types.js';
 
 const TABLES = {
   clients: 'qbrClients',
@@ -12,6 +12,7 @@ const TABLES = {
   snapshots: 'qbrSnapshots',
   narratives: 'qbrNarratives',
   documents: 'qbrDocuments',
+  opportunities: 'qbrOpportunities',
   audit: 'qbrAudit',
 } as const;
 
@@ -117,6 +118,17 @@ export class TableDataStore implements DataStore {
   async deleteDocument(clientId: string, period: string, id: string): Promise<void> {
     try {
       await this.table(TABLES.documents).deleteEntity(`${clientId}:${period}`, id);
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+    }
+  }
+
+  // opportunity board — partition per client so its board is one range read
+  listOpportunities = (clientId: string) => this.list<OpportunityRecord>(TABLES.opportunities, clientId);
+  putOpportunity = (o: OpportunityRecord) => this.put(TABLES.opportunities, o.clientId, o.id, o);
+  async deleteOpportunity(clientId: string, id: string): Promise<void> {
+    try {
+      await this.table(TABLES.opportunities).deleteEntity(clientId, id);
     } catch (err) {
       if (!isNotFound(err)) throw err;
     }

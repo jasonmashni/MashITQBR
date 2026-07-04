@@ -40,6 +40,19 @@ describe('JsonDataStore', () => {
     expect(await s.getConnection('del')).toBeUndefined();
   });
 
+  it('round-trips opportunity board cards per client', async () => {
+    const store = new JsonDataStore(dir);
+    await store.putOpportunity({ id: 'o1', clientId: 'mp', title: 'New location', status: 'idea', createdAt: 'x', updatedAt: 'x' });
+    await store.putOpportunity({ id: 'o1', clientId: 'mp', title: 'New location', status: 'approved', createdAt: 'x', updatedAt: 'y' });
+    await store.putOpportunity({ id: 'o2', clientId: 'anp', title: 'Server refresh', status: 'idea', createdAt: 'x', updatedAt: 'x' });
+    const mp = await store.listOpportunities('mp');
+    expect(mp).toHaveLength(1); // same id upserts, not duplicates
+    expect(mp[0]!.status).toBe('approved');
+    await store.deleteOpportunity('mp', 'o1');
+    expect(await store.listOpportunities('mp')).toHaveLength(0);
+    expect(await store.listOpportunities('anp')).toHaveLength(1);
+  });
+
   it('round-trips narrative records (and tolerates legacy files without the key)', async () => {
     const s = store();
     // The store file written by earlier tests predates `narratives` — reading must not blow up.

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { AuditEvent, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, QbrRecord } from './types.js';
+import type { AuditEvent, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, OpportunityRecord, QbrRecord } from './types.js';
 
 interface JsonShape {
   clients: Record<string, Client>;
@@ -14,11 +14,13 @@ interface JsonShape {
   narratives: Record<string, NarrativeRecord>;
   /** Attached document metadata, keyed clientId:period. */
   documents: Record<string, DocumentRecord[]>;
+  /** Opportunity board cards, keyed clientId. */
+  opportunities: Record<string, OpportunityRecord[]>;
   /** Newest first, capped locally. */
   audit: AuditEvent[];
 }
 
-const EMPTY: JsonShape = { clients: {}, connections: {}, maps: {}, qbrs: {}, configs: {}, discussions: {}, snapshots: {}, narratives: {}, documents: {}, audit: [] };
+const EMPTY: JsonShape = { clients: {}, connections: {}, maps: {}, qbrs: {}, configs: {}, discussions: {}, snapshots: {}, narratives: {}, documents: {}, opportunities: {}, audit: [] };
 const pk = (a: string, b: string) => `${a}:${b}`;
 
 /** File-backed DataStore for local development. */
@@ -154,6 +156,22 @@ export class JsonDataStore implements DataStore {
     const s = this.read();
     const key = pk(clientId, period);
     s.documents[key] = (s.documents[key] ?? []).filter((d) => d.id !== id);
+    this.write(s);
+  }
+
+  async listOpportunities(clientId: string): Promise<OpportunityRecord[]> {
+    return this.read().opportunities[clientId] ?? [];
+  }
+  async putOpportunity(record: OpportunityRecord): Promise<OpportunityRecord> {
+    const s = this.read();
+    const rest = (s.opportunities[record.clientId] ?? []).filter((o) => o.id !== record.id);
+    s.opportunities[record.clientId] = [...rest, record];
+    this.write(s);
+    return record;
+  }
+  async deleteOpportunity(clientId: string, id: string): Promise<void> {
+    const s = this.read();
+    s.opportunities[clientId] = (s.opportunities[clientId] ?? []).filter((o) => o.id !== id);
     this.write(s);
   }
 

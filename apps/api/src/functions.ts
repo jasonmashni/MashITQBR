@@ -65,6 +65,12 @@ route('uploadDoc', 'POST', 'api/clients/{clientId}/qbr/{period}/documents', asyn
 route('downloadDoc', 'GET', 'api/clients/{clientId}/qbr/{period}/documents/{docId}', (req) => h.downloadQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
 route('deleteDoc', 'DELETE', 'api/clients/{clientId}/qbr/{period}/documents/{docId}', (req) => h.deleteQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
 
+// Opportunity board
+route('listOpportunities', 'GET', 'api/clients/{clientId}/opportunities', (req) => h.listOpportunities(req.params['clientId']!));
+route('saveOpportunity', 'POST', 'api/clients/{clientId}/opportunities', async (req) => h.putOpportunity(req.params['clientId']!, await body(req)));
+route('deleteOpportunity', 'DELETE', 'api/clients/{clientId}/opportunities/{id}', (req) => h.deleteOpportunity(req.params['clientId']!, req.params['id']!));
+route('pushOpportunity', 'POST', 'api/clients/{clientId}/opportunities/{id}/push', async (req) => h.pushOpportunity(req.params['clientId']!, req.params['id']!, (await body(req)) as never));
+
 // Config + discussion
 route('getConfig', 'GET', 'api/clients/{clientId}/config', (req) => h.getConfig(req.params['clientId']!));
 route('putConfig', 'PUT', 'api/clients/{clientId}/config', async (req) => h.putConfig(req.params['clientId']!, await body(req)));

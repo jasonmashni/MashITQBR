@@ -4,10 +4,30 @@ import {
   collectHuntress,
   mfaCoveragePct,
   normalizeHuntressSummary,
+  scopeHuntressIdentities,
   normalizeHuntressUsage,
   type HttpRequest,
   type HttpResponse,
 } from '@mashit/integrations';
+
+describe('scopeHuntressIdentities', () => {
+  it('keeps licensed identities on the dominant domain only', () => {
+    const identities = [
+      { email: 'a@madisonpeds.com', mfa_enabled: true, billable: true },
+      { email: 'b@madisonpeds.com', mfa_enabled: false, billable: true },
+      { email: 'guest@gmail.com', mfa_enabled: false, billable: true }, // external guest
+      { email: 'svc@madisonpeds.com', mfa_enabled: false, billable: false }, // unlicensed
+    ];
+    const scoped = scopeHuntressIdentities(identities);
+    expect(scoped.map((i) => i.email)).toEqual(['a@madisonpeds.com', 'b@madisonpeds.com']);
+    expect(mfaCoveragePct(scoped)).toBe(50); // no more misleading tenant-wide 25%
+  });
+
+  it('keeps everything when no license flag exists (older API shapes)', () => {
+    const scoped = scopeHuntressIdentities([{ email: 'a@x.com' }, { email: 'b@x.com' }]);
+    expect(scoped).toHaveLength(2);
+  });
+});
 
 describe('normalizeHuntressSummary', () => {
   it('maps the quarterly summary rollups into canonical metrics', () => {

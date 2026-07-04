@@ -28,7 +28,10 @@ import {
   secretStoreKind,
   storeDataSource,
   toConnectionView,
+  OPPORTUNITY_STATUSES,
   type DocumentRecord,
+  type OpportunityRecord,
+  type OpportunityStatus,
 } from './store/index.js';
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
 import { currentActor } from './requestContext.js';
@@ -411,6 +414,82 @@ export async function deleteQbrDocument(clientId: string, period: string, id: st
   await store.deleteDocument(clientId, period, id);
   audit('document.delete', `qbr:${clientId}/${period}`, record.name);
   return ok({ deleted: id });
+}
+
+// ── Opportunity board (per-client Kanban of QBR initiatives) ─────────────────
+const OPP_ORDER: Record<string, number> = { idea: 0, discussing: 1, approved: 2, pushed: 3, closed: 4 };
+
+export async function listOpportunities(clientId: string): Promise<ApiResult> {
+  const items = await getDataStore().listOpportunities(clientId);
+  items.sort((a, b) => (OPP_ORDER[a.status] ?? 9) - (OPP_ORDER[b.status] ?? 9) || b.updatedAt.localeCompare(a.updatedAt));
+  return ok({ opportunities: items });
+}
+
+export async function putOpportunity(clientId: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const title = typeof body['title'] === 'string' ? body['title'].trim() : '';
+  if (!title) return err(400, 'An opportunity needs a title.');
+  const status =
+    typeof body['status'] === 'string' && (OPPORTUNITY_STATUSES as readonly string[]).includes(body['status'])
+      ? (body['status'] as OpportunityStatus)
+      : 'idea';
+  const store = getDataStore();
+  const id = typeof body['id'] === 'string' && body['id'] ? body['id'] : Math.random().toString(36).slice(2, 10);
+  const existing = (await store.listOpportunities(clientId)).find((o) => o.id === id);
+  const now = new Date().toISOString();
+  const record: OpportunityRecord = {
+    id,
+    clientId,
+    title,
+    detail: typeof body['detail'] === 'string' ? body['detail'] : existing?.detail,
+    status,
+    sourcePeriod: typeof body['sourcePeriod'] === 'string' && body['sourcePeriod'] ? body['sourcePeriod'] : existing?.sourcePeriod,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    createdBy: existing?.createdBy ?? currentActor(),
+    externalRef: existing?.externalRef,
+    externalKind: existing?.externalKind,
+  };
+  await store.putOpportunity(record);
+  audit('opportunity.save', `client:${clientId}`, `${existing ? 'updated' : 'created'}: ${title.slice(0, 60)}`);
+  return ok({ opportunity: record });
+}
+
+export async function deleteOpportunity(clientId: string, id: string): Promise<ApiResult> {
+  await getDataStore().deleteOpportunity(clientId, id);
+  audit('opportunity.delete', `client:${clientId}`, id);
+  return ok({ deleted: id });
+}
+
+/** Push a board card to Halo (opportunity or ticket) and mark it pushed. */
+export async function pushOpportunity(
+  clientId: string,
+  id: string,
+  body: { target?: PushInput['target']; ticketTypeId?: string; agentId?: string; team?: string; priorityId?: string },
+): Promise<ApiResult> {
+  const store = getDataStore();
+  const record = (await store.listOpportunities(clientId)).find((o) => o.id === id);
+  if (!record) return err(404, 'Unknown opportunity');
+  const client = await store.getClient(clientId);
+  const refs = (client?.integrationRefs ?? {}) as Record<string, string>;
+  const target = body.target ?? 'halo_opportunity';
+  try {
+    const result = await pushAction(await buildIntegrations(), {
+      target,
+      title: record.title,
+      detail: record.detail ?? (record.sourcePeriod ? `Raised in the ${record.sourcePeriod} QBR.` : ''),
+      externalClientRef: target.startsWith('halo') ? refs['halo'] : refs['zomentum'],
+      ticketTypeId: body.ticketTypeId,
+      agentId: body.agentId,
+      team: body.team,
+      priorityId: body.priorityId,
+    });
+    const updated: OpportunityRecord = { ...record, status: 'pushed', updatedAt: new Date().toISOString(), externalRef: result.id, externalKind: target };
+    await store.putOpportunity(updated);
+    audit('opportunity.push', `client:${clientId}`, `${result.system} #${result.id}`);
+    return ok({ opportunity: updated, pushed: result });
+  } catch (e) {
+    return err(502, e instanceof Error ? e.message : 'Push failed');
+  }
 }
 
 /**

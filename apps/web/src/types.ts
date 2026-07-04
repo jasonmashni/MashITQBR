@@ -18,6 +18,21 @@ export interface Client {
 /** Backing rows for a metric's drill-down viewer (shape varies per metric). */
 export type MetricDetailRow = Record<string, string | number>;
 
+/** A card on the per-client opportunity board (QBR initiatives, cross-quarter). */
+export interface Opportunity {
+  id: string;
+  clientId: string;
+  title: string;
+  detail?: string;
+  status: 'idea' | 'discussing' | 'approved' | 'pushed' | 'closed';
+  sourcePeriod?: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy?: string;
+  externalRef?: string;
+  externalKind?: string;
+}
+
 export interface MetricRow {
   key: string;
   label: string;

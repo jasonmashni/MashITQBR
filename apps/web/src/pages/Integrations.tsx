@@ -136,9 +136,12 @@ const TYPES: TypeDef[] = [
   {
     value: 'dropsuite',
     label: 'Dropsuite',
-    hint: 'Email/M365 backup coverage & health (reseller API, read-only).',
-    config: [{ key: 'baseUrl', label: 'API base URL', placeholder: 'https://api.dropsuite.com' }],
-    secrets: [{ key: 'token', label: 'API token' }],
+    hint: 'Email/M365 backup coverage & health (sub-reseller API, read-only). Both tokens come from your Dropsuite reseller portal.',
+    config: [{ key: 'baseUrl', label: 'API base URL', placeholder: 'https://dropsuite.us/api' }],
+    secrets: [
+      { key: 'resellerToken', label: 'Reseller token (X-Reseller-Token)' },
+      { key: 'accessToken', label: 'Admin authentication token (X-Access-Token)' },
+    ],
   },
   {
     value: 'printix',

@@ -156,9 +156,10 @@ export function Settings() {
           </Group>
 
           <TextInput label="Company name on reports" placeholder="Mash IT" value={name} onChange={(e) => setName(e.currentTarget.value)} />
+          {/* No eyedropper: the browser EyeDropper API has hung Chrome in the field. */}
           <Group grow>
-            <ColorInput label="Primary color" placeholder="#0b2545" value={primary} onChange={setPrimary} />
-            <ColorInput label="Accent color" placeholder="#1d7874" value={accent} onChange={setAccent} />
+            <ColorInput label="Primary color" placeholder="#0b2545" value={primary} onChange={setPrimary} withEyeDropper={false} />
+            <ColorInput label="Accent color" placeholder="#1d7874" value={accent} onChange={setAccent} withEyeDropper={false} />
           </Group>
 
           <Group justify="flex-end">

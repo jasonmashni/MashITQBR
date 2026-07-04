@@ -62,7 +62,13 @@ async function cippGet(http: HttpTransport, cfg: CippCfg, endpoint: string, para
   const qs = new URLSearchParams(params).toString();
   const url = `${cfg.baseUrl.replace(/\/+$/, '')}/api/${endpoint}${qs ? `?${qs}` : ''}`;
   const res = await http.request({ method: 'GET', url, headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
-  if (res.status < 200 || res.status >= 300) throw new Error(`CIPP responded ${res.status} for /api/${endpoint}`);
+  if (res.status < 200 || res.status >= 300) {
+    const hint =
+      res.status === 401
+        ? ' — a 401 from CIPP usually means the Client ID is not a CIPP-API client: in CIPP go to Application Settings → API clients, create one, and use ITS Application ID + secret (not the CIPP-SAM app registration).'
+        : '';
+    throw new Error(`CIPP responded ${res.status} for /api/${endpoint}${hint}`);
+  }
   return res.json;
 }
 
