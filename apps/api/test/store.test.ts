@@ -2,13 +2,38 @@ import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { JsonDataStore, LocalSecretStore } from '../src/store/index.js';
+import { chunkEntityJson, joinEntityJson, JsonDataStore, LocalSecretStore } from '../src/store/index.js';
 
 let dir: string;
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'qbr-store-'));
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+describe('Table entity chunking (64KB string property cap)', () => {
+  it('round-trips payloads larger than one property allows', () => {
+    const big = JSON.stringify({ metrics: Array.from({ length: 3000 }, (_, i) => ({ key: `m${i}`, value: i, note: 'x'.repeat(40) })) });
+    expect(big.length).toBeGreaterThan(60_000);
+    const props = chunkEntityJson(big);
+    expect(Object.keys(props).length).toBeGreaterThan(2);
+    for (const v of Object.values(props)) expect(v.length).toBeLessThanOrEqual(30_000);
+    expect(joinEntityJson({ partitionKey: 'p', rowKey: 'r', ...props })).toBe(big);
+  });
+
+  it('never splits a surrogate pair across properties', () => {
+    const s = '💾'.repeat(20_000); // 40k UTF-16 units of surrogate pairs
+    const props = chunkEntityJson(s);
+    for (const v of Object.values(props)) {
+      const last = v.charCodeAt(v.length - 1);
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false); // no dangling high surrogate
+    }
+    expect(joinEntityJson({ partitionKey: 'p', rowKey: 'r', ...props })).toBe(s);
+  });
+
+  it('small payloads stay a single data property', () => {
+    expect(Object.keys(chunkEntityJson('{"a":1}'))).toEqual(['data']);
+  });
+});
 
 describe('JsonDataStore', () => {
   const store = () => new JsonDataStore(dir);

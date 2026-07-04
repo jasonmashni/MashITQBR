@@ -17,7 +17,38 @@ const TABLES = {
 } as const;
 
 interface Row extends TableEntity {
-  data: string; // JSON-serialized entity
+  data: string; // JSON-serialized entity (first chunk when large)
+}
+
+// Table Storage caps STRING properties at 32K UTF-16 chars (64KB) while the
+// entity itself allows ~1MB — so large payloads (snapshots with drill-down
+// details, cached narratives) are chunked across data, data1, data2… and
+// reassembled on read. Writes use Replace mode, so stale chunk properties
+// from a previously-larger version never linger.
+const CHUNK_CHARS = 30_000;
+
+export function chunkEntityJson(json: string): Record<string, string> {
+  const props: Record<string, string> = {};
+  let i = 0;
+  let n = 0;
+  while (i < json.length || n === 0) {
+    let end = Math.min(i + CHUNK_CHARS, json.length);
+    // Never split a surrogate pair across properties — a lone surrogate half
+    // can't encode to UTF-8 and the service rejects it.
+    const c = json.charCodeAt(end - 1);
+    if (end < json.length && c >= 0xd800 && c <= 0xdbff) end -= 1;
+    props[n === 0 ? 'data' : `data${n}`] = json.slice(i, end);
+    i = end;
+    n += 1;
+  }
+  return props;
+}
+
+export function joinEntityJson(row: Record<string, unknown>): string | undefined {
+  if (typeof row['data'] !== 'string') return undefined;
+  let out = row['data'];
+  for (let i = 1; typeof row[`data${i}`] === 'string'; i++) out += row[`data${i}`] as string;
+  return out;
 }
 
 /** DataStore backed by Azure Table Storage (one table per entity kind). */
@@ -38,7 +69,7 @@ export class TableDataStore implements DataStore {
   private async put<T>(name: string, partitionKey: string, rowKey: string, value: T): Promise<T> {
     const table = this.table(name);
     await ensureTable(table);
-    const entity: Row = { partitionKey, rowKey, data: JSON.stringify(value) };
+    const entity = { partitionKey, rowKey, ...chunkEntityJson(JSON.stringify(value)) } as Row;
     await table.upsertEntity(entity, 'Replace');
     return value;
   }
@@ -46,7 +77,8 @@ export class TableDataStore implements DataStore {
   private async get<T>(name: string, partitionKey: string, rowKey: string): Promise<T | undefined> {
     try {
       const row = await this.table(name).getEntity<Row>(partitionKey, rowKey);
-      return JSON.parse(row.data) as T;
+      const json = joinEntityJson(row as unknown as Record<string, unknown>);
+      return json ? (JSON.parse(json) as T) : undefined;
     } catch (err) {
       if (isNotFound(err)) return undefined;
       throw err;
@@ -59,7 +91,8 @@ export class TableDataStore implements DataStore {
     const filter = partitionKey ? odata`PartitionKey eq ${partitionKey}` : undefined;
     const out: T[] = [];
     for await (const row of table.listEntities<Row>({ queryOptions: filter ? { filter } : undefined })) {
-      if (typeof row.data === 'string') out.push(JSON.parse(row.data) as T);
+      const json = joinEntityJson(row as unknown as Record<string, unknown>);
+      if (json) out.push(JSON.parse(json) as T);
     }
     return out;
   }
@@ -123,7 +156,8 @@ export class TableDataStore implements DataStore {
     const hi = `${clientId};`;
     const out: DocumentRecord[] = [];
     for await (const row of table.listEntities<Row>({ queryOptions: { filter: odata`PartitionKey ge ${lo} and PartitionKey lt ${hi}` } })) {
-      if (typeof row.data === 'string') out.push(JSON.parse(row.data) as DocumentRecord);
+      const json = joinEntityJson(row as unknown as Record<string, unknown>);
+      if (json) out.push(JSON.parse(json) as DocumentRecord);
     }
     return out;
   }
@@ -163,7 +197,8 @@ export class TableDataStore implements DataStore {
       .byPage({ maxPageSize: limit });
     for await (const page of pages) {
       for (const row of page) {
-        if (typeof row.data === 'string') out.push(JSON.parse(row.data) as AuditEvent);
+        const json = joinEntityJson(row as unknown as Record<string, unknown>);
+        if (json) out.push(JSON.parse(json) as AuditEvent);
       }
       break; // newest-first keys mean the first page IS the latest N
     }

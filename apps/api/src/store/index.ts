@@ -10,7 +10,7 @@ export * from './types.js';
 export * from './secretStore.js';
 export * from './docStore.js';
 export { JsonDataStore } from './jsonStore.js';
-export { TableDataStore } from './tableStore.js';
+export { chunkEntityJson, joinEntityJson, TableDataStore } from './tableStore.js';
 
 let _data: DataStore | undefined;
 let _dataKind: 'table' | 'json' = 'json';

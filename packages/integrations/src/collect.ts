@@ -7,6 +7,21 @@ export interface AssembledSnapshot {
   warnings: string[];
 }
 
+// Per-metric budget for drill-down rows: keeps the whole snapshot comfortably
+// inside a 1MB Table Storage entity even with dozens of detail-carrying
+// metrics.
+const DETAILS_JSON_BUDGET = 16_000;
+
+/** Trim a metric's drill-down rows to the per-metric JSON budget. */
+export function trimMetricDetails(m: MetricValue): MetricValue {
+  if (!m.details?.length) return m;
+  let rows = m.details.slice(0, 100);
+  while (rows.length > 1 && JSON.stringify(rows).length > DETAILS_JSON_BUDGET) {
+    rows = rows.slice(0, Math.ceil(rows.length / 2));
+  }
+  return rows.length === m.details.length ? m : { ...m, details: rows };
+}
+
 /**
  * Merge per-integration collect results into a single metric snapshot. Metric
  * keys are de-duplicated (first source wins); conflicts and per-source warnings
@@ -29,7 +44,7 @@ export function assembleSnapshot(
         warnings.push(`Metric "${m.key}" reported by both ${existing.source} and ${m.source}; kept ${existing.source}.`);
         continue;
       }
-      byKey.set(m.key, m);
+      byKey.set(m.key, trimMetricDetails(m));
     }
   }
 
