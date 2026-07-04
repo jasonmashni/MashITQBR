@@ -505,6 +505,33 @@ describe('normalizeHaloFinance', () => {
     expect(warnings.some((w) => /recurring/.test(w) && /contract fields seen: id, ref, client_name/.test(w))).toBe(true);
   });
 
+  it('merges billing-period and ticket-reference descriptions into one category', () => {
+    const { metrics } = normalizeHaloFinance({
+      contracts: [],
+      invoices: [
+        {
+          invoicedate: '2026-05-01',
+          nettotal: 8000,
+          lines: [
+            { net_amount: 2465, description: 'Managed Workstation - Windows PC 2/20/2026 - 3/19/2026' },
+            { net_amount: 2295, description: 'Managed Workstation - Windows PC 1/20/2026 - 2/19/2026' },
+            { net_amount: 2343.75, description: 'Remote Support - ID: 0054251 - Summary: Document & Harden Network' },
+            { net_amount: 896.25, description: 'Remote Support - ID: 0054312 - Summary: Server migration' },
+          ],
+        },
+      ],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    const by = Object.fromEntries(metrics.map((m) => [m.key, m.value]));
+    expect(by['finance.invoiced.managed_workstation_windows_pc']).toBe(4760); // both months merged
+    expect(by['finance.invoiced.remote_support']).toBe(3240); // both tickets merged
+    // Drill-down carries the raw lines behind each category.
+    const mw = metrics.find((m) => m.key === 'finance.invoiced.managed_workstation_windows_pc')!;
+    expect(mw.details).toHaveLength(2);
+    expect(String(mw.details![0]!['description'])).toContain('2/20/2026');
+  });
+
   it('warns when invoices carry no line items (breakdown unavailable)', () => {
     const { metrics, warnings } = normalizeHaloFinance({
       contracts: [],

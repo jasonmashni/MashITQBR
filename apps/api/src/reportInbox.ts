@@ -111,11 +111,20 @@ export interface InboxPollResult {
   processed: number;
   filed: number;
   unrouted: number;
+  /**
+   * Per-folder stats so "0 processed" is diagnosable at a glance: mail that
+   * was already marked read, or mail that landed in Junk (plus-addressed
+   * external mail often does).
+   */
+  folders?: Array<{ folder: string; total: number; unread: number }>;
 }
 
+const POLL_FOLDERS = ['inbox', 'junkemail'] as const;
+
 /**
- * One poll pass: read unread messages, route each by its plus-address, file
- * the attachments as documents, mark the message read.
+ * One poll pass: read unread messages (Inbox AND Junk — vendor reports to a
+ * plus-address get flagged surprisingly often), route each by its
+ * plus-address, file the attachments as documents, mark the message read.
  */
 export async function pollReportInbox(
   cfg: InboxConfig,
@@ -127,23 +136,42 @@ export async function pollReportInbox(
   const token = await appToken(cfg, fetchFn);
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
   const mbx = `${GRAPH}/users/${encodeURIComponent(cfg.mailbox)}`;
-
-  const listRes = await fetchFn(
-    `${mbx}/mailFolders/inbox/messages?$filter=isRead eq false&$top=25&$select=id,subject,hasAttachments,toRecipients,ccRecipients`,
-    { headers },
-  );
-  if (!listRes.ok) {
-    const body = (await listRes.json().catch(() => ({}))) as Json;
-    const graphMsg = ((body['error'] as Json | undefined)?.['message'] ?? '') as string;
-    throw new Error(
-      `Report inbox read failed (${listRes.status})${graphMsg ? `: ${graphMsg}` : ''} — check the Mail.ReadWrite APPLICATION permission (admin-consented) and that REPORTS_MAILBOX is the shared mailbox's exact address.`,
-    );
-  }
-  const messages = (((await listRes.json()) as Json)['value'] ?? []) as InboxMessage[];
+  const asNum = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
   const clients = await store.listClients();
+  let processed = 0;
   let filed = 0;
   let unrouted = 0;
+  const folders: Array<{ folder: string; total: number; unread: number }> = [];
+  const messages: InboxMessage[] = [];
+
+  for (const folder of POLL_FOLDERS) {
+    // Folder counts are best-effort but make the Settings card honest.
+    try {
+      const infoRes = await fetchFn(`${mbx}/mailFolders/${folder}`, { headers });
+      if (infoRes.ok) {
+        const info = (await infoRes.json()) as Json;
+        folders.push({ folder, total: asNum(info['totalItemCount']), unread: asNum(info['unreadItemCount']) });
+      }
+    } catch {
+      // stats only
+    }
+
+    const listRes = await fetchFn(
+      `${mbx}/mailFolders/${folder}/messages?$filter=isRead eq false&$top=25&$select=id,subject,hasAttachments,toRecipients,ccRecipients`,
+      { headers },
+    );
+    if (!listRes.ok) {
+      if (folder !== 'inbox') continue; // junk access is optional
+      const body = (await listRes.json().catch(() => ({}))) as Json;
+      const graphMsg = ((body['error'] as Json | undefined)?.['message'] ?? '') as string;
+      throw new Error(
+        `Report inbox read failed (${listRes.status})${graphMsg ? `: ${graphMsg}` : ''} — check the Mail.ReadWrite APPLICATION permission (admin-consented) and that REPORTS_MAILBOX is the shared mailbox's exact address.`,
+      );
+    }
+    messages.push(...((((await listRes.json()) as Json)['value'] ?? []) as InboxMessage[]));
+  }
+  processed = messages.length;
 
   for (const msg of messages) {
     const recipients = [...(msg.toRecipients ?? []), ...(msg.ccRecipients ?? [])]
@@ -200,5 +228,5 @@ export async function pollReportInbox(
     }).catch(() => undefined);
   }
 
-  return { processed: messages.length, filed, unrouted };
+  return { processed, filed, unrouted, folders };
 }

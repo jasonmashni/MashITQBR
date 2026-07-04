@@ -47,6 +47,13 @@ export interface MetricValue {
    * Omit for metrics where direction has no inherent sentiment.
    */
   higherIsBetter?: boolean;
+  /**
+   * Backing rows for drill-down — the tickets behind a count, the invoice
+   * lines behind a spend figure. Capped small at collection time; shown by
+   * the Data tab's viewer and deliberately excluded from the AI narrative
+   * input and the rendered report tables.
+   */
+  details?: Array<Record<string, string | number>>;
 }
 
 /** A captured set of metrics for one client for one reporting period. */

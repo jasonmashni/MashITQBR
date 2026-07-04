@@ -70,10 +70,12 @@ async function haloCfg(secrets: SecretStore, conn: Connection): Promise<HaloCfg>
 }
 
 async function ninjaCfg(secrets: SecretStore, conn: Connection): Promise<NinjaCfg> {
+  const nodeRoleIds = (conn.config['nodeRoleIds'] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   return {
     baseUrl: conn.config['baseUrl'] || undefined,
     clientId: conn.config['clientId'] ?? '',
     clientSecret: (await resolveSecret(secrets, conn, 'clientSecret')) ?? '',
+    nodeRoleIds: nodeRoleIds.length ? nodeRoleIds : undefined,
   };
 }
 

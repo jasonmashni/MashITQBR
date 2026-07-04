@@ -15,6 +15,13 @@ export interface NinjaCfg {
   baseUrl?: string;
   clientId: string;
   clientSecret: string;
+  /**
+   * Device-role ids to report on (from the connection's "Device roles"
+   * picker — e.g. Windows Desktop, Windows Laptop, Mac). Empty/absent =
+   * report on every device. When set, all queries are filtered to devices
+   * carrying these roles.
+   */
+  nodeRoleIds?: string[];
 }
 
 type Json = Record<string, unknown>;
@@ -67,6 +74,14 @@ export async function listNinjaOrgs(http: HttpTransport, cfg: NinjaCfg): Promise
   return toArray<Json>(json, ['organizations'])
     .filter((o) => o['id'] !== undefined)
     .map((o) => ({ id: String(o['id']), name: typeof o['name'] === 'string' ? o['name'] : `Org ${String(o['id'])}` }));
+}
+
+/** Device roles in this tenant (drives the connection's "Device roles" picker). */
+export async function listNinjaRoles(http: HttpTransport, cfg: NinjaCfg): Promise<Array<{ id: string; name: string }>> {
+  const json = await ninjaGet(http, cfg, 'roles', {});
+  return toArray<Json>(json, ['roles'])
+    .filter((r) => r['id'] !== undefined)
+    .map((r) => ({ id: String(r['id']), name: typeof r['name'] === 'string' ? r['name'] : `Role ${String(r['id'])}` }));
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
@@ -130,21 +145,46 @@ export function normalizeNinjaPatchQuarter(installed: number, failed: number): M
   return out;
 }
 
-/** Backup usage rows carry organizationId (the endpoint has no org filter). */
-export function normalizeNinjaBackup(rows: Json[], orgId: string): MetricValue[] {
+/** Fields on a backup-usage row that prove data is ACTUALLY backed up. */
+const BACKUP_EVIDENCE_FIELDS = [
+  'totalSize',
+  'totalSizeOnDisk',
+  'revisionsTotalSize',
+  'backupTotalSize',
+  'usedStorage',
+  'usedBytes',
+  'totalFiles',
+  'fileCount',
+  'lastSuccessfulBackupJob',
+];
+
+/**
+ * Backup usage rows carry organizationId (the endpoint has no org filter) —
+ * and the endpoint returns a row for EVERY device when the backup module is
+ * on, with zero usage for devices that have no backup plan. Only devices
+ * with real backup evidence count as protected.
+ */
+export function normalizeNinjaBackup(rows: Json[], orgId: string, deviceName?: (id: string) => string | undefined): MetricValue[] {
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
   const inOrg = rows.filter((r) => String(r['organizationId'] ?? '') === String(orgId));
   const byDevice = new Map<string, Json>();
   for (const r of inOrg) byDevice.set(String(r['id'] ?? r['deviceId'] ?? byDevice.size), r);
   if (byDevice.size === 0) return [];
+  const protectedRows: Array<Record<string, string | number>> = [];
   let failing = 0;
-  for (const r of byDevice.values()) {
+  for (const [id, r] of byDevice) {
+    const hasBackup = BACKUP_EVIDENCE_FIELDS.some((f) => num(r[f]) > 0);
+    if (!hasBackup) continue;
+    protectedRows.push({ device: deviceName?.(id) ?? id });
     const ok = num(r['lastSuccessfulBackupJob']);
     const bad = num(r['lastFailedBackupJob']);
     if (bad > ok) failing++;
   }
-  const out = [
-    metric('backup.protected_devices', 'Devices with backup', byDevice.size, { category: 'backup', source: 'ninja', unit: 'count', higherIsBetter: true }),
+  const out: MetricValue[] = [
+    {
+      ...metric('backup.protected_devices', 'Devices with backup', protectedRows.length, { category: 'backup', source: 'ninja', unit: 'count', higherIsBetter: true }),
+      details: protectedRows.slice(0, 100),
+    },
   ];
   if (failing > 0) {
     out.push(metric('backup.failed_jobs', 'Devices with failing backups', failing, { category: 'backup', source: 'ninja', unit: 'count', higherIsBetter: false }));
@@ -173,19 +213,56 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
   const df = { df: `org = ${orgId}` };
   const metrics: MetricValue[] = [];
   const warnings: string[] = [];
+  const roleFilter = cfg.nodeRoleIds?.length ? new Set(cfg.nodeRoleIds.map(String)) : undefined;
 
-  // Devices in the organization.
+  // Role names for drill-down labels (best effort; ids still work without).
+  let roleNames = new Map<string, string>();
+  if (roleFilter) {
+    try {
+      roleNames = new Map((await listNinjaRoles(http, cfg)).map((r) => [r.id, r.name]));
+    } catch {
+      // ids alone are fine
+    }
+  }
+
+  // Devices in the organization — the role filter applies here, and the
+  // surviving device ids scope every query below.
   let devices: Json[] = [];
+  let allowedIds: Set<string> | undefined;
+  const deviceNames = new Map<string, string>();
   try {
-    devices = toArray<Json>(await ninjaGet(http, cfg, `organization/${encodeURIComponent(orgId)}/devices`, { pageSize: 1000 }), ['devices']);
-    metrics.push(metric('endpoints.managed', 'Managed devices', devices.length, { category: 'infrastructure', source: 'ninja', unit: 'count' }));
+    const all = toArray<Json>(await ninjaGet(http, cfg, `organization/${encodeURIComponent(orgId)}/devices`, { pageSize: 1000 }), ['devices']);
+    devices = roleFilter ? all.filter((d) => roleFilter.has(String(d['nodeRoleId'] ?? d['roleId'] ?? ''))) : all;
+    if (roleFilter) {
+      allowedIds = new Set(devices.map((d) => String(d['id'] ?? '')));
+      if (all.length > 0 && devices.length === 0) {
+        warnings.push('NinjaOne: no devices in this organization carry the selected device roles — check the connection’s "Device roles" picker.');
+      }
+    }
+    const deviceRows = devices.slice(0, 100).map((d) => {
+      const name = firstStrOf(d, ['systemName', 'dnsName', 'displayName', 'name']) ?? `#${String(d['id'] ?? '')}`;
+      deviceNames.set(String(d['id'] ?? ''), name);
+      return { name, role: roleNames.get(String(d['nodeRoleId'] ?? '')) ?? String(d['nodeRoleId'] ?? '') };
+    });
+    for (const d of devices) {
+      const id = String(d['id'] ?? '');
+      if (!deviceNames.has(id)) deviceNames.set(id, firstStrOf(d, ['systemName', 'dnsName', 'displayName', 'name']) ?? `#${id}`);
+    }
+    metrics.push({
+      ...metric('endpoints.managed', 'Managed devices', devices.length, { category: 'infrastructure', source: 'ninja', unit: 'count' }),
+      details: deviceRows,
+    });
   } catch (e) {
     warnings.push(`NinjaOne devices unavailable: ${e instanceof Error ? e.message : 'error'}`);
+    if (roleFilter) warnings.push('NinjaOne: the device-role filter could not be applied (device list unavailable) — other queries are unfiltered.');
   }
+
+  // Query rows carry deviceId — scope them to the role-filtered device set.
+  const scoped = (rows: Json[]) => (allowedIds ? rows.filter((r) => allowedIds.has(String(r['deviceId'] ?? r['id'] ?? ''))) : rows);
 
   // Device health (persistent condition, unlike point-in-time offline).
   try {
-    const health = await queryAll(http, cfg, 'queries/device-health', df);
+    const health = scoped(await queryAll(http, cfg, 'queries/device-health', df));
     metrics.push(...normalizeNinjaHealth(health));
   } catch (e) {
     warnings.push(`NinjaOne device-health query failed: ${e instanceof Error ? e.message : 'error'}`);
@@ -193,7 +270,7 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
 
   // Antivirus coverage (org-scoped query).
   try {
-    const av = await queryAll(http, cfg, 'queries/antivirus-status', df);
+    const av = scoped(await queryAll(http, cfg, 'queries/antivirus-status', df));
     if (av.length > 0) metrics.push(...normalizeNinjaAv(av));
     else warnings.push('NinjaOne antivirus query returned no rows for this organization.');
   } catch (e) {
@@ -203,24 +280,24 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
   // Quarterly patch compliance from the install history (INSTALLED vs FAILED
   // during the period), plus the current pending count as a snapshot.
   try {
-    const installed = await queryAll(http, cfg, 'queries/os-patch-installs', {
+    const installed = scoped(await queryAll(http, cfg, 'queries/os-patch-installs', {
       ...df,
       status: 'INSTALLED',
       installedAfter: ctx.period.start,
       installedBefore: ctx.period.end,
-    });
-    const failed = await queryAll(http, cfg, 'queries/os-patch-installs', {
+    }));
+    const failed = scoped(await queryAll(http, cfg, 'queries/os-patch-installs', {
       ...df,
       status: 'FAILED',
       installedAfter: ctx.period.start,
       installedBefore: ctx.period.end,
-    });
+    }));
     metrics.push(...normalizeNinjaPatchQuarter(installed.length, failed.length));
   } catch (e) {
     warnings.push(`NinjaOne patch-install history failed: ${e instanceof Error ? e.message : 'error'}`);
   }
   try {
-    const pending = await queryAll(http, cfg, 'queries/os-patches', df);
+    const pending = scoped(await queryAll(http, cfg, 'queries/os-patches', df));
     metrics.push(metric('patch.pending', 'Pending OS patches', pending.length, { category: 'security', source: 'ninja', unit: 'count', higherIsBetter: false }));
   } catch (e) {
     warnings.push(`NinjaOne patch query failed: ${e instanceof Error ? e.message : 'error'}`);
@@ -229,12 +306,17 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
   // Backup usage — the endpoint has no org filter, so filter rows by their
   // organizationId (counting all rows was wildly wrong for multi-org tenants).
   try {
-    const backup = await queryAll(http, cfg, 'queries/backup/usage', {});
-    metrics.push(...normalizeNinjaBackup(backup, orgId));
+    const backup = scoped(await queryAll(http, cfg, 'queries/backup/usage', {}));
+    metrics.push(...normalizeNinjaBackup(backup, orgId, (id) => deviceNames.get(id)));
   } catch {
     // Backup module may not be licensed — not worth a warning.
   }
 
   if (metrics.length === 0) warnings.push('NinjaOne returned no usable data for this organization.');
   return { source: 'ninja', metrics, warnings };
+}
+
+function firstStrOf(row: Json, keys: string[]): string | undefined {
+  for (const k of keys) if (typeof row[k] === 'string' && row[k]) return row[k] as string;
+  return undefined;
 }

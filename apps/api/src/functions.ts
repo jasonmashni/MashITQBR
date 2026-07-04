@@ -88,16 +88,19 @@ route('deleteIntegration', 'DELETE', 'api/integrations/{id}', (req) => h.deleteI
 route('testIntegration', 'POST', 'api/integrations/{id}/test', (req) => h.testIntegration(req.params['id']!));
 route('integrationOrgs', 'GET', 'api/integrations/{id}/orgs', (req) => h.getIntegrationOrgs(req.params['id']!));
 route('haloMeta', 'GET', 'api/integrations/halo/meta', (req) => h.getHaloMeta(req.query.get('connectionId')));
+route('ninjaMeta', 'GET', 'api/integrations/ninja/meta', (req) => h.getNinjaMeta(req.query.get('connectionId')));
 route('integrationMappings', 'PUT', 'api/integrations/{id}/mappings', async (req) => h.putIntegrationMappings(req.params['id']!, (await body(req)) as never));
 
 route('getOrgSettings', 'GET', 'api/settings/org', () => h.getOrgSettings());
 route('putOrgSettings', 'PUT', 'api/settings/org', async (req) => h.putOrgSettings(await body(req)));
 
 route('currentPeriod', 'GET', 'api/period/current', () => h.currentPeriod());
-// Function NAME deliberately not "system" — observed in the field: a function
-// registered under that name never turned up on the deployed host (its route
-// fell through to the SPA catch-all) while every neighbor registered fine.
-// The alias route is belt-and-braces; the web client falls back to it.
+// Observed in the field: functions serving /api/system routes never turn up
+// on the deployed host (requests fall through to the SPA catch-all) while
+// every neighbor registers fine — regardless of the function's name. The
+// /api/capabilities route avoids the word entirely; the older routes stay
+// for compatibility and the web client tries all three.
+route('capabilities', 'GET', 'api/capabilities', () => h.getSystem());
 route('systemInfo', 'GET', 'api/system', () => h.getSystem());
 route('systemInfoAlias', 'GET', 'api/system-info', () => h.getSystem());
 route('overview', 'GET', 'api/overview', (req) => h.getOverview(req.query.get('current')));

@@ -57,12 +57,14 @@ async function withAuthRefresh<T>(run: () => Promise<T>): Promise<T> {
 // Capabilities don't change while the app is open — fetch once, share everywhere.
 let _system: Promise<SystemInfo> | undefined;
 
-// Some hosts have refused to register the /api/system function while serving
-// every other route — the alias route answers identically, so fall back.
+// Some hosts refuse to register functions on /api/system routes while serving
+// every other route — try the "system"-free alias first, then the older ones.
 async function fetchSystem(): Promise<SystemInfo> {
-  const res = await send('GET', '/api/system');
-  if (res.ok) return res.json() as Promise<SystemInfo>;
-  return send('GET', '/api/system-info').then(json<SystemInfo>);
+  for (const url of ['/api/capabilities', '/api/system', '/api/system-info']) {
+    const res = await send('GET', url);
+    if (res.ok) return res.json() as Promise<SystemInfo>;
+  }
+  throw new Error('System info unavailable');
 }
 
 export const api = {
@@ -71,7 +73,10 @@ export const api = {
   /** Re-read the system info (e.g. after an inbox poll) and refresh the memo. */
   systemFresh: () => (_system = fetchSystem()),
   /** Drain the shared report mailbox now (the timer does this every 5 min). */
-  pollInbox: () => send('POST', '/api/inbox/poll').then(json<{ processed: number; filed: number; unrouted: number }>),
+  pollInbox: () =>
+    send('POST', '/api/inbox/poll').then(
+      json<{ processed: number; filed: number; unrouted: number; folders?: Array<{ folder: string; total: number; unread: number }> }>,
+    ),
   me: () => send('GET', '/api/me').then(json<Me>),
   audit: (limit = 100) => send('GET', `/api/audit?limit=${limit}`).then(json<{ events: AuditEvent[] }>),
 
@@ -132,6 +137,10 @@ export const api = {
     send('PUT', `/api/clients/${clientId}/qbr/${period}/schedule`, body).then(json<unknown>),
   haloMeta: (connectionId?: string) =>
     send('GET', `/api/integrations/halo/meta${connectionId ? `?connectionId=${encodeURIComponent(connectionId)}` : ''}`).then(json<HaloMeta>),
+  ninjaMeta: (connectionId?: string) =>
+    send('GET', `/api/integrations/ninja/meta${connectionId ? `?connectionId=${encodeURIComponent(connectionId)}` : ''}`).then(
+      json<{ roles: Array<{ id: string; name: string }> }>,
+    ),
   pushAction: (
     clientId: string,
     period: string,

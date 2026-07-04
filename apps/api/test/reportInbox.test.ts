@@ -54,7 +54,7 @@ describe('pollReportInbox', () => {
           ],
         });
       }
-      if (url.includes('/messages?')) {
+      if (url.includes('/mailFolders/inbox/messages?')) {
         return body({
           value: [
             {
@@ -67,12 +67,20 @@ describe('pollReportInbox', () => {
           ],
         });
       }
+      if (url.includes('/mailFolders/junkemail/messages?')) return body({ value: [] });
+      if (url.endsWith('/mailFolders/inbox')) return body({ totalItemCount: 5, unreadItemCount: 2 });
+      if (url.endsWith('/mailFolders/junkemail')) return body({ totalItemCount: 1, unreadItemCount: 0 });
       return body({});
     }) as never;
 
     const cfg = { mailbox: 'qbr-reports@mashit.net', tenantId: 't', clientId: 'c', clientSecret: 's' };
     const result = await pollReportInbox(cfg, store, docs, fetchFn, new Date('2026-07-03T12:00:00Z'));
-    expect(result).toEqual({ processed: 2, filed: 1, unrouted: 1 });
+    expect(result).toMatchObject({ processed: 2, filed: 1, unrouted: 1 });
+    // Folder stats make "0 processed" diagnosable (read mail / mail in Junk).
+    expect(result.folders).toEqual([
+      { folder: 'inbox', total: 5, unread: 2 },
+      { folder: 'junkemail', total: 1, unread: 0 },
+    ]);
 
     // Filed into the subject's quarter for the plus-addressed client.
     const filed = await store.listDocuments('halo-62', '2026-Q2');

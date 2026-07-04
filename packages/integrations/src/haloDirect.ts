@@ -154,12 +154,21 @@ async function haloPageAll(
   const pageSize = 200;
   const rows: Json[] = [];
   let total = 0;
+  let lastFirstId: unknown;
   for (let page = 1; page <= maxPages; page++) {
     const json = await haloGet(http, cfg, path, { ...params, pageinate: true, page_size: pageSize, page_no: page });
     const pageRows = toArray<Json>(json, [rowsKey]);
+    // Guard against servers that ignore page_no (same page forever) — that
+    // would silently multiply every tally.
+    const firstId = pageRows[0]?.['id'];
+    if (page > 1 && firstId !== undefined && firstId === lastFirstId) break;
+    lastFirstId = firstId;
     rows.push(...pageRows);
     if (page === 1) total = recordCount(json, pageRows);
-    if (pageRows.length < pageSize || rows.length >= total) break;
+    // Keep paging until record_count is reached — instances cap page_size
+    // (some serve 100 even when 200 is requested), so a short page does NOT
+    // mean the list is finished.
+    if (pageRows.length === 0 || rows.length >= total) break;
   }
   return { rows, total: Math.max(total, rows.length) };
 }
@@ -222,9 +231,27 @@ export function buildHaloItemIndex(items: Json[]): Map<string, HaloItemInfo> {
 }
 
 /**
+ * Reduce a billing-line description to its category: strip per-instance
+ * suffixes — ticket references ("- ID: 0054251 - Summary: …"), billing-period
+ * date ranges ("2/20/2026 - 3/19/2026"), trailing reference numbers — so
+ * "Managed Workstation - Windows PC 2/20/2026 - 3/19/2026" and next month's
+ * line land in the SAME "Managed Workstation - Windows PC" bucket.
+ */
+export function categoryFromDescription(desc: string): string {
+  const cleaned = desc
+    .replace(/\s*[-–—]\s*ID:\s*\S+.*$/i, '')
+    .replace(/\s*[-–—]\s*Summary:.*$/i, '')
+    .replace(/\s*[-–—]?\s*\d{1,2}\/\d{1,2}\/\d{2,4}\s*(?:[-–—]|to)\s*\d{1,2}\/\d{1,2}\/\d{2,4}.*$/, '')
+    .replace(/\s*[-–—]\s*\d{4,}\s*$/, '')
+    .trim();
+  return cleaned || desc;
+}
+
+/**
  * The high-level category for one invoice/contract line: its own group
  * fields, else the referenced catalog item's group (falling back to the item
- * name), else the line's description. Undefined = nothing recognizable.
+ * name), else the line's description (normalized — see
+ * categoryFromDescription). Undefined = nothing recognizable.
  */
 function lineCategory(line: Json, itemIndex: Map<string, HaloItemInfo>): string | undefined {
   const own = groupNameOf(line);
@@ -241,8 +268,14 @@ function lineCategory(line: Json, itemIndex: Map<string, HaloItemInfo>): string 
     if (info?.group) return info.group;
     if (info?.name) return info.name;
   }
-  return firstStr(line, LINE_DESCRIPTION_FIELDS);
+  const desc = firstStr(line, LINE_DESCRIPTION_FIELDS);
+  return desc ? categoryFromDescription(desc) : undefined;
 }
+
+/** Drill-down rows are capped so snapshots stay storage-friendly. */
+const DETAIL_CAP = 100;
+type DetailRow = Record<string, string | number>;
+const clip = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** Executive-size a category map: top N by value, the rest folded into one Other. */
 function foldCategories(byCategory: Map<string, number>, topN: number): Array<[string, number]> {
@@ -344,15 +377,19 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
   if (input.contracts.length > 0) {
     let mrr = 0;
     let recognized = 0;
+    const contractRows: DetailRow[] = [];
     for (const c of input.contracts) {
       const v = firstNum(c, MRR_FIELDS);
       if (v !== undefined) {
         mrr += v;
         recognized++;
+        if (contractRows.length < DETAIL_CAP) {
+          contractRows.push({ contract: firstStr(c, ['ref', 'reference', 'name']) ?? String(c['id'] ?? ''), monthly: v });
+        }
       }
     }
     if (recognized > 0) {
-      metrics.push(spend('finance.mrr', 'Monthly recurring revenue', mrr));
+      metrics.push({ ...spend('finance.mrr', 'Monthly recurring revenue', mrr), details: contractRows });
       if (recognized < input.contracts.length) {
         warnings.push(`${input.contracts.length - recognized} Halo contract(s) had no recognizable monthly value field — MRR may be understated.`);
       }
@@ -365,16 +402,30 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
 
   // Distinct labels can slug identically — merge so metric keys stay unique.
   // Long labels (raw line descriptions) are trimmed to stay table-friendly.
-  const emitBreakdown = (entries: Array<[string, number]>, keyPrefix: string, labelPrefix: string) => {
-    const bySlug = new Map<string, { name: string; amount: number }>();
+  // rowsByName carries each category's backing lines for drill-down; rows for
+  // folded-away categories land on the Other entry.
+  const emitBreakdown = (entries: Array<[string, number]>, keyPrefix: string, labelPrefix: string, rowsByName?: Map<string, DetailRow[]>) => {
+    const topNames = new Set(entries.map(([n]) => n));
+    const otherRows: DetailRow[] = [];
+    if (rowsByName) {
+      for (const [name, rows] of rowsByName) {
+        if (!topNames.has(name)) otherRows.push(...rows);
+      }
+    }
+    const bySlug = new Map<string, { name: string; amount: number; rows: DetailRow[] }>();
     for (const [name, amount] of entries) {
       const slug = (name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'other').slice(0, 40);
+      const rows = name === 'Other' ? [...(rowsByName?.get(name) ?? []), ...otherRows] : (rowsByName?.get(name) ?? []);
       const prev = bySlug.get(slug);
-      if (prev) prev.amount += amount;
-      else bySlug.set(slug, { name: name.length > 60 ? `${name.slice(0, 57)}…` : name, amount });
+      if (prev) {
+        prev.amount += amount;
+        prev.rows.push(...rows);
+      } else {
+        bySlug.set(slug, { name: name.length > 60 ? `${name.slice(0, 57)}…` : name, amount, rows });
+      }
     }
-    for (const [slug, { name, amount }] of bySlug) {
-      metrics.push(spend(`${keyPrefix}.${slug}`, `${labelPrefix} — ${name}`, amount));
+    for (const [slug, { name, amount, rows }] of bySlug) {
+      metrics.push({ ...spend(`${keyPrefix}.${slug}`, `${labelPrefix} — ${name}`, amount), details: rows.slice(0, DETAIL_CAP) });
     }
   };
 
@@ -383,6 +434,7 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
   const details = input.contractDetails ?? [];
   if (details.length > 0) {
     const byRecurring = new Map<string, number>();
+    const recurringRows = new Map<string, DetailRow[]>();
     let sampleDetailKeys: string | undefined;
     let sampleItemKeys: string | undefined;
     for (const detail of details) {
@@ -391,6 +443,7 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
         sampleDetailKeys ??= Object.keys(detail).join(', ');
         continue;
       }
+      const contractRef = firstStr(detail, ['ref', 'reference', 'name']) ?? String(detail['id'] ?? '');
       for (const item of items) {
         // Monthly-total fields win; unit prices get multiplied by quantity.
         let amount = firstNum(item, RECURRING_TOTAL_FIELDS);
@@ -404,6 +457,15 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
         }
         const label = lineCategory(item, itemIndex) ?? 'Other';
         byRecurring.set(label, (byRecurring.get(label) ?? 0) + amount);
+        const rows = recurringRows.get(label) ?? [];
+        if (rows.length < DETAIL_CAP) {
+          rows.push({
+            item: clip(firstStr(item, LINE_DESCRIPTION_FIELDS) ?? firstStr(item, ITEM_NAME_FIELDS) ?? label),
+            monthly: Math.round(amount * 100) / 100,
+            contract: contractRef,
+          });
+        }
+        recurringRows.set(label, rows);
       }
     }
     if (byRecurring.size > 0) {
@@ -413,7 +475,7 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
           `Halo contract items carried no recognizable labels${sampleItemKeys ? ` (item fields seen: ${sampleItemKeys})` : ''} — recurring breakdown suppressed until parsing is tuned for this instance.`,
         );
       } else {
-        emitBreakdown(folded, 'finance.recurring', 'Monthly recurring');
+        emitBreakdown(folded, 'finance.recurring', 'Monthly recurring', recurringRows);
       }
     } else {
       warnings.push(
@@ -429,15 +491,20 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
   let counted = 0;
   let withLines = 0;
   const byCategory = new Map<string, number>();
+  const categoryRows = new Map<string, DetailRow[]>();
+  const invoiceRows: DetailRow[] = [];
   let sampleLineKeys: string | undefined;
   for (const inv of input.invoices) {
     const dateStr = firstStr(inv, INVOICE_DATE_FIELDS);
     const at = dateStr ? Date.parse(dateStr) : NaN;
     if (!Number.isFinite(at) || at < start || at >= end) continue;
+    const invoiceRef = String(inv['id'] ?? inv['invoice_number'] ?? '');
+    const invoiceDate = (dateStr ?? '').slice(0, 10);
     const total = firstNum(inv, INVOICE_TOTAL_FIELDS);
     if (total !== undefined) {
       invoiced += total;
       counted++;
+      if (invoiceRows.length < DETAIL_CAP) invoiceRows.push({ invoice: invoiceRef, date: invoiceDate, total });
     }
     // High-level breakdown (Managed Services, Subscriptions, Software, …):
     // the line's own group, else its catalog item's group/name, else the
@@ -449,10 +516,23 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
       if (amount === undefined || amount === 0) continue;
       const category = lineCategory(line, itemIndex);
       if (!category) sampleLineKeys ??= Object.keys(line).join(', ');
-      byCategory.set(category ?? 'Other', (byCategory.get(category ?? 'Other') ?? 0) + amount);
+      const bucket = category ?? 'Other';
+      byCategory.set(bucket, (byCategory.get(bucket) ?? 0) + amount);
+      const rows = categoryRows.get(bucket) ?? [];
+      if (rows.length < DETAIL_CAP) {
+        rows.push({
+          description: clip(firstStr(line, LINE_DESCRIPTION_FIELDS) ?? bucket),
+          amount: Math.round(amount * 100) / 100,
+          invoice: invoiceRef,
+          date: invoiceDate,
+        });
+      }
+      categoryRows.set(bucket, rows);
     }
   }
-  if (counted > 0) metrics.push(spend('finance.quarter_invoiced', 'Invoiced this quarter (total)', invoiced));
+  if (counted > 0) {
+    metrics.push({ ...spend('finance.quarter_invoiced', 'Invoiced this quarter (total)', invoiced), details: invoiceRows });
+  }
 
   if (byCategory.size > 0) {
     const folded = foldCategories(byCategory, 6);
@@ -463,7 +543,7 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
         `Halo invoice line categories unrecognized${sampleLineKeys ? ` (line fields seen: ${sampleLineKeys})` : ''} — assign item groups in Halo (or share a sample line) to enable the spend breakdown.`,
       );
     } else {
-      emitBreakdown(folded, 'finance.invoiced', 'Invoiced');
+      emitBreakdown(folded, 'finance.invoiced', 'Invoiced', categoryRows);
     }
   } else if (counted > 0) {
     warnings.push('Halo invoices carried no line items — the invoice breakdown needs line-level data (categories come from Halo item groups).');
@@ -530,12 +610,14 @@ async function collectHaloForId(
   if (allowedTypes) {
     let filterUsable = true;
     try {
+      // 40 pages covers busy quarters even when the instance caps pages at
+      // 100 rows (4,000 tickets); the sampling warning still fires beyond it.
       const openedPull = await haloPageAll(http, cfg, 'Tickets', {
         client_id: haloId,
         datesearch: 'dateoccurred',
         startdate: ctx.period.start,
         enddate: ctx.period.end,
-      }, 'tickets', 10);
+      }, 'tickets', 40);
       // Trust the server window, but drop rows whose parseable date clearly
       // falls outside it (rows without a recognizable date field stay).
       let openedAll = openedPull.rows.filter((r) => !outsidePeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
@@ -564,7 +646,7 @@ async function collectHaloForId(
           datesearch: 'dateclosed',
           startdate: ctx.period.start,
           enddate: ctx.period.end,
-        }, 'tickets', 10);
+        }, 'tickets', 40);
         closedAll = closedPull.rows.filter((r) => !outsidePeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs));
       }
 
@@ -645,7 +727,7 @@ async function collectHaloForId(
       try {
         if (allowedTypes) {
           // Type filter needs rows, not the server count.
-          const openAll = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: true }, 'tickets', 3);
+          const openAll = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: true }, 'tickets', 10);
           open = openAll.rows.filter(typeMatch).length;
           if (openAll.rows.length < openAll.total) {
             warnings.push(`Halo${tag}: open-ticket snapshot filtered from the first ${openAll.rows.length} of ${openAll.total} open tickets.`);
@@ -743,7 +825,14 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
   // Emit ticket tallies only when the API actually answered — a hard failure
   // must read as "unavailable" in the warnings, not as a quarter of zeros.
   if (anyTicketData) {
-    metrics.push(op('tickets.total', 'Tickets opened', openedTotal, false));
+    // Drill-down: the actual tickets behind the count (capped).
+    const ticketRows: DetailRow[] = openedRows.slice(0, DETAIL_CAP).map((r) => ({
+      id: String(r['id'] ?? ''),
+      summary: clip(firstStr(r, ['summary', 'subject']) ?? ''),
+      type: firstStr(r, ['tickettype_name', 'type']) ?? (ticketTypeIdOf(r) !== undefined ? `type ${ticketTypeIdOf(r)!}` : ''),
+      opened: (firstStr(r, TICKET_OPENED_FIELDS) ?? '').slice(0, 10),
+    }));
+    metrics.push({ ...op('tickets.total', 'Tickets opened', openedTotal, false), details: ticketRows });
     const counts = new Map<string, number>();
     for (const row of openedRows) counts.set(ticketCategory(row), (counts.get(ticketCategory(row)) ?? 0) + 1);
     if (openedRows.length > 0) {
@@ -774,6 +863,31 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
     } else if (openedRows.length > 0) {
       warnings.push('Halo ticket rows carry no recognizable SLA state field — SLA reporting needs tuning against this instance.');
     }
+  }
+
+  // Asset inventory (client-scoped snapshot) with a categorized drill-down —
+  // computers, network devices, printers, … from Halo's asset types.
+  const assetRows: Json[] = [];
+  let assetsOk = false;
+  for (const haloId of ids) {
+    try {
+      const res = await haloPageAll(http, cfg, 'Asset', { client_id: haloId }, 'assets', 10);
+      assetRows.push(...res.rows);
+      assetsOk = true;
+    } catch (e) {
+      warnings.push(`Halo${ids.length > 1 ? ` [${haloId}]` : ''} assets unavailable: ${e instanceof Error ? e.message : 'error'}`);
+    }
+  }
+  if (assetsOk) {
+    const typed = assetRows.map((r) => ({
+      name: clip(firstStr(r, ['inventory_number', 'name', 'key_field', 'device_name', 'dnsname']) ?? `#${String(r['id'] ?? '')}`, 60),
+      type: firstStr(r, ['assettype_name', 'asset_type_name', 'typename', 'assettype']) ?? 'Other',
+    }));
+    typed.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+    metrics.push({
+      ...metric('assets.total', 'Assets under management', assetRows.length, { category: 'infrastructure', source: 'halo', unit: 'count' }),
+      details: typed.slice(0, DETAIL_CAP * 2),
+    });
   }
 
   const finance = normalizeHaloFinance({ contracts, contractDetails, invoices, items, periodStart: ctx.period.start, periodEnd: ctx.period.end });

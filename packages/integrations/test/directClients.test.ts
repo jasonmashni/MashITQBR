@@ -99,6 +99,57 @@ describe('NinjaOne direct', () => {
     expect(normalizeNinjaBackup([], '3')).toHaveLength(0);
     expect(normalizeNinjaPatchQuarter(0, 0).map((m) => m.key)).toEqual(['patch.installed_quarter']);
   });
+
+  it('counts only devices with real backup evidence — zero-usage rows are unprotected', () => {
+    // backup/usage returns a row for EVERY device when the module is on.
+    const rows = [
+      { id: 1, organizationId: 3 },
+      { id: 2, organizationId: 3, totalSize: 0, totalFiles: 0 },
+      { id: 3, organizationId: 3, totalSize: 52_428_800 },
+    ];
+    const by = Object.fromEntries(normalizeNinjaBackup(rows, '3').map((m) => [m.key, m.value]));
+    expect(by['backup.protected_devices']).toBe(1);
+  });
+
+  it('scopes devices and every query to the selected device roles', async () => {
+    const { http } = fakeHttp((req) => {
+      if (req.url.includes('/ws/oauth/token')) return { status: 200, json: { access_token: 'nt', expires_in: 3600 } };
+      if (req.url.includes('/v2/roles')) {
+        return { status: 200, json: [{ id: 5, name: 'Windows Desktop' }, { id: 9, name: 'VMware Host' }] };
+      }
+      if (req.url.includes('/v2/organization/3/devices')) {
+        return { status: 200, json: [{ id: 17, systemName: 'ANP-PC-01', nodeRoleId: 5 }, { id: 18, systemName: 'ANP-ESX-01', nodeRoleId: 9 }] };
+      }
+      if (req.url.includes('device-health')) {
+        return { status: 200, json: { results: [{ deviceId: 17, healthStatus: 'HEALTHY' }, { deviceId: 18, healthStatus: 'NEEDS_ATTENTION' }] } };
+      }
+      if (req.url.includes('antivirus-status')) {
+        return {
+          status: 200,
+          json: { results: [{ deviceId: 17, productState: 'ON', definitionStatus: 'UpToDate' }, { deviceId: 18, productState: 'OFF', definitionStatus: 'OutOfDate' }] },
+        };
+      }
+      if (req.url.includes('os-patch-installs')) return { status: 200, json: { results: [{ deviceId: 18 }] } }; // filtered away
+      if (req.url.includes('os-patches')) return { status: 200, json: { results: [{ deviceId: 17 }, { deviceId: 18 }] } };
+      if (req.url.includes('backup/usage')) {
+        return { status: 200, json: { results: [{ id: 17, organizationId: 3, totalSize: 1024 }, { id: 18, organizationId: 3, totalSize: 2048 }] } };
+      }
+      return { status: 404, json: {} };
+    });
+    const out = await collectNinjaDirect(
+      { clientId: 'anp', period: P, externalRef: '3' },
+      http,
+      { clientId: 'ninja-roles-1', clientSecret: 's', nodeRoleIds: ['5'] },
+    );
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['endpoints.managed']).toBe(1); // the VMware host is out of scope
+    expect(by['endpoints.needs_attention']).toBe(0); // device 18's health row filtered
+    expect(by['endpoints.av_coverage_pct']).toBe(100); // only device 17's AV row counts
+    expect(by['patch.pending']).toBe(1);
+    expect(by['backup.protected_devices']).toBe(1);
+    const managed = out.metrics.find((m) => m.key === 'endpoints.managed')!;
+    expect(managed.details).toEqual([{ name: 'ANP-PC-01', role: 'Windows Desktop' }]);
+  });
 });
 
 describe('Hudu', () => {

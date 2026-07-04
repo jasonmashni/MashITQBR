@@ -330,6 +330,8 @@ export function Integrations() {
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [haloMeta, setHaloMeta] = useState<HaloMeta | null>(null);
   const [haloMetaLoading, setHaloMetaLoading] = useState(false);
+  const [ninjaRoles, setNinjaRoles] = useState<Array<{ id: string; name: string }> | null>(null);
+  const [ninjaRolesLoading, setNinjaRolesLoading] = useState(false);
 
   // Ticket-type picker data for Halo connections (needs saved, working creds).
   // Scoped to the connection being edited so a second Halo instance's ids
@@ -344,6 +346,22 @@ export function Integrations() {
       .then((m) => live && setHaloMeta(m))
       .catch(() => live && setHaloMeta(null))
       .finally(() => live && setHaloMetaLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [opened, type, editId]);
+
+  // Device-role picker data for NinjaOne connections (same pattern).
+  useEffect(() => {
+    if (!opened || type !== 'ninja' || !editId) return;
+    let live = true;
+    setNinjaRoles(null);
+    setNinjaRolesLoading(true);
+    api
+      .ninjaMeta(editId)
+      .then((m) => live && setNinjaRoles(m.roles))
+      .catch(() => live && setNinjaRoles(null))
+      .finally(() => live && setNinjaRolesLoading(false));
     return () => {
       live = false;
     };
@@ -558,6 +576,28 @@ export function Integrations() {
                 {editId
                   ? 'Ticket-type picker unavailable — check the connection credentials, then reopen Edit.'
                   : 'Save the connection first, then reopen Edit to choose which ticket types count toward the QBR.'}
+              </Text>
+            ))}
+          {type === 'ninja' &&
+            (editId && ninjaRoles ? (
+              <MultiSelect
+                label="Device roles to report on (blank = all)"
+                description="Only devices with these roles (Windows Desktop, Windows Laptop, Mac…) count toward device, patch, AV and backup metrics."
+                data={ninjaRoles.map((r) => ({ value: r.id, label: r.name }))}
+                value={(config['nodeRoleIds'] ?? '').split(',').map((s) => s.trim()).filter(Boolean)}
+                onChange={(vals) => setConfig({ ...config, nodeRoleIds: vals.join(',') })}
+                searchable
+                clearable
+              />
+            ) : editId && ninjaRolesLoading ? (
+              <Text size="xs" c="dimmed">
+                Loading device roles from NinjaOne…
+              </Text>
+            ) : (
+              <Text size="xs" c="dimmed">
+                {editId
+                  ? 'Device-role picker unavailable — check the connection credentials, then reopen Edit.'
+                  : 'Save the connection first, then reopen Edit to choose which device roles count toward the QBR.'}
               </Text>
             ))}
           {def?.secrets.map((f) =>

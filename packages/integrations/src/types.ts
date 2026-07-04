@@ -49,7 +49,13 @@ export function metric(
   key: string,
   label: string,
   value: MetricValue['value'],
-  o: { unit?: string; category: MetricCategory; source: IntegrationId; higherIsBetter?: boolean },
+  o: {
+    unit?: string;
+    category: MetricCategory;
+    source: IntegrationId;
+    higherIsBetter?: boolean;
+    details?: Array<Record<string, string | number>>;
+  },
 ): MetricValue {
-  return { key, label, value, unit: o.unit, category: o.category, source: o.source, higherIsBetter: o.higherIsBetter };
+  return { key, label, value, unit: o.unit, category: o.category, source: o.source, higherIsBetter: o.higherIsBetter, details: o.details };
 }

@@ -54,10 +54,12 @@ export function Settings() {
     setPolling(true);
     try {
       const r = await api.pollInbox();
+      const folders = r.folders?.map((f) => `${f.folder}: ${f.unread} unread of ${f.total}`).join(' · ');
       notifications.show({
         color: 'teal',
         title: 'Inbox checked',
-        message: `${r.filed} attachment(s) filed, ${r.unrouted} unrouted, ${r.processed} unread message(s) seen.`,
+        message: `${r.filed} attachment(s) filed, ${r.unrouted} unrouted, ${r.processed} unread message(s) seen.${folders ? ` ${folders}.` : ''}`,
+        autoClose: 10000,
       });
     } catch (e) {
       notifications.show({ color: 'red', title: 'Inbox check failed', message: e instanceof Error ? e.message : 'Unknown error', autoClose: 12000 });

@@ -570,6 +570,8 @@ function DataTab({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState({ label: '', value: '', unit: '', category: 'security' });
+  // The metric whose backing rows (tickets, invoice lines, devices…) are open.
+  const [detail, setDetail] = useState<MetricRow | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -683,7 +685,17 @@ function DataTab({
                       />
                     </Table.Td>
                     <Table.Td><Text size="sm">{m.label}</Text></Table.Td>
-                    <Table.Td><Text size="sm" fw={600}>{fmt(m)}</Text></Table.Td>
+                    <Table.Td>
+                      {m.details?.length ? (
+                        <Tooltip label={`View the ${m.details.length} row(s) behind this number`}>
+                          <Anchor component="button" type="button" size="sm" fw={600} onClick={() => setDetail(m)}>
+                            {fmt(m)}
+                          </Anchor>
+                        </Tooltip>
+                      ) : (
+                        <Text size="sm" fw={600}>{fmt(m)}</Text>
+                      )}
+                    </Table.Td>
                     <Table.Td><Text size="sm" c="dimmed">{m.category}</Text></Table.Td>
                   </Table.Tr>
                 ))}
@@ -691,6 +703,43 @@ function DataTab({
           </Table>
         </Card>
       ))}
+
+      <Modal
+        opened={detail !== null}
+        onClose={() => setDetail(null)}
+        title={detail ? `${detail.label} — ${detail.details?.length ?? 0} row(s)` : ''}
+        size="xl"
+      >
+        {detail?.details?.length ? (
+          <Table.ScrollContainer minWidth={520}>
+            <Table striped verticalSpacing={4} stickyHeader>
+              <Table.Thead>
+                <Table.Tr>
+                  {Object.keys(detail.details[0]!).map((k) => (
+                    <Table.Th key={k} tt="capitalize">{k}</Table.Th>
+                  ))}
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {detail.details.map((row, i) => (
+                  <Table.Tr key={i}>
+                    {Object.keys(detail.details![0]!).map((k) => (
+                      <Table.Td key={k}>
+                        <Text size="sm">{String(row[k] ?? '')}</Text>
+                      </Table.Td>
+                    ))}
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
+        ) : null}
+        {typeof detail?.value === 'number' && (detail.details?.length ?? 0) < detail.value && (
+          <Text size="xs" c="dimmed" mt="xs">
+            Showing the first {detail.details?.length} of {detail.value} — the full set lives in the source tool.
+          </Text>
+        )}
+      </Modal>
 
       <Card withBorder radius="md" padding="lg">
         <Group mb="sm" gap="xs">

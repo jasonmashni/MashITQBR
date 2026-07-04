@@ -15,6 +15,9 @@ export interface Client {
 }
 
 /** A collected metric (mirrors the server's MetricValue). */
+/** Backing rows for a metric's drill-down viewer (shape varies per metric). */
+export type MetricDetailRow = Record<string, string | number>;
+
 export interface MetricRow {
   key: string;
   label: string;
@@ -23,6 +26,8 @@ export interface MetricRow {
   source: string;
   category: string;
   higherIsBetter?: boolean;
+  /** Present when the collector stored the rows behind this number. */
+  details?: MetricDetailRow[];
 }
 
 export interface SnapshotView {

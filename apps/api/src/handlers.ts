@@ -12,7 +12,7 @@ import {
 } from '@mashit/core';
 import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
 import { renderDeck, renderPdf } from '@mashit/report';
-import { FetchHttpTransport, fetchHaloMeta, type McpTransport } from '@mashit/integrations';
+import { FetchHttpTransport, fetchHaloMeta, listNinjaRoles, type McpTransport } from '@mashit/integrations';
 import { buildQbrReport, renderQbrHtml } from './service.js';
 import {
   dataStoreKind,
@@ -429,10 +429,11 @@ export async function pollInbox(): Promise<ApiResult> {
   }
   try {
     const result = await pollReportInbox(cfg, getDataStore(), getDocStore());
+    const folderNote = result.folders?.map((f) => `${f.folder}: ${f.unread} unread of ${f.total}`).join(', ');
     _lastInboxPoll = {
       at: new Date().toISOString(),
       ok: true,
-      detail: `${result.filed} attachment(s) filed, ${result.unrouted} unrouted of ${result.processed} unread message(s)`,
+      detail: `${result.filed} attachment(s) filed, ${result.unrouted} unrouted of ${result.processed} unread message(s)${folderNote ? ` — ${folderNote}` : ''}`,
     };
     if (result.filed > 0 || result.unrouted > 0) {
       audit('inbox.poll', `mailbox:${cfg.mailbox}`, `${result.filed} filed, ${result.unrouted} unrouted of ${result.processed}`);
@@ -551,6 +552,31 @@ export async function getHaloMeta(connectionId?: string | null): Promise<ApiResu
     return ok(meta);
   } catch (e) {
     return err(502, e instanceof Error ? e.message : 'Halo lookup lists unavailable');
+  }
+}
+
+/** NinjaOne device-role lists for the connection's "Device roles" picker — cached ~5 min per connection. */
+const _ninjaMeta = new Map<string, { at: number; data: unknown }>();
+export async function getNinjaMeta(connectionId?: string | null): Promise<ApiResult> {
+  const conns = await getDataStore().listConnections();
+  const ninja = connectionId
+    ? conns.find((c) => c.id === connectionId && c.type === 'ninja')
+    : conns.find((c) => c.type === 'ninja');
+  if (!ninja) return err(404, 'No NinjaOne connection configured — add one under Integrations to pick device roles.');
+  const hit = _ninjaMeta.get(ninja.id);
+  if (hit && Date.now() - hit.at < 5 * 60_000) return ok(hit.data);
+  try {
+    const cfg = {
+      baseUrl: ninja.config['baseUrl'] || undefined,
+      clientId: ninja.config['clientId'] ?? '',
+      clientSecret: (await resolveSecret(getSecretStore(), ninja, 'clientSecret')) ?? '',
+    };
+    const roles = await listNinjaRoles(new FetchHttpTransport(), cfg);
+    const data = { roles };
+    _ninjaMeta.set(ninja.id, { at: Date.now(), data });
+    return ok(data);
+  } catch (e) {
+    return err(502, e instanceof Error ? e.message : 'NinjaOne role list unavailable');
   }
 }
 
