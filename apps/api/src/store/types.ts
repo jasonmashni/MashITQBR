@@ -104,8 +104,10 @@ export interface DocumentRecord {
   period: string;
   /** Display file name (also the download name). */
   name: string;
-  /** Where it came from: 'upload' or the vendor integration id. */
+  /** Where it came from: 'upload', 'email', or the vendor integration id. */
   source: string;
+  /** User-assigned bucket on the Reports tab (Security, Backup, Endpoint…). */
+  category?: string;
   contentType: string;
   size: number;
   uploadedAt: string;
@@ -128,6 +130,8 @@ export interface OpportunityRecord {
   title: string;
   detail?: string;
   status: OpportunityStatus;
+  /** Who's driving it (free text — usually a Mash IT agent). */
+  owner?: string;
   /** The QBR quarter it came out of (e.g. "2026-Q2"), when flagged from one. */
   sourcePeriod?: string;
   createdAt: string;
@@ -192,6 +196,8 @@ export interface DataStore {
 
   // attached documents (metadata; bytes live in the document content store)
   listDocuments(clientId: string, period: string): Promise<DocumentRecord[]>;
+  /** All of a client's documents across every quarter (the Reports tab). */
+  listClientDocuments(clientId: string): Promise<DocumentRecord[]>;
   getDocument(clientId: string, period: string, id: string): Promise<DocumentRecord | undefined>;
   putDocument(record: DocumentRecord): Promise<DocumentRecord>;
   deleteDocument(clientId: string, period: string, id: string): Promise<void>;

@@ -55,12 +55,29 @@ interface DropsuiteUser {
   customer_deactivated?: boolean;
 }
 
-/** Tenant users double as organizations (drives org mapping). */
+/**
+ * Tenant users double as organizations (drives org mapping). The /users rows
+ * often all carry the RESELLER's email, so each user's backed-up tenant
+ * DOMAIN (GET /users/{id}/tenants, called with that user's own token) is the
+ * human-readable label.
+ */
 export async function listDropsuiteOrgs(http: HttpTransport, cfg: DropsuiteCfg): Promise<Array<{ id: string; name: string }>> {
-  const json = await dsGet(http, cfg, 'users', cfg.accessToken);
-  return toArray<DropsuiteUser>(json, ['users'])
-    .filter((u) => u.id !== undefined && u.customer_deactivated !== true)
-    .map((u) => ({ id: String(u.id), name: u.email ?? `User ${String(u.id)}` }));
+  const users = toArray<DropsuiteUser>(await dsGet(http, cfg, 'users', cfg.accessToken), ['users']).filter(
+    (u) => u.id !== undefined && u.customer_deactivated !== true,
+  );
+  const out: Array<{ id: string; name: string }> = [];
+  for (const u of users.slice(0, 50)) {
+    let name = u.email ?? `User ${String(u.id)}`;
+    try {
+      const tenants = toArray<Json>(await dsGet(http, cfg, `users/${encodeURIComponent(String(u.id))}/tenants`, u.authentication_token ?? cfg.accessToken), ['data']);
+      const domains = tenants.map((t) => (typeof t['domain'] === 'string' ? (t['domain'] as string) : '')).filter(Boolean);
+      if (domains.length > 0) name = `${domains.join(', ')} (${String(u.id)})`;
+    } catch {
+      // fall back to the email label
+    }
+    out.push({ id: String(u.id), name });
+  }
+  return out;
 }
 
 export interface DropsuiteAccountRow {

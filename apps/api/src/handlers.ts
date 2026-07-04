@@ -416,6 +416,53 @@ export async function deleteQbrDocument(clientId: string, period: string, id: st
   return ok({ deleted: id });
 }
 
+/** Every document across every quarter — the client's report repository. */
+export async function listClientDocuments(clientId: string): Promise<ApiResult> {
+  const docs = await getDataStore().listClientDocuments(clientId);
+  docs.sort((a, b) => b.period.localeCompare(a.period) || a.name.localeCompare(b.name));
+  return ok({ documents: docs });
+}
+
+const PERIOD_RE = /^20\d{2}-Q[1-4]$/;
+
+/**
+ * Rename / recategorize / move a document to another quarter. Renames and
+ * moves relocate the stored bytes too (the blob path embeds period + name).
+ */
+export async function updateQbrDocument(
+  clientId: string,
+  period: string,
+  id: string,
+  body: Record<string, unknown>,
+): Promise<ApiResult> {
+  const store = getDataStore();
+  const record = await store.getDocument(clientId, period, id);
+  if (!record) return err(404, 'Unknown document');
+
+  const newName = typeof body['name'] === 'string' && body['name'].trim() ? body['name'].trim() : record.name;
+  const newPeriod = typeof body['period'] === 'string' && PERIOD_RE.test(body['period']) ? body['period'] : record.period;
+  const category = typeof body['category'] === 'string' ? body['category'] || undefined : record.category;
+  const updated: DocumentRecord = { ...record, name: newName, period: newPeriod, category };
+
+  if (newName !== record.name || newPeriod !== record.period) {
+    const docs = getDocStore();
+    const oldPath = docPath(clientId, record.period, record.id, record.name);
+    const bytes = await docs.get(oldPath);
+    if (bytes) {
+      await docs.put(docPath(clientId, newPeriod, record.id, newName), bytes, record.contentType);
+      await docs.delete(oldPath).catch(() => undefined);
+    }
+    if (newPeriod !== record.period) await store.deleteDocument(clientId, record.period, record.id);
+  }
+  await store.putDocument(updated);
+  audit(
+    'document.update',
+    `qbr:${clientId}/${newPeriod}`,
+    `${record.name}${newName !== record.name ? ` → ${newName}` : ''}${newPeriod !== record.period ? ` (moved from ${record.period})` : ''}`,
+  );
+  return ok({ document: updated });
+}
+
 // ── Opportunity board (per-client Kanban of QBR initiatives) ─────────────────
 const OPP_ORDER: Record<string, number> = { idea: 0, discussing: 1, approved: 2, pushed: 3, closed: 4 };
 
@@ -442,6 +489,7 @@ export async function putOpportunity(clientId: string, body: Record<string, unkn
     title,
     detail: typeof body['detail'] === 'string' ? body['detail'] : existing?.detail,
     status,
+    owner: typeof body['owner'] === 'string' ? body['owner'] || undefined : existing?.owner,
     sourcePeriod: typeof body['sourcePeriod'] === 'string' && body['sourcePeriod'] ? body['sourcePeriod'] : existing?.sourcePeriod,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,

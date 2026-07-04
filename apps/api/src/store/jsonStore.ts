@@ -141,6 +141,12 @@ export class JsonDataStore implements DataStore {
   async listDocuments(clientId: string, period: string): Promise<DocumentRecord[]> {
     return this.read().documents[pk(clientId, period)] ?? [];
   }
+  async listClientDocuments(clientId: string): Promise<DocumentRecord[]> {
+    const docs = this.read().documents;
+    return Object.entries(docs)
+      .filter(([key]) => key.startsWith(`${clientId}:`))
+      .flatMap(([, records]) => records);
+  }
   async getDocument(clientId: string, period: string, id: string): Promise<DocumentRecord | undefined> {
     return (await this.listDocuments(clientId, period)).find((d) => d.id === id);
   }

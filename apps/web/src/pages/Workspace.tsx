@@ -84,6 +84,7 @@ const SECTIONS: Array<[string, string]> = [
 ];
 const DISPOSITIONS = ['pending', 'create_opportunity', 'create_ticket', 'accept_risk', 'no_action'];
 const STATUSES = ['draft', 'data_synced', 'narrative_approved', 'scheduled', 'completed', 'dispositioned', 'actions_pushed', 'archived'];
+const DOC_CATEGORIES = ['Security', 'Backup', 'Endpoint', 'Email', 'Network', 'Compliance', 'Billing', 'Other'];
 const RING_COLOR: Record<string, string> = { green: 'teal', amber: 'yellow', red: 'red', unknown: 'gray' };
 
 /** Download a metric's drill-down rows as a CSV (client-side, no round trip). */
@@ -238,6 +239,7 @@ export function Workspace() {
         <Tabs.List mb="md">
           <Tabs.Tab value="overview">Overview</Tabs.Tab>
           <Tabs.Tab value="data">Data</Tabs.Tab>
+          <Tabs.Tab value="reports">Reports</Tabs.Tab>
           <Tabs.Tab value="meeting">Meeting</Tabs.Tab>
           <Tabs.Tab value="actions">Actions</Tabs.Tab>
           <Tabs.Tab value="board">Opportunities</Tabs.Tab>
@@ -265,14 +267,20 @@ export function Workspace() {
           {period && config && (
             <Stack gap="lg" maw={900}>
               <DataTab clientId={clientId} period={period} config={config} setConfig={setConfig} refresh={refresh} onSaved={() => setRefresh((n) => n + 1)} />
-              <DocumentsCard
-                clientId={clientId}
-                period={period}
-                refresh={refresh}
-                reportsMailbox={system?.reportsMailbox ?? null}
-                onChanged={() => setRefresh((n) => n + 1)}
-              />
             </Stack>
+          )}
+        </Tabs.Panel>
+
+        <Tabs.Panel value="reports">
+          {period && (
+            <ReportsTab
+              clientId={clientId}
+              period={period}
+              periods={periods}
+              refresh={refresh}
+              reportsMailbox={system?.reportsMailbox ?? null}
+              onChanged={() => setRefresh((n) => n + 1)}
+            />
           )}
         </Tabs.Panel>
 
@@ -844,29 +852,35 @@ function DataTab({
 }
 
 // ── Attached documents (vendor reports + uploads) ─────────────────────────────
-function DocumentsCard({
+function ReportsTab({
   clientId,
   period,
+  periods,
   refresh,
   reportsMailbox,
   onChanged,
 }: {
   clientId: string;
   period: string;
+  periods: Array<{ value: string; label: string }>;
   refresh: number;
   reportsMailbox: string | null;
   onChanged: () => void;
 }) {
   const [docs, setDocs] = useState<DocumentInfo[] | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [renaming, setRenaming] = useState<DocumentInfo | null>(null);
+  const [newName, setNewName] = useState('');
 
   useEffect(() => {
     let live = true;
-    api.listDocuments(clientId, period).then((d) => live && setDocs(d.documents)).catch(() => live && setDocs([]));
+    api.listClientDocuments(clientId).then((d) => live && setDocs(d.documents)).catch(() => live && setDocs([]));
     return () => {
       live = false;
     };
-  }, [clientId, period, refresh]);
+  }, [clientId, refresh]);
+
+  const reload = () => api.listClientDocuments(clientId).then((d) => setDocs(d.documents)).catch(() => {});
 
   async function upload(file: File | null) {
     if (!file) return;
@@ -884,7 +898,8 @@ function DocumentsCard({
       });
       const dataBase64 = dataUri.split(',')[1] ?? '';
       await api.uploadDocument(clientId, period, { name: file.name, contentType: file.type || 'application/octet-stream', dataBase64 });
-      notifications.show({ color: 'teal', message: `${file.name} attached — it's now in the report appendix.` });
+      notifications.show({ color: 'teal', message: `${file.name} filed under ${period}.` });
+      await reload();
       onChanged();
     } catch (e) {
       notifications.show({ color: 'red', title: 'Upload failed', message: e instanceof Error ? e.message : 'Unknown error' });
@@ -893,10 +908,22 @@ function DocumentsCard({
     }
   }
 
+  async function patch(doc: DocumentInfo, body: { name?: string; category?: string; period?: string }, note: string) {
+    try {
+      await api.updateDocument(clientId, doc.period, doc.id, body);
+      notifications.show({ color: 'teal', message: note });
+      await reload();
+      onChanged();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Update failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    }
+  }
+
   async function remove(doc: DocumentInfo) {
     try {
-      await api.deleteDocument(clientId, period, doc.id);
+      await api.deleteDocument(clientId, doc.period, doc.id);
       notifications.show({ color: 'gray', message: `Removed ${doc.name}.` });
+      await reload();
       onChanged();
     } catch (e) {
       notifications.show({ color: 'red', title: 'Delete failed', message: e instanceof Error ? e.message : 'Unknown error' });
@@ -904,82 +931,145 @@ function DocumentsCard({
   }
 
   const kb = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+  const periodValues = periods.map((p) => ({ value: p.value, label: p.value }));
+  const inboxAddress = reportsMailbox ? reportsMailbox.replace('@', `+${clientId}@`) : null;
 
   return (
-    <Card withBorder radius="md" padding="lg">
-      <Group justify="space-between" mb="sm">
-        <div>
-          <Title order={5}>Attached reports &amp; documents</Title>
-          <Text size="xs" c="dimmed">
-            Vendor reports (Huntress attaches automatically on Sync) plus anything you upload — Synology exports, Dropsuite summaries,
-            invoices. PDFs are appended to the back of the QBR PDF and everything rides along on the email draft.
-          </Text>
-        </div>
-        <FileButton onChange={upload} accept="application/pdf,image/*,.csv,.xlsx,.docx">
-          {(props) => (
-            <Button {...props} variant="light" loading={uploading} leftSection={<IconUpload size={16} />}>
-              Upload
-            </Button>
-          )}
-        </FileButton>
-      </Group>
-      {reportsMailbox ? (
-        <Alert color="teal" variant="light" mb="sm" p="xs">
-          <Group gap="xs" wrap="nowrap" align="flex-start">
-            <Text size="xs" style={{ flex: 1 }}>
-              This client's report inbox:{' '}
-              <Text span fw={700} style={{ userSelect: 'all' }}>
-                {reportsMailbox.replace('@', `+${clientId}@`)}
-              </Text>
-              {' '}— schedule vendor reports (Check Point, NinjaOne's “Endpoint Management Report for QBRs”, Dropsuite…) to send here,
-              or forward them yourself. Attachments file onto this client automatically, checked every 5 minutes. Add a quarter tag
-              like “2026-Q3” to the subject to file into a specific quarter.
+    <Stack gap="lg">
+      <Card withBorder radius="md" padding="lg">
+        <Group justify="space-between" mb="sm">
+          <div>
+            <Title order={5}>Report repository</Title>
+            <Text size="xs" c="dimmed">
+              Every vendor report and upload for this client, across all quarters — Huntress attaches on Sync, the report inbox
+              files what you forward, and uploads land in the selected quarter ({period}). Rename, categorize, or move anything
+              filed to the wrong quarter. PDFs are appended to that quarter's QBR PDF and ride on its email draft.
             </Text>
-            <CopyButton value={reportsMailbox.replace('@', `+${clientId}@`)}>
-              {({ copied, copy }) => (
-                <Button size="compact-xs" variant={copied ? 'filled' : 'light'} color="teal" onClick={copy}>
-                  {copied ? 'Copied' : 'Copy address'}
-                </Button>
-              )}
-            </CopyButton>
-          </Group>
-        </Alert>
-      ) : (
-        <Alert color="gray" variant="light" mb="sm" p="xs">
-          <Text size="xs">
-            <b>Report inbox not set up yet.</b> Once configured, this client gets its own email address to receive scheduled vendor
-            reports (they file here automatically). The 3-step setup is on the <Anchor component={RouterLink} to="/settings" size="xs">Settings page</Anchor>.
-          </Text>
-        </Alert>
-      )}
-      {docs === null ? (
-        <Center h={60}><Loader size="sm" /></Center>
-      ) : docs.length === 0 ? (
-        <Text size="sm" c="dimmed">Nothing attached yet.</Text>
-      ) : (
-        <Table verticalSpacing={6}>
-          <Table.Tbody>
-            {docs.map((d) => (
-              <Table.Tr key={d.id}>
-                <Table.Td>
-                  <Anchor href={documentUrl(clientId, period, d.id)} size="sm" fw={600}>
-                    {d.name}
-                  </Anchor>
-                </Table.Td>
-                <Table.Td><Badge size="sm" variant="light" color={d.source === 'upload' ? 'teal' : 'navy'}>{d.source}</Badge></Table.Td>
-                <Table.Td><Text size="xs" c="dimmed">{kb(d.size)}</Text></Table.Td>
-                <Table.Td><Text size="xs" c="dimmed">{new Date(d.uploadedAt).toLocaleDateString()}</Text></Table.Td>
-                <Table.Td ta="right">
-                  <ActionIcon color="red" variant="subtle" aria-label={`Remove ${d.name}`} onClick={() => remove(d)}>
-                    <IconTrash size={16} />
-                  </ActionIcon>
-                </Table.Td>
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
-      )}
-    </Card>
+          </div>
+          <FileButton onChange={upload} accept="application/pdf,image/*,.csv,.xlsx,.docx">
+            {(props) => (
+              <Button {...props} variant="light" loading={uploading} leftSection={<IconUpload size={16} />}>
+                Upload to {period}
+              </Button>
+            )}
+          </FileButton>
+        </Group>
+        {inboxAddress ? (
+          <Alert color="teal" variant="light" p="xs">
+            <Group gap="xs" wrap="nowrap" align="flex-start">
+              <Text size="xs" style={{ flex: 1 }}>
+                This client's report inbox:{' '}
+                <Text span fw={700} style={{ userSelect: 'all' }}>{inboxAddress}</Text>
+                {' '}— schedule vendor reports to send here, or forward them yourself (checked every 5 minutes). No quarter tag in
+                the subject = the current quarter; add one like “2026-Q2” to aim at a specific QBR.
+              </Text>
+              <CopyButton value={inboxAddress}>
+                {({ copied, copy }) => (
+                  <Button size="compact-xs" variant={copied ? 'filled' : 'light'} color="teal" onClick={copy}>
+                    {copied ? 'Copied' : 'Copy address'}
+                  </Button>
+                )}
+              </CopyButton>
+            </Group>
+          </Alert>
+        ) : (
+          <Alert color="gray" variant="light" p="xs">
+            <Text size="xs">
+              <b>Report inbox not set up yet.</b> Once configured, this client gets its own email address to receive scheduled
+              vendor reports. The 3-step setup is on the <Anchor component={RouterLink} to="/settings" size="xs">Settings page</Anchor>.
+            </Text>
+          </Alert>
+        )}
+      </Card>
+
+      <Card withBorder radius="md" padding="lg">
+        {docs === null ? (
+          <Center h={60}><Loader size="sm" /></Center>
+        ) : docs.length === 0 ? (
+          <Text size="sm" c="dimmed">Nothing filed yet.</Text>
+        ) : (
+          <Table.ScrollContainer minWidth={820}>
+            <Table verticalSpacing={6}>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Report</Table.Th>
+                  <Table.Th w={130}>Category</Table.Th>
+                  <Table.Th w={110}>Quarter</Table.Th>
+                  <Table.Th>Source</Table.Th>
+                  <Table.Th>Size</Table.Th>
+                  <Table.Th>Filed</Table.Th>
+                  <Table.Th w={80} />
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {docs.map((d) => (
+                  <Table.Tr key={`${d.period}-${d.id}`}>
+                    <Table.Td>
+                      <Anchor href={documentUrl(clientId, d.period, d.id)} size="sm" fw={600}>
+                        {d.name}
+                      </Anchor>
+                    </Table.Td>
+                    <Table.Td>
+                      <Select
+                        size="xs"
+                        placeholder="—"
+                        data={DOC_CATEGORIES}
+                        value={d.category ?? null}
+                        onChange={(v) => patch(d, { category: v ?? '' }, v ? `Categorized as ${v}.` : 'Category cleared.')}
+                        clearable
+                        aria-label={`Category for ${d.name}`}
+                      />
+                    </Table.Td>
+                    <Table.Td>
+                      <Select
+                        size="xs"
+                        data={periodValues.some((p) => p.value === d.period) ? periodValues : [{ value: d.period, label: d.period }, ...periodValues]}
+                        value={d.period}
+                        onChange={(v) => v && v !== d.period && patch(d, { period: v }, `Moved to ${v}.`)}
+                        allowDeselect={false}
+                        aria-label={`Quarter for ${d.name}`}
+                      />
+                    </Table.Td>
+                    <Table.Td><Badge size="sm" variant="light" color={d.source === 'upload' ? 'teal' : d.source === 'email' ? 'grape' : 'navy'}>{d.source}</Badge></Table.Td>
+                    <Table.Td><Text size="xs" c="dimmed">{kb(d.size)}</Text></Table.Td>
+                    <Table.Td><Text size="xs" c="dimmed">{new Date(d.uploadedAt).toLocaleDateString()}</Text></Table.Td>
+                    <Table.Td>
+                      <Group gap={2} wrap="nowrap" justify="flex-end">
+                        <Tooltip label="Rename">
+                          <ActionIcon variant="subtle" aria-label={`Rename ${d.name}`} onClick={() => { setRenaming(d); setNewName(d.name); }}>
+                            <IconPencil size={15} />
+                          </ActionIcon>
+                        </Tooltip>
+                        <ActionIcon color="red" variant="subtle" aria-label={`Remove ${d.name}`} onClick={() => remove(d)}>
+                          <IconTrash size={15} />
+                        </ActionIcon>
+                      </Group>
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
+        )}
+      </Card>
+
+      <Modal opened={renaming !== null} onClose={() => setRenaming(null)} title="Rename report" size="md">
+        <TextInput value={newName} onChange={(e) => setNewName(e.currentTarget.value)} autoFocus />
+        <Group justify="flex-end" mt="md">
+          <Button variant="default" onClick={() => setRenaming(null)}>Cancel</Button>
+          <Button
+            onClick={async () => {
+              if (renaming && newName.trim() && newName.trim() !== renaming.name) {
+                await patch(renaming, { name: newName.trim() }, 'Renamed.');
+              }
+              setRenaming(null);
+            }}
+          >
+            Save
+          </Button>
+        </Group>
+      </Modal>
+    </Stack>
   );
 }
 
@@ -1598,6 +1688,10 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
   const [items, setItems] = useState<Opportunity[]>([]);
   const [loading, setLoading] = useState(true);
   const [title, setTitle] = useState('');
+  const [detail, setDetail] = useState('');
+  const [editing, setEditing] = useState<Opportunity | null>(null);
+  const [pushing, setPushing] = useState<Opportunity | null>(null);
+  const [dragOver, setDragOver] = useState<string | null>(null);
 
   const load = () =>
     api
@@ -1623,18 +1717,20 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
     const t = title.trim();
     if (!t) return;
     try {
-      await api.saveOpportunity(clientId, { title: t, sourcePeriod: period });
+      await api.saveOpportunity(clientId, { title: t, detail: detail.trim() || undefined, sourcePeriod: period });
       setTitle('');
+      setDetail('');
       await load();
     } catch (e) {
       notifications.show({ color: 'red', title: 'Could not add', message: e instanceof Error ? e.message : 'Unknown error' });
     }
   }
 
-  async function setStatus(o: Opportunity, status: Opportunity['status']) {
+  async function save(o: Opportunity, patch: Partial<Opportunity>, quiet = false) {
     try {
-      await api.saveOpportunity(clientId, { ...o, status });
+      await api.saveOpportunity(clientId, { ...o, ...patch });
       await load();
+      if (!quiet) notifications.show({ color: 'teal', message: 'Saved.' });
     } catch (e) {
       notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Update failed' });
     }
@@ -1645,16 +1741,6 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
     await load();
   }
 
-  async function push(o: Opportunity, target: 'halo_opportunity' | 'halo_ticket') {
-    try {
-      const r = await api.pushOpportunity(clientId, o.id, { target });
-      notifications.show({ color: 'teal', message: `${r.pushed.system} #${r.pushed.id} created.` });
-      await load();
-    } catch (e) {
-      notifications.show({ color: 'red', title: 'Push failed', message: e instanceof Error ? e.message : 'Unknown error', autoClose: 10000 });
-    }
-  }
-
   if (loading) return <Center h={160}><Loader /></Center>;
 
   return (
@@ -1663,19 +1749,20 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
         <Title order={5} mb={4}>Opportunity board</Title>
         <Text size="xs" c="dimmed" mb="sm">
           Everything the client mentions that could become work — a new location, a refresh, a project — flagged from the
-          Meeting tab's agenda (the bulb icon) or added here. Cards live across quarters, carry the QBR they came from, and
-          push to Halo as opportunities or tickets when they're real.
+          Meeting tab's agenda (the bulb icon) or added here. Drag cards between columns; push the real ones to Halo.
         </Text>
-        <Group wrap="nowrap">
-          <TextInput
-            style={{ flex: 1 }}
-            placeholder="Add an opportunity — e.g. New location opening in the fall"
-            value={title}
-            onChange={(e) => setTitle(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') add();
-            }}
-          />
+        <Group wrap="nowrap" align="flex-start">
+          <Stack gap="xs" style={{ flex: 1 }}>
+            <TextInput
+              placeholder="Title — e.g. New location opening in the fall"
+              value={title}
+              onChange={(e) => setTitle(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') add();
+              }}
+            />
+            <Textarea placeholder="Details (optional)" autosize minRows={1} value={detail} onChange={(e) => setDetail(e.currentTarget.value)} />
+          </Stack>
           <Button variant="light" leftSection={<IconPlus size={14} />} onClick={add}>Add to board</Button>
         </Group>
       </Card>
@@ -1684,48 +1771,65 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
         {OPP_COLUMNS.map(([status, label, color]) => {
           const cards = items.filter((o) => o.status === status);
           return (
-            <Stack key={status} gap="xs">
+            <Stack
+              key={status}
+              gap="xs"
+              p={4}
+              style={{
+                minHeight: 120,
+                borderRadius: 8,
+                outline: dragOver === status ? '2px dashed var(--mantine-color-teal-5)' : undefined,
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(status);
+              }}
+              onDragLeave={() => setDragOver((s) => (s === status ? null : s))}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(null);
+                const id = e.dataTransfer.getData('text/opportunity-id');
+                const card = items.find((o) => o.id === id);
+                if (card && card.status !== status) save(card, { status }, true);
+              }}
+            >
               <Group gap={6}>
                 <Badge variant="light" color={color}>{label}</Badge>
                 <Text size="xs" c="dimmed">{cards.length}</Text>
               </Group>
               {cards.map((o) => (
-                <Card key={o.id} withBorder radius="md" padding="sm">
-                  <Text size="sm" fw={600}>{o.title}</Text>
+                <Card
+                  key={o.id}
+                  withBorder
+                  radius="md"
+                  padding="sm"
+                  draggable
+                  style={{ cursor: 'grab' }}
+                  onDragStart={(e) => e.dataTransfer.setData('text/opportunity-id', o.id)}
+                >
+                  <Group justify="space-between" wrap="nowrap" align="flex-start">
+                    <Text size="sm" fw={600}>{o.title}</Text>
+                    <ActionIcon variant="subtle" size="sm" aria-label="Edit" onClick={() => setEditing(o)}>
+                      <IconPencil size={14} />
+                    </ActionIcon>
+                  </Group>
                   {o.detail && <Text size="xs" c="dimmed" lineClamp={3}>{o.detail}</Text>}
                   <Group gap={4} mt={6}>
                     {o.sourcePeriod && <Badge size="xs" variant="outline" color="gray">{o.sourcePeriod} QBR</Badge>}
+                    {o.owner && <Badge size="xs" variant="light" color="navy">{o.owner}</Badge>}
                     {o.externalRef && <Badge size="xs" color="green" variant="light">halo #{o.externalRef}</Badge>}
                   </Group>
-                  <Group gap={2} mt={8} justify="space-between" wrap="nowrap">
-                    <Select
-                      size="xs"
-                      w={124}
-                      data={OPP_COLUMNS.map(([v, l]) => ({ value: v, label: l }))}
-                      value={o.status}
-                      onChange={(v) => v && v !== o.status && setStatus(o, v as Opportunity['status'])}
-                      aria-label="Status"
-                      allowDeselect={false}
-                    />
-                    <Group gap={2} wrap="nowrap">
-                      {!o.externalRef && (
-                        <>
-                          <Tooltip label="Create Halo opportunity">
-                            <ActionIcon variant="subtle" aria-label="Push as Halo opportunity" onClick={() => push(o, 'halo_opportunity')}>
-                              <IconTargetArrow size={15} />
-                            </ActionIcon>
-                          </Tooltip>
-                          <Tooltip label="Create Halo ticket">
-                            <ActionIcon variant="subtle" aria-label="Push as Halo ticket" onClick={() => push(o, 'halo_ticket')}>
-                              <IconTicket size={15} />
-                            </ActionIcon>
-                          </Tooltip>
-                        </>
-                      )}
-                      <ActionIcon color="red" variant="subtle" aria-label="Delete opportunity" onClick={() => remove(o)}>
-                        <IconTrash size={15} />
-                      </ActionIcon>
-                    </Group>
+                  <Group gap={2} mt={8} justify="flex-end" wrap="nowrap">
+                    {!o.externalRef && (
+                      <Tooltip label="Push to Halo (opportunity or ticket)">
+                        <Button size="compact-xs" variant="light" leftSection={<IconTargetArrow size={13} />} onClick={() => setPushing(o)}>
+                          Push
+                        </Button>
+                      </Tooltip>
+                    )}
+                    <ActionIcon color="red" variant="subtle" aria-label="Delete opportunity" onClick={() => remove(o)}>
+                      <IconTrash size={15} />
+                    </ActionIcon>
                   </Group>
                 </Card>
               ))}
@@ -1733,6 +1837,164 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
           );
         })}
       </SimpleGrid>
+
+      <OpportunityEditModal
+        opportunity={editing}
+        onClose={() => setEditing(null)}
+        onSave={async (patch) => {
+          if (editing) await save(editing, patch);
+          setEditing(null);
+        }}
+      />
+      <OpportunityPushModal
+        clientId={clientId}
+        opportunity={pushing}
+        onClose={() => setPushing(null)}
+        onPushed={async () => {
+          setPushing(null);
+          await load();
+        }}
+      />
     </Stack>
+  );
+}
+
+function OpportunityEditModal({
+  opportunity,
+  onClose,
+  onSave,
+}: {
+  opportunity: Opportunity | null;
+  onClose: () => void;
+  onSave: (patch: Partial<Opportunity>) => Promise<void>;
+}) {
+  const [title, setTitle] = useState('');
+  const [detail, setDetail] = useState('');
+  const [owner, setOwner] = useState('');
+
+  useEffect(() => {
+    setTitle(opportunity?.title ?? '');
+    setDetail(opportunity?.detail ?? '');
+    setOwner(opportunity?.owner ?? '');
+  }, [opportunity]);
+
+  return (
+    <Modal opened={opportunity !== null} onClose={onClose} title="Edit opportunity" size="md">
+      <Stack gap="sm">
+        <TextInput label="Title" value={title} onChange={(e) => setTitle(e.currentTarget.value)} />
+        <Textarea label="Details" autosize minRows={3} value={detail} onChange={(e) => setDetail(e.currentTarget.value)} />
+        <TextInput label="Owner" placeholder="Who's driving this — e.g. Jason" value={owner} onChange={(e) => setOwner(e.currentTarget.value)} />
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => onSave({ title: title.trim() || opportunity?.title, detail, owner })}>Save</Button>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+}
+
+/** Push modal: choose opportunity vs ticket, with full Halo field control. */
+function OpportunityPushModal({
+  clientId,
+  opportunity,
+  onClose,
+  onPushed,
+}: {
+  clientId: string;
+  opportunity: Opportunity | null;
+  onClose: () => void;
+  onPushed: () => Promise<void>;
+}) {
+  const [target, setTarget] = useState<'halo_opportunity' | 'halo_ticket'>('halo_opportunity');
+  const [meta, setMeta] = useState<HaloMeta | null>(null);
+  const [ticketTypeId, setTicketTypeId] = useState<string | null>(null);
+  const [agentId, setAgentId] = useState<string | null>(null);
+  const [team, setTeam] = useState<string | null>(null);
+  const [priorityId, setPriorityId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!opportunity) return;
+    setTarget('halo_opportunity');
+    api.haloMeta().then(setMeta).catch(() => setMeta(null));
+  }, [opportunity]);
+
+  async function push() {
+    if (!opportunity) return;
+    setBusy(true);
+    try {
+      const r = await api.pushOpportunity(clientId, opportunity.id, {
+        target,
+        ticketTypeId: ticketTypeId ?? undefined,
+        agentId: agentId ?? undefined,
+        team: team ?? undefined,
+        priorityId: priorityId ?? undefined,
+      });
+      notifications.show({ color: 'teal', message: `${r.pushed.system} #${r.pushed.id} created.` });
+      await onPushed();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Push failed', message: e instanceof Error ? e.message : 'Unknown error', autoClose: 10000 });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal opened={opportunity !== null} onClose={onClose} title={`Push "${opportunity?.title ?? ''}" to Halo`} size="md">
+      <Stack gap="sm">
+        <SegmentedControl
+          value={target}
+          onChange={(v) => setTarget(v as 'halo_opportunity' | 'halo_ticket')}
+          data={[
+            { value: 'halo_opportunity', label: 'Halo opportunity' },
+            { value: 'halo_ticket', label: 'Halo ticket' },
+          ]}
+        />
+        {opportunity?.detail && <Text size="xs" c="dimmed">Details sent along: {opportunity.detail}</Text>}
+        {target === 'halo_ticket' && (
+          <>
+            <Select
+              label="Ticket type"
+              placeholder={meta ? 'Pick a type' : 'Loading from Halo…'}
+              data={(meta?.ticketTypes ?? []).map((t) => ({ value: t.id, label: t.name }))}
+              value={ticketTypeId}
+              onChange={setTicketTypeId}
+              searchable
+            />
+            <Group grow>
+              <Select
+                label="Assign to"
+                placeholder="Agent"
+                data={(meta?.agents ?? []).map((a) => ({ value: a.id, label: a.name }))}
+                value={agentId}
+                onChange={setAgentId}
+                searchable
+                clearable
+              />
+              <Select
+                label="Team"
+                placeholder="Team"
+                data={(meta?.teams ?? []).map((t) => ({ value: t.name, label: t.name }))}
+                value={team}
+                onChange={setTeam}
+                clearable
+              />
+            </Group>
+            <Select
+              label="Priority"
+              placeholder="Priority"
+              data={(meta?.priorities ?? []).map((p) => ({ value: p.id, label: p.name }))}
+              value={priorityId}
+              onChange={setPriorityId}
+              clearable
+            />
+          </>
+        )}
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button loading={busy} onClick={push}>Create in Halo</Button>
+        </Group>
+      </Stack>
+    </Modal>
   );
 }

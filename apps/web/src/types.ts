@@ -25,6 +25,7 @@ export interface Opportunity {
   title: string;
   detail?: string;
   status: 'idea' | 'discussing' | 'approved' | 'pushed' | 'closed';
+  owner?: string;
   sourcePeriod?: string;
   createdAt: string;
   updatedAt: string;
@@ -172,6 +173,8 @@ export interface DocumentInfo {
   period: string;
   name: string;
   source: string;
+  /** User-assigned bucket on the Reports tab. */
+  category?: string;
   contentType: string;
   size: number;
   uploadedAt: string;

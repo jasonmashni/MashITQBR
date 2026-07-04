@@ -113,6 +113,20 @@ export class TableDataStore implements DataStore {
 
   // attached documents — partition per client:period so a QBR's set is one range read
   listDocuments = (clientId: string, period: string) => this.list<DocumentRecord>(TABLES.documents, `${clientId}:${period}`);
+  // All quarters for one client: partition keys are `${clientId}:${period}`,
+  // so a [clientId: , clientId;) range scan covers exactly this client
+  // (':' sorts immediately before ';').
+  async listClientDocuments(clientId: string): Promise<DocumentRecord[]> {
+    const table = this.table(TABLES.documents);
+    await ensureTable(table);
+    const lo = `${clientId}:`;
+    const hi = `${clientId};`;
+    const out: DocumentRecord[] = [];
+    for await (const row of table.listEntities<Row>({ queryOptions: { filter: odata`PartitionKey ge ${lo} and PartitionKey lt ${hi}` } })) {
+      if (typeof row.data === 'string') out.push(JSON.parse(row.data) as DocumentRecord);
+    }
+    return out;
+  }
   getDocument = (clientId: string, period: string, id: string) => this.get<DocumentRecord>(TABLES.documents, `${clientId}:${period}`, id);
   putDocument = (d: DocumentRecord) => this.put(TABLES.documents, `${d.clientId}:${d.period}`, d.id, d);
   async deleteDocument(clientId: string, period: string, id: string): Promise<void> {

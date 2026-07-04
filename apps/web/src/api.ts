@@ -136,6 +136,11 @@ export const api = {
     send('PUT', `/api/clients/${clientId}/qbr/${period}/status`, { status }).then(json<unknown>),
   putSchedule: (clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/schedule`, body).then(json<unknown>),
+  // Report repository (all quarters) + per-document updates
+  listClientDocuments: (clientId: string) => send('GET', `/api/clients/${clientId}/documents`).then(json<{ documents: DocumentInfo[] }>),
+  updateDocument: (clientId: string, period: string, id: string, body: { name?: string; category?: string; period?: string }) =>
+    send('PATCH', `/api/clients/${clientId}/qbr/${period}/documents/${id}`, body).then(json<{ document: DocumentInfo }>),
+
   // Opportunity board
   listOpportunities: (clientId: string) => send('GET', `/api/clients/${clientId}/opportunities`).then(json<{ opportunities: Opportunity[] }>),
   saveOpportunity: (clientId: string, body: Partial<Opportunity>) =>
