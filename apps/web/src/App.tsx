@@ -112,6 +112,7 @@ export function App() {
         ))}
         <Box mt="auto" pt="md">
           <Text size="xs" c="dimmed">Signed in via Microsoft Entra ID</Text>
+          <Text size="xs" c="dimmed">Build {__BUILD_INFO__}</Text>
         </Box>
       </AppShell.Navbar>
 

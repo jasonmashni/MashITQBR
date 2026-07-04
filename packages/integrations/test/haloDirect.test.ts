@@ -431,6 +431,80 @@ describe('normalizeHaloFinance', () => {
     expect(others[0]!.value).toBe(3400); // 3000 (Other group) + 400 (Misc tail)
   });
 
+  it('resolves line categories through the item catalog (group, then item name)', () => {
+    const { metrics } = normalizeHaloFinance({
+      contracts: [],
+      items: [
+        { id: 5, name: 'M365 Business Premium', group_name: 'Subscriptions' },
+        { id: 9, name: 'Onsite support' }, // no group — item name becomes the label
+      ],
+      invoices: [
+        {
+          invoicedate: '2026-05-01',
+          nettotal: 700,
+          lines: [
+            { item_id: 5, net_amount: 500 },
+            { item_id: 9, net_amount: 150 },
+            { net_amount: 50, description: 'Shipping' }, // description fallback
+          ],
+        },
+      ],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    const by = Object.fromEntries(metrics.map((m) => [m.key, m.value]));
+    expect(by['finance.invoiced.subscriptions']).toBe(500);
+    expect(by['finance.invoiced.onsite_support']).toBe(150);
+    expect(by['finance.invoiced.shipping']).toBe(50);
+  });
+
+  it('suppresses a lone Other bucket and names the line fields it saw', () => {
+    const { metrics, warnings } = normalizeHaloFinance({
+      contracts: [],
+      invoices: [
+        { invoicedate: '2026-05-01', nettotal: 1000, lines: [{ id: 247, ihid: 1185, net_amount: 1000 }] },
+      ],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    expect(metrics.map((m) => m.key)).toEqual(['finance.quarter_invoiced']); // no useless "Other" row
+    expect(warnings[0]).toMatch(/line fields seen: id, ihid, net_amount/);
+  });
+
+  it('breaks the monthly bill down from contract detail items', () => {
+    const { metrics } = normalizeHaloFinance({
+      contracts: [{ id: 1, monthlyvalue: 2750 }],
+      contractDetails: [
+        {
+          id: 1,
+          items: [
+            { monthlyprice: 2500, description: 'Managed Services Agreement' },
+            { price: 25, quantity: 10, item_id: 5 }, // unit × qty, labeled via the catalog
+          ],
+        },
+      ],
+      items: [{ id: 5, name: 'M365 Business Premium', group_name: 'Subscriptions' }],
+      invoices: [],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    const by = Object.fromEntries(metrics.map((m) => [m.key, m.value]));
+    expect(by['finance.recurring.managed_services_agreement']).toBe(2500);
+    expect(by['finance.recurring.subscriptions']).toBe(250);
+    expect(by['finance.mrr']).toBe(2750);
+  });
+
+  it('says which contract fields it saw when no recurring items are recognizable', () => {
+    const { warnings } = normalizeHaloFinance({
+      contracts: [{ id: 1, monthlyvalue: 2750 }],
+      contractDetails: [{ id: 1, ref: 'C-1', client_name: 'Madison Peds' }],
+      invoices: [],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    expect(warnings.some((w) => /recurring/.test(w) && /contract fields seen: id, ref, client_name/.test(w))).toBe(true);
+  });
+
   it('warns when invoices carry no line items (breakdown unavailable)', () => {
     const { metrics, warnings } = normalizeHaloFinance({
       contracts: [],

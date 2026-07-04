@@ -37,6 +37,17 @@ cpSync(apiDist, resolve(deploy, 'dist'), { recursive: true });
 cpSync(webDist, resolve(deploy, 'www'), { recursive: true });
 cpSync(resolve(apiRoot, 'host.json'), resolve(deploy, 'host.json'));
 
+// Build stamp beside the bundle — /api/system reports it, so the deployed
+// API identifies exactly which commit it's running.
+const gitSha = (() => {
+  try {
+    return execSync('git rev-parse --short HEAD', { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return 'unknown';
+  }
+})();
+writeFileSync(resolve(deploy, 'dist', 'build.json'), JSON.stringify({ sha: gitSha, builtAt: new Date().toISOString() }));
+
 const apiPkg = JSON.parse(readFileSync(resolve(apiRoot, 'package.json'), 'utf8'));
 const deployPkg = {
   name: 'mashit-qbr-func',

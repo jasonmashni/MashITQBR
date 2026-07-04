@@ -196,6 +196,8 @@ export interface SystemInfo {
   inboxLastPoll?: { at: string; ok: boolean; detail: string } | null;
   /** Which REPORTS_* app settings the API process can see (presence only). */
   inboxEnvSeen?: Record<string, boolean>;
+  /** Deploy-time build stamp (null when running from source). */
+  build?: { sha?: string; builtAt?: string } | null;
 }
 
 export interface ConnectionView {

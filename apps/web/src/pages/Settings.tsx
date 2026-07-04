@@ -170,15 +170,13 @@ export function Settings() {
           <Text fw={600}>Report inbox (email ingestion)</Text>
           <Group gap="xs">
             {system?.reportsMailbox ? (
-              <>
-                <Badge color="teal" variant="light">active · {system.reportsMailbox}</Badge>
-                <Button size="compact-xs" variant="light" loading={polling} onClick={checkInbox}>
-                  Check now
-                </Button>
-              </>
+              <Badge color="teal" variant="light">active · {system.reportsMailbox}</Badge>
             ) : (
               <Badge color="gray" variant="light">not configured</Badge>
             )}
+            <Button size="compact-xs" variant="light" loading={polling} onClick={checkInbox}>
+              Check now
+            </Button>
           </Group>
         </Group>
         {system?.inboxLastPoll && (

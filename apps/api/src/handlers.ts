@@ -961,9 +961,23 @@ function pdfAvailable(): Promise<boolean> {
   return _pdfAvailable;
 }
 
+// Build stamp written by assemble-deploy.mjs next to the bundle (absent in dev).
+let _build: { sha?: string; builtAt?: string } | null | undefined;
+async function buildStamp(): Promise<{ sha?: string; builtAt?: string } | null> {
+  if (_build !== undefined) return _build;
+  try {
+    const { readFile } = await import('node:fs/promises');
+    _build = JSON.parse(await readFile(new URL('./build.json', import.meta.url), 'utf8')) as { sha?: string; builtAt?: string };
+  } catch {
+    _build = null;
+  }
+  return _build;
+}
+
 /** Runtime capabilities — lets the UI gate features and show accurate copy. */
 export async function getSystem(): Promise<ApiResult> {
   return ok({
+    build: await buildStamp(),
     dataStore: dataStoreKind(),
     secretStore: secretStoreKind(),
     ai: !!process.env['ANTHROPIC_API_KEY'],
