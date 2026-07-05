@@ -1170,6 +1170,57 @@ function ReportsTab({
 
   const reload = () => api.listClientDocuments(clientId).then((d) => setDocs(d.documents)).catch(() => {});
 
+  // Quiet background refresh: emailed/synced reports appear without a manual
+  // browser reload. Fingerprint the list so unchanged polls don't re-render
+  // (open modals and row selections stay untouched).
+  const docsRef = useRef<DocumentInfo[] | null>(null);
+  docsRef.current = docs;
+  useEffect(() => {
+    const fingerprint = (list: DocumentInfo[]) => list.map((d) => `${d.period}:${d.id}:${d.uploadedAt}:${d.name}`).sort().join('|');
+    const tick = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const { documents } = await api.listClientDocuments(clientId);
+        const prev = docsRef.current;
+        if (prev === null || fingerprint(documents) === fingerprint(prev)) return;
+        const known = new Set(prev.map((d) => `${d.period}:${d.id}`));
+        const fresh = documents.filter((d) => !known.has(`${d.period}:${d.id}`));
+        if (fresh.length > 0) {
+          notifications.show({
+            color: 'teal',
+            title: `New report${fresh.length > 1 ? 's' : ''} arrived`,
+            message: fresh.map((f) => f.name).join(', '),
+          });
+        }
+        setDocs(documents);
+      } catch {
+        // Background refresh never nags — the next tick retries.
+      }
+    };
+    const t = window.setInterval(tick, 45_000);
+    return () => window.clearInterval(t);
+  }, [clientId]);
+
+  const [pollingInbox, setPollingInbox] = useState(false);
+  async function checkInboxNow() {
+    setPollingInbox(true);
+    try {
+      const r = await api.pollInbox();
+      notifications.show({
+        color: r.filed > 0 ? 'teal' : 'gray',
+        message: r.filed > 0 ? `${r.filed} report(s) filed from the inbox.` : `Inbox checked — nothing new (${r.processed} unread message(s) seen).`,
+      });
+      if (r.filed > 0) {
+        await reload();
+        onChanged();
+      }
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Inbox check failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setPollingInbox(false);
+    }
+  }
+
   async function upload(file: File | null) {
     if (!file) return;
     if (file.size > 15 * 1024 * 1024) {
@@ -1380,6 +1431,11 @@ function ReportsTab({
                   </Button>
                 )}
               </CopyButton>
+              <Tooltip label="Drain the mailbox right now instead of waiting for the 5-minute timer.">
+                <Button size="compact-xs" variant="light" color="teal" loading={pollingInbox} onClick={checkInboxNow}>
+                  Check now
+                </Button>
+              </Tooltip>
             </Group>
           </Alert>
         ) : (
