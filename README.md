@@ -262,6 +262,43 @@ Configure once:
 Until then the Email/Meeting buttons explain what's missing instead of failing
 silently. Tokens refresh transparently via `/.auth/refresh`.
 
+### Client self-scheduling (booking page, one-time)
+
+Each client/quarter gets a private **booking link** (Meeting tab → "Client
+self-scheduling", and automatically inside the QBR email draft until a meeting
+is booked). The page at `/book/{token}` looks and feels like Microsoft
+Bookings: the client picks a day and a time that's actually open on the
+organizer's calendar, and a **Teams invite goes to both sides automatically**.
+Booking rules (organizer, duration, weekdays, day window, timezone, minimum
+notice, how far out) live under **Settings → QBR self-scheduling**. A booked
+slot marks the QBR **scheduled** and pings the notification bell. Setup:
+
+1. On the **report-inbox app registration** (the booking page reuses
+   `REPORTS_TENANT_ID` / `REPORTS_CLIENT_ID` / `REPORTS_CLIENT_SECRET`; or set
+   `GRAPH_*` equivalents): *API permissions → Microsoft Graph → Application* →
+   `Calendars.ReadWrite` → **Grant admin consent**.
+2. **Function App → Authentication → Edit** the identity provider → add
+   `/book/*` and `/api/book/*` to **Excluded paths** — clients must reach the
+   page without a Mash IT login. The unguessable 24-char token is the
+   authorization; the endpoints expose only display names and open slots.
+3. Set the **organizer email** in Settings and save.
+
+Without step 1 the page still works — it offers the configured windows without
+conflict-checking and records the choice (you send the invite yourself); the
+portal tells you which mode you're in.
+
+### Notifications & the QBR pipeline
+
+The header **bell** collects: new vendor/emailed reports as they're ingested,
+client bookings, and **"time to schedule" reminders** (a QBR-enabled client
+has data for the quarter but nothing on the calendar once the quarter enters
+its final month — checked on the 5-minute timer, at most twice a day, one ping
+per client per quarter). The Workspace **Overview** tab opens with a pipeline
+stepper — Sync → File reports → Narrative → Schedule → Meet → Send package →
+Complete — where each step reflects live state (the email-draft download
+stamps "Send package") and **Mark this QBR complete** closes the quarter, after
+which the workspace targets the next one automatically.
+
 > Locally, once the web is built, `npm run dev:api` also serves the SPA at
 > http://localhost:7071 — the same single-app behavior as production.
 

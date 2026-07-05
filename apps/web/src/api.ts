@@ -2,6 +2,8 @@
 // serving origin (the Function App also serves this SPA; Vite proxies /api in dev).
 import type {
   AuditEvent,
+  BookingInfo,
+  BookingSettings,
   Client,
   ConnectionView,
   Discussion,
@@ -11,6 +13,7 @@ import type {
   HaloMeta,
   Me,
   MetricRow,
+  NotificationInfo,
   Opportunity,
   OverviewRow,
   PeriodInfo,
@@ -198,11 +201,26 @@ export const api = {
       send('POST', `/api/clients/${clientId}/qbr/${period}/meeting`, payload).then(json<{ scheduledAt: string; joinUrl?: string; eventId?: string }>),
     ),
 
-  // Org settings (default branding)
+  // Org settings (default branding + booking rules)
   getOrgSettings: () =>
-    send('GET', '/api/settings/org').then(json<{ brand: { name?: string; logoDataUri?: string; primary?: string; accent?: string } }>),
-  putOrgSettings: (brand: { name?: string; logoDataUri?: string; primary?: string; accent?: string }) =>
-    send('PUT', '/api/settings/org', { brand }).then(json<{ brand: unknown }>),
+    send('GET', '/api/settings/org').then(
+      json<{ brand: { name?: string; logoDataUri?: string; primary?: string; accent?: string }; booking: BookingSettings }>,
+    ),
+  putOrgSettings: (brand: { name?: string; logoDataUri?: string; primary?: string; accent?: string }, booking?: BookingSettings) =>
+    send('PUT', '/api/settings/org', { brand, booking }).then(json<{ brand: unknown; booking: BookingSettings }>),
+
+  // Client self-scheduling (booking links)
+  getBooking: (clientId: string, period: string) =>
+    send('GET', `/api/clients/${clientId}/qbr/${period}/booking`).then(
+      json<{ booking: BookingInfo | null; path: string | null; configured: boolean; calendarConnected: boolean }>,
+    ),
+  createBookingLink: (clientId: string, period: string) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/booking`).then(json<{ booking: BookingInfo; path: string }>),
+
+  // In-portal notifications (bell)
+  notifications: (limit = 30) =>
+    send('GET', `/api/notifications?limit=${limit}`).then(json<{ notifications: NotificationInfo[]; unread: number }>),
+  markNotificationsRead: (ids: string[] | 'all') => send('POST', '/api/notifications/read', { ids }).then(json<unknown>),
 
   // Integrations
   listIntegrations: () => send('GET', '/api/integrations').then(json<{ integrations: ConnectionView[] }>),

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { AuditEvent, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, OpportunityRecord, QbrRecord } from './types.js';
+import type { AuditEvent, BookingRecord, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, NotificationRecord, OpportunityRecord, QbrRecord } from './types.js';
 
 interface JsonShape {
   clients: Record<string, Client>;
@@ -18,9 +18,13 @@ interface JsonShape {
   opportunities: Record<string, OpportunityRecord[]>;
   /** Newest first, capped locally. */
   audit: AuditEvent[];
+  /** Booking links keyed by token. */
+  bookings: Record<string, BookingRecord>;
+  /** Newest first, capped locally. */
+  notifications: NotificationRecord[];
 }
 
-const EMPTY: JsonShape = { clients: {}, connections: {}, maps: {}, qbrs: {}, configs: {}, discussions: {}, snapshots: {}, narratives: {}, documents: {}, opportunities: {}, audit: [] };
+const EMPTY: JsonShape = { clients: {}, connections: {}, maps: {}, qbrs: {}, configs: {}, discussions: {}, snapshots: {}, narratives: {}, documents: {}, opportunities: {}, audit: [], bookings: {}, notifications: [] };
 const pk = (a: string, b: string) => `${a}:${b}`;
 
 /** File-backed DataStore for local development. */
@@ -189,5 +193,35 @@ export class JsonDataStore implements DataStore {
   }
   async listAudit(limit: number): Promise<AuditEvent[]> {
     return this.read().audit.slice(0, limit);
+  }
+
+  async getBooking(token: string): Promise<BookingRecord | undefined> {
+    return this.read().bookings[token];
+  }
+  async putBooking(record: BookingRecord): Promise<BookingRecord> {
+    const s = this.read();
+    s.bookings[record.token] = record;
+    this.write(s);
+    return record;
+  }
+  async findBooking(clientId: string, period: string): Promise<BookingRecord | undefined> {
+    const all = Object.values(this.read().bookings).filter((b) => b.clientId === clientId && b.period === period);
+    return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  }
+
+  async appendNotification(record: NotificationRecord): Promise<void> {
+    const s = this.read();
+    s.notifications.unshift(record);
+    if (s.notifications.length > 500) s.notifications.length = 500;
+    this.write(s);
+  }
+  async listNotifications(limit: number): Promise<NotificationRecord[]> {
+    return this.read().notifications.slice(0, limit);
+  }
+  async markNotificationsRead(ids: string[] | 'all'): Promise<void> {
+    const s = this.read();
+    const set = ids === 'all' ? null : new Set(ids);
+    s.notifications = s.notifications.map((n) => (set === null || set.has(n.id) ? { ...n, read: true } : n));
+    this.write(s);
   }
 }

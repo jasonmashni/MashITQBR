@@ -5,6 +5,7 @@ import {
   isQbrStatus,
   lastPeriods,
   METRIC_CATEGORIES,
+  parsePeriod,
   periodFor,
   previousPeriod,
   type MetricCategory,
@@ -42,6 +43,18 @@ import { directHaloConn, importHaloClients, listOrgs, syncClientMetrics, testCon
 import { pushAction, type PushInput } from './actions.js';
 import { buildEmailDraft, qbrEmailBody } from './emailDraft.js';
 import { clientInboxAddress, inboxConfigFromEnv, pollReportInbox } from './reportInbox.js';
+import {
+  bookableWindow,
+  candidateSlots,
+  filterFreeSlots,
+  isValidTimezone as isValidBookingTimezone,
+  localToUtc,
+  newBookingToken,
+  resolveBookingSettings,
+  slotEnd,
+} from './booking.js';
+import { createOrganizerEvent, getAvailabilityView, graphAppConfigFromEnv } from './graphApp.js';
+import { renderBookingPage } from './bookingPage.js';
 import { appendPdfAttachments, loadPdfAttachments, pdfFirstPages } from './pdfMerge.js';
 import { createClaudeDocMatcher, type DocMatchModel } from './docMatch.js';
 import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
@@ -77,6 +90,24 @@ function audit(action: string, target: string, detail?: string): void {
       action,
       target,
       detail,
+    })
+    .catch(() => undefined);
+}
+
+/** Fire-and-forget in-portal notification (bell menu). */
+export function notify(
+  kind: string,
+  title: string,
+  opts: { body?: string; clientId?: string; period?: string; dedupeKey?: string } = {},
+): void {
+  void getDataStore()
+    .appendNotification({
+      id: Math.random().toString(36).slice(2, 10),
+      at: new Date().toISOString(),
+      kind,
+      title,
+      read: false,
+      ...opts,
     })
     .catch(() => undefined);
 }
@@ -195,7 +226,7 @@ export async function getReportDeck(clientId: string, period: string, ai: string
 // ── Org settings (Mash IT branding used as the default on every deliverable) ──
 export async function getOrgSettings(): Promise<ApiResult> {
   const cfg = await getDataStore().getReportConfig(ORG_SETTINGS_ID);
-  return ok({ brand: cfg?.brand ?? {} });
+  return ok({ brand: cfg?.brand ?? {}, booking: cfg?.booking ?? {} });
 }
 
 export async function putOrgSettings(body: Record<string, unknown>): Promise<ApiResult> {
@@ -207,9 +238,36 @@ export async function putOrgSettings(body: Record<string, unknown>): Promise<Api
   }
   if (logo && logo.length > 700_000) return err(400, 'Logo is too large — keep it under 500 KB.');
   const brand = { name: str('name'), logoDataUri: logo, primary: str('primary'), accent: str('accent') };
-  await getDataStore().putReportConfig({ clientId: ORG_SETTINGS_ID, brand });
+
+  // Booking rules ride the same org record; unknown keys are dropped and
+  // out-of-range values are clamped at use (resolveBookingSettings).
+  const rawBooking = (body['booking'] ?? {}) as Record<string, unknown>;
+  const bstr = (k: string) => (typeof rawBooking[k] === 'string' ? (rawBooking[k] as string).trim() || undefined : undefined);
+  const bnum = (k: string) => (typeof rawBooking[k] === 'number' && Number.isFinite(rawBooking[k]) ? (rawBooking[k] as number) : undefined);
+  const tz = bstr('timezone');
+  if (tz && !isValidBookingTimezone(tz)) return err(400, `Unknown timezone: ${tz} — use an IANA name like America/Detroit.`);
+  const organizer = bstr('organizerEmail');
+  if (organizer && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(organizer)) return err(400, 'Organizer must be a valid email address.');
+  const booking = {
+    organizerEmail: organizer,
+    title: bstr('title'),
+    description: bstr('description'),
+    durationMinutes: bnum('durationMinutes'),
+    incrementMinutes: bnum('incrementMinutes'),
+    daysOfWeek: Array.isArray(rawBooking['daysOfWeek'])
+      ? (rawBooking['daysOfWeek'] as unknown[]).filter((d): d is number => Number.isInteger(d) && (d as number) >= 0 && (d as number) <= 6)
+      : undefined,
+    dayStart: bstr('dayStart'),
+    dayEnd: bstr('dayEnd'),
+    timezone: tz,
+    leadHours: bnum('leadHours'),
+    maxDaysOut: bnum('maxDaysOut'),
+  };
+
+  const existing = await getDataStore().getReportConfig(ORG_SETTINGS_ID);
+  await getDataStore().putReportConfig({ ...existing, clientId: ORG_SETTINGS_ID, brand, booking });
   audit('settings.org', 'settings:org', Object.keys(brand).filter((k) => (brand as Record<string, unknown>)[k]).join(','));
-  return ok({ brand });
+  return ok({ brand, booking });
 }
 
 // ── Config + discussion ──────────────────────────────────────────────────────
@@ -378,6 +436,16 @@ export async function storeDocument(input: {
   };
   await getDocStore().put(docPath(input.clientId, input.period, id, name), input.bytes, input.contentType);
   await store.putDocument(record);
+  // A genuinely new vendor/email report pings the bell (user uploads don't —
+  // they were just done by hand); refreshed content stays quiet too.
+  if (!existing && input.source !== 'upload') {
+    const client = await store.getClient(input.clientId).catch(() => undefined);
+    notify('report', `New report for ${client?.name ?? input.clientId}`, {
+      body: `${name} · ${input.source} · ${input.period}`,
+      clientId: input.clientId,
+      period: input.period,
+    });
+  }
   return record;
 }
 
@@ -741,12 +809,59 @@ export async function pollInbox(): Promise<ApiResult> {
     if (result.filed > 0 || result.unrouted > 0) {
       audit('inbox.poll', `mailbox:${cfg.mailbox}`, `${result.filed} filed, ${result.unrouted} unrouted of ${result.processed}`);
     }
+    if (result.filed > 0) {
+      notify('report', `${result.filed} report(s) filed from the email inbox`, {
+        body: 'Open the client\'s Reports tab to match and categorize them.',
+      });
+    }
     return ok(result);
   } catch (e) {
     const detail = e instanceof Error ? e.message : 'Inbox poll failed';
     _lastInboxPoll = { at: new Date().toISOString(), ok: false, detail };
     return err(502, detail);
   }
+}
+
+// QBR-due reminders: throttled to ~2 checks/day per worker. When the current
+// quarter enters its final month and a QBR-enabled client has data but no
+// meeting on the calendar, ping the bell once per client/quarter.
+let _lastDueCheck = 0;
+
+/** Test hook: let the next timerTick run the due-check immediately. */
+export function _resetDueCheck(): void {
+  _lastDueCheck = 0;
+}
+
+export async function checkQbrDue(now: Date = new Date()): Promise<void> {
+  if (Date.now() - _lastDueCheck < 12 * 3_600_000) return;
+  _lastDueCheck = Date.now();
+  const period = periodFor(now);
+  const daysLeft = (Date.parse(`${period.end}T23:59:59Z`) - now.getTime()) / (24 * 3_600_000);
+  if (daysLeft > 31) return; // nudging earlier than the last month is noise
+  const store = getDataStore();
+  const recent = await store.listNotifications(200).catch(() => []);
+  const seen = new Set(recent.map((n) => n.dedupeKey).filter(Boolean));
+  for (const client of await store.listClients()) {
+    if (client.qbrEnabled === false) continue;
+    const dedupeKey = `qbr_due:${client.id}:${period.id}`;
+    if (seen.has(dedupeKey)) continue;
+    const qbr = await store.getQbr(client.id, period.id).catch(() => undefined);
+    if (qbr?.meeting?.scheduledAt || qbr?.status === 'completed' || qbr?.status === 'archived') continue;
+    const snapshot = await store.getSnapshot(client.id, period.id).catch(() => undefined);
+    if (!snapshot) continue; // no data yet — sync first, then we nudge
+    notify('qbr_due', `Time to schedule ${client.name}'s ${period.label} QBR`, {
+      body: 'Data is in but nothing is on the calendar — send the booking link or schedule it from the Meeting tab.',
+      clientId: client.id,
+      period: period.id,
+      dedupeKey,
+    });
+  }
+}
+
+/** One 5-minute platform tick: drain the report inbox + due-date reminders. */
+export async function timerTick(): Promise<void> {
+  await pollInbox().catch(() => undefined);
+  await checkQbrDue().catch(() => undefined);
 }
 
 /** Fetch vendor-published report files surfaced during sync and attach them. */
@@ -1018,7 +1133,16 @@ export async function pushQbrAction(
 /** Keep the draft inside typical Exchange send limits. */
 const MAX_EMAIL_ATTACHMENT_TOTAL = 20 * 1024 * 1024;
 
-export async function getEmailDraft(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+/** Absolute origin for links in outbound email (proxy headers, then env). */
+function originFrom(header?: HeaderGet): string | undefined {
+  const env = process.env['PUBLIC_BASE_URL']?.trim().replace(/\/+$/, '');
+  const host = header?.('x-forwarded-host') ?? header?.('host');
+  if (!host) return env || undefined;
+  const proto = header?.('x-forwarded-proto') ?? (host.startsWith('localhost') || host.startsWith('127.') ? 'http' : 'https');
+  return `${proto}://${host}`;
+}
+
+export async function getEmailDraft(clientId: string, period: string, ai: string | null, header?: HeaderGet): Promise<ApiResult> {
   let report;
   try {
     report = await buildReportFor(clientId, period, ai);
@@ -1028,6 +1152,21 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
   const store = getDataStore();
   const client = await store.getClient(clientId);
   const brand = report.model.brand;
+
+  // Until a meeting is on the calendar, the draft carries the self-scheduling
+  // link (created on demand) so the client can pick a time themselves.
+  let bookingUrl: string | undefined;
+  try {
+    const qbr = await store.getQbr(clientId, period);
+    const origin = originFrom(header);
+    if (!qbr?.meeting?.scheduledAt && origin) {
+      const r = await ensureBookingLink(clientId, period);
+      const path = (r.json as { path?: string } | undefined)?.path;
+      if (r.status === 200 && path) bookingUrl = `${origin}${path}`;
+    }
+  } catch {
+    // The draft is still useful without the link.
+  }
 
   const attachments: Array<{ name: string; contentType: string; bytes: Buffer }> = [];
   try {
@@ -1060,12 +1199,265 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
       contactName: client?.primaryContact?.name,
       periodLabel: report.model.period.label,
       orgName: brand.orgName,
-      senderName: me !== 'system' && !me.includes('@') ? me : undefined,
+      senderName: me !== 'system' && me !== 'anonymous' && !me.includes('@') ? me : undefined,
+      bookingUrl,
     }),
     attachments,
   });
   audit('qbr.email_draft', `qbr:${clientId}/${period}`, `${client?.primaryContact?.email ?? 'no recipient'} · ${attachments.length} attachment(s)`);
+  // Stamp the pipeline: generating the package marks the "send" step done.
+  try {
+    const existing = await store.getQbr(clientId, period);
+    await store.upsertQbr({
+      clientId,
+      period,
+      status: existing?.status ?? 'draft',
+      meeting: existing?.meeting,
+      packageSentAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch {
+    // Stamp is best-effort.
+  }
   return { status: 200, file: { bytes: eml, contentType: 'message/rfc822', filename: `QBR-${clientId}-${period}.eml` } };
+}
+
+// ── Client-facing booking (public /book/{token} + portal management) ─────────
+const BOOKING_TOKEN_RE = /^[a-z0-9]{16,64}$/;
+const LOCAL_SLOT_RE = /^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/;
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+async function orgBookingContext() {
+  const store = getDataStore();
+  const org = await store.getReportConfig(ORG_SETTINGS_ID).catch(() => undefined);
+  return {
+    store,
+    settings: resolveBookingSettings(org?.booking),
+    brand: org?.brand ?? {},
+    graph: graphAppConfigFromEnv(),
+  };
+}
+
+/** Friendly timezone label, e.g. "Eastern Time (Detroit)". */
+function tzLabel(tz: string): string {
+  const city = tz.split('/').pop()?.replace(/_/g, ' ') ?? tz;
+  try {
+    const name = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'long' })
+      .formatToParts(new Date())
+      .find((p) => p.type === 'timeZoneName')?.value;
+    return name ? `${name} (${city})` : tz;
+  } catch {
+    return tz;
+  }
+}
+
+/** Portal: get (or create) the scheduling link for a client/period. */
+export async function ensureBookingLink(clientId: string, period: string): Promise<ApiResult> {
+  if (!PERIOD_RE.test(period)) return err(400, 'Invalid period.');
+  const store = getDataStore();
+  await ensureSeeded(store);
+  const client = await store.getClient(clientId);
+  if (!client) return err(404, 'Unknown client');
+  let booking = await store.findBooking(clientId, period);
+  if (!booking || booking.status === 'cancelled') {
+    booking = await store.putBooking({
+      token: newBookingToken(),
+      clientId,
+      period,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+      createdBy: currentActor(),
+    });
+    audit('booking.create', `qbr:${clientId}/${period}`, `link ${booking.token.slice(0, 6)}…`);
+  }
+  return ok({ booking, path: `/book/${booking.token}` });
+}
+
+/** Portal: current booking state for a client/period (no auto-create). */
+export async function getBookingState(clientId: string, period: string): Promise<ApiResult> {
+  const store = getDataStore();
+  const booking = await store.findBooking(clientId, period);
+  const { settings, graph } = await orgBookingContext();
+  return ok({
+    booking: booking ?? null,
+    path: booking ? `/book/${booking.token}` : null,
+    configured: Boolean(settings.organizerEmail),
+    calendarConnected: Boolean(graph && settings.organizerEmail),
+  });
+}
+
+/** Public: page shell. */
+export function getBookingPage(token: string): ApiResult {
+  if (!BOOKING_TOKEN_RE.test(token)) return { status: 404, html: '<h1>Not found</h1>' };
+  return { status: 200, html: renderBookingPage(token) };
+}
+
+/** Public: booking metadata for the page (no ids beyond display names). */
+export async function publicBookingInfo(token: string): Promise<ApiResult> {
+  if (!BOOKING_TOKEN_RE.test(token)) return err(404, 'Unknown link');
+  const { store, settings, brand } = await orgBookingContext();
+  const booking = await store.getBooking(token);
+  if (!booking) return err(404, 'Unknown link');
+  const client = await store.getClient(booking.clientId);
+  return ok({
+    status: booking.status,
+    orgName: brand.name || 'Mash IT',
+    brand: { logo: brand.logoDataUri, primary: brand.primary, accent: brand.accent },
+    clientName: client?.name ?? 'your organization',
+    periodLabel: parsePeriod(booking.period).label,
+    title: settings.title,
+    description: settings.description,
+    durationMinutes: settings.durationMinutes,
+    timezone: settings.timezone,
+    tzLabel: tzLabel(settings.timezone),
+    window: bookableWindow(settings, new Date()),
+    booked: booking.status === 'booked' ? { start: booking.start, inviteSent: Boolean(booking.eventId) } : undefined,
+  });
+}
+
+/** Public: open slots for a date range (configured windows minus busy times). */
+export async function publicBookingSlots(token: string, from: string | null, to: string | null): Promise<ApiResult> {
+  if (!BOOKING_TOKEN_RE.test(token)) return err(404, 'Unknown link');
+  if (!from || !to || !DAY_RE.test(from) || !DAY_RE.test(to) || to < from) return err(400, 'from/to must be YYYY-MM-DD.');
+  if (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`) > 62 * 24 * 3_600_000) return err(400, 'Range too large.');
+  const { store, settings, graph } = await orgBookingContext();
+  const booking = await store.getBooking(token);
+  if (!booking) return err(404, 'Unknown link');
+  if (booking.status !== 'open') return ok({ slots: [], calendarChecked: false });
+
+  let slots = candidateSlots(settings, from, to, new Date());
+  let calendarChecked = false;
+  if (slots.length > 0 && graph && settings.organizerEmail) {
+    const viewStart = `${slots[0]!.slice(0, 10)}T00:00`;
+    const lastDay = slots[slots.length - 1]!.slice(0, 10);
+    const view = await getAvailabilityView(graph, settings.organizerEmail, viewStart, `${lastDay}T23:59`, settings.timezone, settings.incrementMinutes);
+    if (view) {
+      slots = filterFreeSlots(slots, view, viewStart, settings);
+      calendarChecked = true;
+    }
+  }
+  return ok({ slots, calendarChecked });
+}
+
+/** Public: book a slot — creates the Teams invite and schedules the QBR. */
+export async function publicBook(token: string, body: Record<string, unknown>): Promise<ApiResult> {
+  if (!BOOKING_TOKEN_RE.test(token)) return err(404, 'Unknown link');
+  const { store, settings, brand, graph } = await orgBookingContext();
+  const booking = await store.getBooking(token);
+  if (!booking) return err(404, 'Unknown link');
+  if (booking.status !== 'open') return err(409, 'This link has already been used — contact your account manager to reschedule.');
+
+  const start = typeof body['start'] === 'string' ? body['start'] : '';
+  const name = typeof body['name'] === 'string' ? body['name'].trim().slice(0, 120) : '';
+  const email = typeof body['email'] === 'string' ? body['email'].trim().slice(0, 200) : '';
+  const notes = typeof body['notes'] === 'string' ? body['notes'].trim().slice(0, 1000) : '';
+  const extras = (Array.isArray(body['attendees']) ? body['attendees'] : [])
+    .filter((a): a is string => typeof a === 'string')
+    .map((a) => a.trim())
+    .filter((a) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a))
+    .slice(0, 10);
+  if (!LOCAL_SLOT_RE.test(start)) return err(400, 'Pick a time slot first.');
+  if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return err(400, 'Please provide your name and a valid email.');
+
+  // The chosen slot must still be a legal candidate (weekday/window/lead/max).
+  const day = start.slice(0, 10);
+  if (!candidateSlots(settings, day, day, new Date()).includes(start)) {
+    return err(409, 'That time is no longer available — please pick another.');
+  }
+  // …and still free on the organizer's calendar (when we can check).
+  if (graph && settings.organizerEmail) {
+    const view = await getAvailabilityView(graph, settings.organizerEmail, `${day}T00:00`, `${day}T23:59`, settings.timezone, settings.incrementMinutes);
+    if (view && filterFreeSlots([start], view, `${day}T00:00`, settings).length === 0) {
+      return err(409, 'That time was just taken — please pick another.');
+    }
+  }
+
+  const client = await store.getClient(booking.clientId);
+  const end = slotEnd(start, settings);
+  const periodLabel = parsePeriod(booking.period).label;
+  const orgName = brand.name || 'Mash IT';
+
+  let eventId: string | undefined;
+  let joinUrl: string | undefined;
+  if (graph && settings.organizerEmail) {
+    try {
+      const html = [
+        `<p>${escapeHtml(settings.title)} — ${escapeHtml(client?.name ?? '')} (${escapeHtml(periodLabel)}).</p>`,
+        settings.description ? `<p>${escapeHtml(settings.description)}</p>` : '',
+        notes ? `<p><b>Requested topics:</b> ${escapeHtml(notes)}</p>` : '',
+        `<p>Booked by ${escapeHtml(name)} via the ${escapeHtml(orgName)} scheduling page.</p>`,
+      ].join('');
+      const created = await createOrganizerEvent(graph, settings.organizerEmail, {
+        subject: `${settings.title} — ${client?.name ?? booking.clientId} (${periodLabel})`,
+        bodyHtml: html,
+        startLocal: start,
+        endLocal: end,
+        timezone: settings.timezone,
+        attendees: [{ email, name }, ...extras.map((e) => ({ email: e }))],
+      });
+      eventId = created.eventId || undefined;
+      joinUrl = created.joinUrl;
+    } catch {
+      // The booking still lands; the organizer sends the invite by hand.
+    }
+  }
+
+  const updated = await store.putBooking({
+    ...booking,
+    status: 'booked',
+    start,
+    end,
+    timezone: settings.timezone,
+    attendeeName: name,
+    attendeeEmail: email,
+    extraAttendees: extras.length ? extras : undefined,
+    notes: notes || undefined,
+    eventId,
+    joinUrl,
+    bookedAt: new Date().toISOString(),
+  });
+
+  // Reflect it on the QBR record so the workspace shows the meeting.
+  try {
+    const existing = await store.getQbr(booking.clientId, booking.period);
+    const scheduledAt = localToUtc(start, settings.timezone).toISOString();
+    await store.upsertQbr({
+      clientId: booking.clientId,
+      period: booking.period,
+      status: advanceStatus(existing?.status, 'scheduled'),
+      meeting: { ...existing?.meeting, scheduledAt, joinUrl, eventId, attendees: [email, ...extras] },
+      updatedAt: new Date().toISOString(),
+    });
+  } catch {
+    // Booking record is the source of truth; workspace sync is best-effort.
+  }
+
+  audit('booking.booked', `qbr:${booking.clientId}/${booking.period}`, `${name} <${email}> → ${start} (${settings.timezone})`);
+  notify('booking', `${client?.name ?? booking.clientId} booked their QBR`, {
+    body: `${new Date(localToUtc(start, settings.timezone)).toLocaleString('en-US', { timeZone: settings.timezone, dateStyle: 'full', timeStyle: 'short' })}${eventId ? ' — Teams invite sent.' : ' — send the invite manually (calendar not connected).'}`,
+    clientId: booking.clientId,
+    period: booking.period,
+  });
+  return ok({ ok: true, start: updated.start, end: updated.end, timezone: settings.timezone, inviteSent: Boolean(eventId) });
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ── In-portal notifications ──────────────────────────────────────────────────
+export async function getNotifications(limit: string | null): Promise<ApiResult> {
+  const n = Math.min(100, Math.max(1, Number(limit) || 30));
+  const items = await getDataStore().listNotifications(n);
+  return ok({ notifications: items, unread: items.filter((i) => !i.read).length });
+}
+
+export async function markNotificationsRead(body: Record<string, unknown>): Promise<ApiResult> {
+  const ids = body['ids'];
+  if (ids === 'all') await getDataStore().markNotificationsRead('all');
+  else if (Array.isArray(ids) && ids.every((i) => typeof i === 'string')) await getDataStore().markNotificationsRead(ids as string[]);
+  else return err(400, "ids must be 'all' or an array of notification ids.");
+  return ok({ ok: true });
 }
 
 // ── Microsoft Graph (delegated, via the Easy Auth token store) ───────────────
@@ -1268,9 +1660,16 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
 /** Which of the last 8 quarters have data for this client (store or seed). */
 export async function getPeriods(clientId: string, currentOverride?: string | null): Promise<ApiResult> {
   const ds = storeDataSource(getDataStore());
+  const store = getDataStore();
   const current = resolveCurrent(currentOverride);
   const periods = await Promise.all(
-    lastPeriods(current, 8).map(async (period) => ({ period, hasSnapshot: !!(await ds.getSnapshot(clientId, period)) })),
+    lastPeriods(current, 8).map(async (period) => ({
+      period,
+      hasSnapshot: !!(await ds.getSnapshot(clientId, period)),
+      // Workflow state rides along so the UI can target the NEXT quarter once
+      // a QBR is completed instead of reopening the finished one.
+      status: (await store.getQbr(clientId, period).catch(() => undefined))?.status,
+    })),
   );
   return ok({ currentPeriod: current, periods });
 }
@@ -1324,6 +1723,10 @@ export async function getSystem(): Promise<ApiResult> {
       REPORTS_CLIENT_ID: !!process.env['REPORTS_CLIENT_ID'],
       REPORTS_CLIENT_SECRET: !!process.env['REPORTS_CLIENT_SECRET'],
     },
+    // Booking page: whether app-only Graph credentials are visible (calendar
+    // availability + automatic Teams invites). Organizer email lives in org
+    // settings, not env.
+    bookingGraphReady: graphAppConfigFromEnv() !== null,
   });
 }
 

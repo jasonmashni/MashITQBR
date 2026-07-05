@@ -32,6 +32,7 @@ import {
   Anchor,
   SegmentedControl,
   CopyButton,
+  Stepper,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { RadarChart, BarChart } from '@mantine/charts';
@@ -59,6 +60,7 @@ import {
   IconExternalLink,
   IconSparkles,
   IconTableImport,
+  IconCheck,
 } from '@tabler/icons-react';
 import { api, documentUrl, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
@@ -157,16 +159,33 @@ export function Workspace() {
   }, [clientId, refresh]);
 
   // One call tells us which of the last 8 quarters have data; land on the
-  // newest one that does (else the current quarter).
+  // newest one that does — unless that QBR is already completed/archived, in
+  // which case the NEXT quarter is the working target. A ?period= deep link
+  // (notification bell) always wins.
   useEffect(() => {
     let live = true;
+    const wanted = new URLSearchParams(window.location.search).get('period');
     api
       .periods(clientId)
       .then(({ periods: list }) => {
         if (!live) return;
         setPeriods(list.map((p) => ({ value: p.period, label: p.hasSnapshot ? p.period : `${p.period} — no data` })));
-        const first = list.find((p) => p.hasSnapshot) ?? list[0];
-        if (first) setPeriod(first.period);
+        if (wanted && list.some((p) => p.period === wanted)) {
+          setPeriod(wanted);
+          return;
+        }
+        const newestWithData = list.find((p) => p.hasSnapshot);
+        const done = newestWithData?.status === 'completed' || newestWithData?.status === 'archived';
+        if (newestWithData && done) {
+          // list is newest-first; the entry BEFORE the finished quarter is the
+          // next one (falls back to the newest available = current quarter).
+          const idx = list.findIndex((p) => p.period === newestWithData.period);
+          setPeriod((list[Math.max(0, idx - 1)] ?? newestWithData).period);
+        } else if (newestWithData) {
+          setPeriod(newestWithData.period);
+        } else if (list[0]) {
+          setPeriod(list[0].period);
+        }
       })
       .catch(() => {
         if (!live) return;
@@ -307,19 +326,39 @@ export function Workspace() {
         <Tabs.Panel value="overview">
           {loading || !period ? (
             <Center h={240}><Loader /></Center>
-          ) : qbr ? (
-            <OverviewTab
-              qbr={qbr}
-              clientId={clientId}
-              period={period}
-              refresh={refresh}
-              aiEnabled={system?.ai ?? false}
-              config={config}
-              setConfig={setConfig}
-              onChanged={() => setRefresh((n) => n + 1)}
-            />
           ) : (
-            <Text c="dimmed">No report.</Text>
+            <Stack gap="lg">
+              <PipelineStepper
+                hasData={Boolean(qbr)}
+                meta={meta}
+                unfiled={unfiled}
+                disc={disc}
+                goTab={setTab}
+                onComplete={async () => {
+                  try {
+                    await api.putStatus(clientId, period, 'completed');
+                    notifications.show({ color: 'teal', message: `${period} QBR completed — the workspace will target the next quarter from now on.` });
+                    setRefresh((n) => n + 1);
+                  } catch (e) {
+                    notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Could not complete' });
+                  }
+                }}
+              />
+              {qbr ? (
+                <OverviewTab
+                  qbr={qbr}
+                  clientId={clientId}
+                  period={period}
+                  refresh={refresh}
+                  aiEnabled={system?.ai ?? false}
+                  config={config}
+                  setConfig={setConfig}
+                  onChanged={() => setRefresh((n) => n + 1)}
+                />
+              ) : (
+                <Text c="dimmed">No report yet — run a Sync to pull this quarter's data.</Text>
+              )}
+            </Stack>
           )}
         </Tabs.Panel>
 
@@ -383,6 +422,75 @@ export function Workspace() {
         </Tabs.Panel>
       </Tabs>
     </Stack>
+  );
+}
+
+// ── QBR pipeline stepper: the start-to-finish flow at a glance ────────────────
+const STATUS_ORDER = ['draft', 'data_synced', 'narrative_approved', 'scheduled', 'completed', 'dispositioned', 'actions_pushed', 'archived'];
+const statusAtLeast = (status: string | undefined, min: string) =>
+  STATUS_ORDER.indexOf(status ?? 'draft') >= STATUS_ORDER.indexOf(min);
+
+function PipelineStepper({
+  hasData,
+  meta,
+  unfiled,
+  disc,
+  goTab,
+  onComplete,
+}: {
+  hasData: boolean;
+  meta: QbrResponse['meta'] | undefined;
+  unfiled: number;
+  disc: Discussion | null;
+  goTab: (tab: string) => void;
+  onComplete: () => void;
+}) {
+  const scheduled = Boolean(meta?.meeting?.scheduledAt);
+  const met =
+    (scheduled && new Date(meta!.meeting!.scheduledAt!) < new Date()) ||
+    Boolean(disc?.items.some((i) => i.status === 'discussed')) ||
+    statusAtLeast(meta?.status, 'completed');
+  const completed = meta?.status === 'completed' || meta?.status === 'archived';
+  const steps: Array<{ label: string; desc: string; done: boolean; tab?: string }> = [
+    { label: 'Sync data', desc: hasData ? 'Data is in' : 'Pull from the connected tools', done: hasData, tab: 'data' },
+    { label: 'File reports', desc: unfiled > 0 ? `${unfiled} need filing` : 'Repository tidy', done: hasData && unfiled === 0, tab: 'reports' },
+    { label: 'Review narrative', desc: 'Edit and approve the story', done: statusAtLeast(meta?.status, 'narrative_approved'), tab: 'overview' },
+    { label: 'Schedule', desc: scheduled ? 'On the calendar' : 'Send the booking link', done: scheduled, tab: 'meeting' },
+    { label: 'Hold the meeting', desc: 'Capture answers live', done: met, tab: 'meeting' },
+    { label: 'Send package', desc: meta?.packageSentAt ? 'Draft generated' : 'Email draft carries the PDF', done: Boolean(meta?.packageSentAt) },
+    { label: 'Complete', desc: completed ? 'Next quarter is up' : 'Close out this QBR', done: completed },
+  ];
+  const active = steps.findIndex((s) => !s.done);
+  const readyToComplete = !completed && steps.slice(0, 6).every((s) => s.done);
+  return (
+    <Card withBorder radius="md" padding="md">
+      <Stepper
+        size="xs"
+        active={active === -1 ? steps.length : active}
+        onStepClick={(i) => {
+          const t = steps[i]?.tab;
+          if (t && t !== 'overview') goTab(t);
+        }}
+      >
+        {steps.map((s, i) => (
+          <Stepper.Step
+            key={s.label}
+            label={s.label}
+            description={s.desc}
+            color={s.done ? 'teal' : undefined}
+            completedIcon={<IconCheck size={16} />}
+            allowStepSelect={Boolean(steps[i]?.tab)}
+          />
+        ))}
+      </Stepper>
+      {readyToComplete && (
+        <Group justify="flex-end" mt="xs">
+          <Button size="xs" color="teal" leftSection={<IconCheck size={14} />} onClick={onComplete}>
+            Mark this QBR complete
+          </Button>
+        </Group>
+      )}
+    </Card>
   );
 }
 
@@ -1883,8 +1991,103 @@ function MeetingTab({
         <Text size="xs" c="dimmed" mt={4}>Notes land on the final report with the discussion. “Save agenda” saves these too.</Text>
       </Card>
 
+      <BookingLinkCard clientId={clientId} period={period} meta={meta} />
+
       <ScheduleCard clientId={clientId} period={period} meta={meta} onChanged={onChanged} />
     </Stack>
+  );
+}
+
+// ── Booking link (client self-scheduling, Microsoft Bookings-style) ──────────
+function BookingLinkCard({ clientId, period, meta }: { clientId: string; period: string; meta: QbrResponse['meta'] | undefined }) {
+  const [state, setState] = useState<Awaited<ReturnType<typeof api.getBooking>> | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    api.getBooking(clientId, period).then((s) => live && setState(s)).catch(() => live && setState(null));
+    return () => {
+      live = false;
+    };
+  }, [clientId, period]);
+
+  async function createLink() {
+    setCreating(true);
+    try {
+      await api.createBookingLink(clientId, period);
+      setState(await api.getBooking(clientId, period));
+      notifications.show({ color: 'teal', message: 'Booking link ready — copy it or just send the email draft (it includes the link automatically).' });
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Could not create the link', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  const booking = state?.booking;
+  const url = state?.path ? `${window.location.origin}${state.path}` : null;
+
+  return (
+    <Card withBorder radius="md" padding="lg">
+      <Group justify="space-between" mb="xs">
+        <div>
+          <Title order={5}>Client self-scheduling</Title>
+          <Text size="xs" c="dimmed">
+            A private booking page for this QBR — the client picks a time that's open on your calendar and the Teams
+            invite goes out automatically. The link also rides inside the email draft until a meeting is booked.
+          </Text>
+        </div>
+        {booking?.status === 'booked' ? (
+          <Badge color="teal">booked</Badge>
+        ) : booking ? (
+          <Badge color="blue" variant="light">link active</Badge>
+        ) : null}
+      </Group>
+
+      {state && !state.configured && (
+        <Alert color="yellow" p="xs" mb="xs">
+          <Text size="xs">
+            Set the <b>organizer email</b> under Settings → QBR self-scheduling first — that's whose calendar drives
+            availability and hosts the invite.
+          </Text>
+        </Alert>
+      )}
+      {state && state.configured && !state.calendarConnected && (
+        <Alert color="yellow" p="xs" mb="xs">
+          <Text size="xs">
+            Calendar not connected — the page will offer your configured windows without checking for conflicts, and
+            you'll send the invite yourself. Grant <b>Calendars.ReadWrite</b> (application) to the report-inbox app
+            registration to automate it (see Settings).
+          </Text>
+        </Alert>
+      )}
+
+      {booking?.status === 'booked' ? (
+        <Text size="sm">
+          <b>{booking.attendeeName}</b> ({booking.attendeeEmail}) booked{' '}
+          <b>{booking.start?.replace('T', ' at ')}</b> ({booking.timezone})
+          {booking.eventId ? ' — Teams invite sent to everyone.' : ' — calendar not connected, send the invite manually.'}
+        </Text>
+      ) : url ? (
+        <Group gap="xs">
+          <TextInput readOnly value={url} style={{ flex: 1 }} onFocus={(e) => e.currentTarget.select()} aria-label="Booking link" />
+          <CopyButton value={url}>
+            {({ copied, copy }) => (
+              <Button variant={copied ? 'filled' : 'light'} color="teal" onClick={copy}>
+                {copied ? 'Copied' : 'Copy link'}
+              </Button>
+            )}
+          </CopyButton>
+        </Group>
+      ) : (
+        <Button variant="light" loading={creating} onClick={createLink} disabled={Boolean(meta?.meeting?.scheduledAt)}>
+          Create booking link
+        </Button>
+      )}
+      {!booking && meta?.meeting?.scheduledAt && (
+        <Text size="xs" c="dimmed" mt={4}>A meeting is already scheduled for this quarter.</Text>
+      )}
+    </Card>
   );
 }
 

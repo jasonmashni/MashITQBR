@@ -82,6 +82,8 @@ export interface OverviewRow {
 export interface PeriodInfo {
   period: string;
   hasSnapshot: boolean;
+  /** QBR workflow status for that quarter, when a record exists. */
+  status?: string;
 }
 
 export interface FunctionScore {
@@ -121,6 +123,8 @@ export interface QbrMeta {
   period: string;
   status: string;
   meeting?: { scheduledAt?: string; joinUrl?: string; heldAt?: string };
+  /** When the QBR package (email draft) was last generated. */
+  packageSentAt?: string;
 }
 
 export interface QbrResponse {
@@ -248,8 +252,56 @@ export interface SystemInfo {
   inboxLastPoll?: { at: string; ok: boolean; detail: string } | null;
   /** Which REPORTS_* app settings the API process can see (presence only). */
   inboxEnvSeen?: Record<string, boolean>;
+  /** App-only Graph creds visible → booking page can auto-send Teams invites. */
+  bookingGraphReady?: boolean;
   /** Deploy-time build stamp (null when running from source). */
   build?: { sha?: string; builtAt?: string } | null;
+}
+
+/** Org-level booking-page rules (all optional; server applies defaults). */
+export interface BookingSettings {
+  organizerEmail?: string;
+  title?: string;
+  description?: string;
+  durationMinutes?: number;
+  incrementMinutes?: number;
+  daysOfWeek?: number[];
+  dayStart?: string;
+  dayEnd?: string;
+  timezone?: string;
+  leadHours?: number;
+  maxDaysOut?: number;
+}
+
+/** One client-facing scheduling link (per client/quarter). */
+export interface BookingInfo {
+  token: string;
+  clientId: string;
+  period: string;
+  status: 'open' | 'booked' | 'cancelled';
+  createdAt: string;
+  start?: string;
+  end?: string;
+  timezone?: string;
+  attendeeName?: string;
+  attendeeEmail?: string;
+  extraAttendees?: string[];
+  notes?: string;
+  eventId?: string;
+  joinUrl?: string;
+  bookedAt?: string;
+}
+
+/** One in-portal notification (bell menu). */
+export interface NotificationInfo {
+  id: string;
+  at: string;
+  kind: string;
+  title: string;
+  body?: string;
+  clientId?: string;
+  period?: string;
+  read: boolean;
 }
 
 export interface ConnectionView {

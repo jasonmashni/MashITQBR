@@ -3,6 +3,7 @@ import {
   Badge,
   Button,
   Card,
+  Chip,
   Code,
   ColorInput,
   FileButton,
@@ -11,15 +12,36 @@ import {
   List,
   Loader,
   Center,
+  NumberInput,
+  Select,
   Stack,
   Text,
+  Textarea,
   TextInput,
   Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconUpload, IconTrash } from '@tabler/icons-react';
 import { api } from '../api.js';
-import type { SystemInfo } from '../types.js';
+import type { BookingSettings, SystemInfo } from '../types.js';
+
+const WEEKDAYS: Array<{ value: string; label: string }> = [
+  { value: '1', label: 'Mon' },
+  { value: '2', label: 'Tue' },
+  { value: '3', label: 'Wed' },
+  { value: '4', label: 'Thu' },
+  { value: '5', label: 'Fri' },
+  { value: '6', label: 'Sat' },
+  { value: '0', label: 'Sun' },
+];
+const TIMEZONES = [
+  'America/Detroit',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Phoenix',
+  'America/Los_Angeles',
+];
 
 const MAX_LOGO_BYTES = 500 * 1024;
 
@@ -47,6 +69,8 @@ export function Settings() {
   const [accent, setAccent] = useState('');
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [polling, setPolling] = useState(false);
+  const [booking, setBooking] = useState<BookingSettings>({});
+  const [savingBooking, setSavingBooking] = useState(false);
 
   // Manual inbox check: surfaces the ACTUAL Graph/token error when ingestion
   // is misconfigured, instead of waiting on the silent 5-minute timer.
@@ -77,12 +101,13 @@ export function Settings() {
     let live = true;
     api
       .getOrgSettings()
-      .then(({ brand }) => {
+      .then(({ brand, booking: b }) => {
         if (!live) return;
         setName(brand.name ?? '');
         setLogo(brand.logoDataUri);
         setPrimary(brand.primary ?? '');
         setAccent(brand.accent ?? '');
+        setBooking(b ?? {});
       })
       .finally(() => live && setLoading(false));
     return () => {
@@ -103,15 +128,29 @@ export function Settings() {
     }
   }
 
+  const brandBody = () => ({ name: name || undefined, logoDataUri: logo, primary: primary || undefined, accent: accent || undefined });
+
   async function save() {
     setSaving(true);
     try {
-      await api.putOrgSettings({ name: name || undefined, logoDataUri: logo, primary: primary || undefined, accent: accent || undefined });
+      await api.putOrgSettings(brandBody(), booking);
       notifications.show({ color: 'teal', message: 'Branding saved — every report, PDF and deck now carries it.' });
     } catch (e) {
       notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveBooking() {
+    setSavingBooking(true);
+    try {
+      await api.putOrgSettings(brandBody(), booking);
+      notifications.show({ color: 'teal', message: 'Booking rules saved — every scheduling link uses them immediately.' });
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setSavingBooking(false);
     }
   }
 
@@ -166,6 +205,129 @@ export function Settings() {
             <Button loading={saving} onClick={save}>Save branding</Button>
           </Group>
         </Stack>
+      </Card>
+
+      <Card withBorder radius="md" padding="lg">
+        <Group justify="space-between" mb={4}>
+          <Text fw={600}>QBR self-scheduling (booking page)</Text>
+          {system?.bookingGraphReady ? (
+            <Badge color="teal" variant="light">calendar connected</Badge>
+          ) : (
+            <Badge color="gray" variant="light">calendar not connected</Badge>
+          )}
+        </Group>
+        <Text size="sm" c="dimmed" mb="sm">
+          Each client gets a private booking link (on the Meeting tab and inside the QBR email draft). They pick a time
+          that's open on your calendar; a Teams invite goes to both of you automatically. Availability = the rules below
+          minus busy times on the organizer's Microsoft 365 calendar.
+        </Text>
+        <Stack gap="xs">
+          <Group grow>
+            <TextInput
+              label="Organizer (whose calendar hosts the meeting)"
+              placeholder="jason.mashni@mashit.net"
+              value={booking.organizerEmail ?? ''}
+              onChange={(e) => setBooking({ ...booking, organizerEmail: e.currentTarget.value })}
+            />
+            <TextInput
+              label="Meeting title"
+              placeholder="Quarterly Business Review"
+              value={booking.title ?? ''}
+              onChange={(e) => setBooking({ ...booking, title: e.currentTarget.value })}
+            />
+          </Group>
+          <Textarea
+            label="Description (shown on the booking page and the invite)"
+            placeholder="A review of your IT operations, security posture, and roadmap for the quarter."
+            autosize
+            minRows={2}
+            value={booking.description ?? ''}
+            onChange={(e) => setBooking({ ...booking, description: e.currentTarget.value })}
+          />
+          <div>
+            <Text size="sm" fw={500} mb={4}>Bookable days</Text>
+            <Chip.Group
+              multiple
+              value={(booking.daysOfWeek ?? [1, 2, 3, 4, 5]).map(String)}
+              onChange={(v) => setBooking({ ...booking, daysOfWeek: v.map(Number).sort() })}
+            >
+              <Group gap={6}>
+                {WEEKDAYS.map((d) => (
+                  <Chip key={d.value} value={d.value} size="xs">{d.label}</Chip>
+                ))}
+              </Group>
+            </Chip.Group>
+          </div>
+          <Group grow>
+            <TextInput
+              label="Day starts"
+              placeholder="09:00"
+              value={booking.dayStart ?? ''}
+              onChange={(e) => setBooking({ ...booking, dayStart: e.currentTarget.value })}
+            />
+            <TextInput
+              label="Day ends"
+              placeholder="17:00"
+              value={booking.dayEnd ?? ''}
+              onChange={(e) => setBooking({ ...booking, dayEnd: e.currentTarget.value })}
+            />
+            <Select
+              label="Timezone"
+              data={TIMEZONES}
+              searchable
+              value={booking.timezone ?? 'America/Detroit'}
+              onChange={(v) => v && setBooking({ ...booking, timezone: v })}
+            />
+          </Group>
+          <Group grow>
+            <NumberInput
+              label="Meeting length (min)"
+              min={15}
+              max={240}
+              step={15}
+              value={booking.durationMinutes ?? 60}
+              onChange={(v) => setBooking({ ...booking, durationMinutes: typeof v === 'number' ? v : undefined })}
+            />
+            <NumberInput
+              label="Slot granularity (min)"
+              min={15}
+              max={120}
+              step={15}
+              value={booking.incrementMinutes ?? 30}
+              onChange={(v) => setBooking({ ...booking, incrementMinutes: typeof v === 'number' ? v : undefined })}
+            />
+            <NumberInput
+              label="Minimum notice (hours)"
+              min={0}
+              max={720}
+              value={booking.leadHours ?? 24}
+              onChange={(v) => setBooking({ ...booking, leadHours: typeof v === 'number' ? v : undefined })}
+            />
+            <NumberInput
+              label="Bookable window (days out)"
+              min={1}
+              max={365}
+              value={booking.maxDaysOut ?? 45}
+              onChange={(v) => setBooking({ ...booking, maxDaysOut: typeof v === 'number' ? v : undefined })}
+            />
+          </Group>
+          <Group justify="flex-end">
+            <Button loading={savingBooking} onClick={saveBooking}>Save booking rules</Button>
+          </Group>
+        </Stack>
+        <Text size="sm" fw={600} mt="sm" mb={4}>One-time setup (for live availability + automatic invites)</Text>
+        <List type="ordered" size="sm" spacing={4}>
+          <List.Item>
+            On the same app registration as the report inbox: API permissions → <b>Microsoft Graph → Application →
+            Calendars.ReadWrite</b> → Grant admin consent. (The booking page reuses <Code>REPORTS_TENANT_ID</Code> /{' '}
+            <Code>REPORTS_CLIENT_ID</Code> / <Code>REPORTS_CLIENT_SECRET</Code>.)
+          </List.Item>
+          <List.Item>
+            Function App → Authentication → your identity provider → <b>Edit</b> → add <Code>/book/*</Code> and{' '}
+            <Code>/api/book/*</Code> to <b>Excluded paths</b> — clients open the booking page without signing in.
+          </List.Item>
+          <List.Item>Set the organizer email above and save. Without the Graph permission the page still works, but shows configured windows only and you send the invite yourself.</List.Item>
+        </List>
       </Card>
 
       <Card withBorder radius="md" padding="lg">

@@ -212,6 +212,33 @@ export interface CustomSection {
   placement?: 'after-summary' | 'in-body' | 'end';
 }
 
+/**
+ * Org-level self-scheduling rules for the client-facing booking page
+ * (Microsoft Bookings-style). Every field optional — defaults applied at use.
+ */
+export interface BookingSettings {
+  /** Whose M365 calendar hosts the meetings (availability + invites). */
+  organizerEmail?: string;
+  /** Meeting title on the invite (default "Quarterly Business Review"). */
+  title?: string;
+  /** Short blurb shown on the booking page and invite body. */
+  description?: string;
+  durationMinutes?: number;
+  /** Slot start granularity in minutes (default 30). */
+  incrementMinutes?: number;
+  /** Bookable weekdays, 0=Sunday … 6=Saturday (default Mon–Fri). */
+  daysOfWeek?: number[];
+  /** Bookable window each day, 24h "HH:mm" local (default 09:00–17:00). */
+  dayStart?: string;
+  dayEnd?: string;
+  /** IANA timezone the windows are defined in (default America/Detroit). */
+  timezone?: string;
+  /** Minimum notice before a slot can be booked (default 24h). */
+  leadHours?: number;
+  /** How far ahead clients may book (default 45 days). */
+  maxDaysOut?: number;
+}
+
 /** Per-client report customization (sections + branding). */
 export interface ReportConfig {
   clientId: string;
@@ -227,6 +254,8 @@ export interface ReportConfig {
   narrativeGuidance?: string;
   /** Per-section guidance/comments, keyed by MetricCategory. */
   sectionGuidance?: Partial<Record<MetricCategory, string>>;
+  /** Org-level (stored on the org settings record): booking-page rules. */
+  booking?: BookingSettings;
 }
 
 /** One captured discussion point from the QBR review (question/decision + response). */

@@ -80,7 +80,7 @@ const routes: Route[] = [
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/status$/, run: (m, b) => h.putStatus(m[1]!, m[2]!, b['status']) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/schedule$/, run: (m, b) => h.putSchedule(m[1]!, m[2]!, b as { scheduledAt?: string; joinUrl?: string }) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/actions\/push$/, run: (m, b) => h.pushQbrAction(m[1]!, m[2]!, b as { actionId?: string; target: PushInput['target'] }) },
-  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/email\.eml$/, run: (m, _b, url) => h.getEmailDraft(m[1]!, m[2]!, url.searchParams.get('ai')) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/email\.eml$/, run: (m, _b, url, header) => h.getEmailDraft(m[1]!, m[2]!, url.searchParams.get('ai'), header) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/email$/, run: (m, b, _u, header) => h.emailQbr(m[1]!, m[2]!, b as never, header) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/meeting$/, run: (m, b, _u, header) => h.createMeeting(m[1]!, m[2]!, b as never, header) },
   { method: 'GET', re: /^\/api\/integrations$/, run: () => h.listIntegrations() },
@@ -103,6 +103,16 @@ const routes: Route[] = [
   { method: 'GET', re: /^\/api\/audit$/, run: (_m, _b, url) => h.getAudit(url.searchParams.get('limit')) },
   { method: 'POST', re: /^\/api\/inbox\/poll$/, run: () => h.pollInbox() },
   { method: 'GET', re: /^\/api\/me$/, run: (_m, _b, _url, header) => h.getMe(principalFrom(header)) },
+  // Client self-scheduling (public page + its API) and its portal management
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/booking$/, run: (m) => h.getBookingState(m[1]!, m[2]!) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/booking$/, run: (m) => h.ensureBookingLink(m[1]!, m[2]!) },
+  { method: 'GET', re: /^\/book\/([^/]+)$/, run: (m) => h.getBookingPage(m[1]!) },
+  { method: 'GET', re: /^\/api\/book\/([^/]+)$/, run: (m) => h.publicBookingInfo(m[1]!) },
+  { method: 'GET', re: /^\/api\/book\/([^/]+)\/slots$/, run: (m, _b, url) => h.publicBookingSlots(m[1]!, url.searchParams.get('from'), url.searchParams.get('to')) },
+  { method: 'POST', re: /^\/api\/book\/([^/]+)$/, run: (m, b) => h.publicBook(m[1]!, b) },
+  // In-portal notifications
+  { method: 'GET', re: /^\/api\/notifications$/, run: (_m, _b, url) => h.getNotifications(url.searchParams.get('limit')) },
+  { method: 'POST', re: /^\/api\/notifications\/read$/, run: (_m, b) => h.markNotificationsRead(b) },
 ];
 
 const server = createServer(async (req, res) => {

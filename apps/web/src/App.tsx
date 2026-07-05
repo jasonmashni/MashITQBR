@@ -1,5 +1,21 @@
 import { useEffect, useState } from 'react';
-import { AppShell, Group, NavLink, Text, ThemeIcon, Box, Burger, Menu, Avatar, UnstyledButton, Badge } from '@mantine/core';
+import {
+  AppShell,
+  Group,
+  NavLink,
+  Text,
+  ThemeIcon,
+  Box,
+  Burger,
+  Menu,
+  Avatar,
+  UnstyledButton,
+  Badge,
+  ActionIcon,
+  Indicator,
+  Stack,
+  Anchor,
+} from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
   IconLayoutDashboard,
@@ -10,10 +26,14 @@ import {
   IconClipboardList,
   IconChevronDown,
   IconSettings,
+  IconBell,
+  IconFileDescription,
+  IconCalendarEvent,
+  IconAlarm,
 } from '@tabler/icons-react';
-import { Link, Outlet, useLocation } from 'react-router-dom';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api } from './api.js';
-import type { Me } from './types.js';
+import type { Me, NotificationInfo } from './types.js';
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: IconLayoutDashboard, match: (p: string) => p === '/' },
@@ -31,6 +51,102 @@ const initials = (name: string) =>
     .slice(0, 2)
     .join('')
     .toUpperCase();
+
+const NOTIF_ICON: Record<string, typeof IconBell> = {
+  report: IconFileDescription,
+  booking: IconCalendarEvent,
+  qbr_due: IconAlarm,
+};
+
+/** Header bell: new reports, client bookings, QBRs due for scheduling. */
+function NotificationBell() {
+  const [items, setItems] = useState<NotificationInfo[]>([]);
+  const [unread, setUnread] = useState(0);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let live = true;
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return;
+      api
+        .notifications(30)
+        .then((r) => {
+          if (!live) return;
+          setItems(r.notifications);
+          setUnread(r.unread);
+        })
+        .catch(() => undefined);
+    };
+    tick();
+    const t = window.setInterval(tick, 60_000);
+    return () => {
+      live = false;
+      window.clearInterval(t);
+    };
+  }, []);
+
+  async function markAll() {
+    try {
+      await api.markNotificationsRead('all');
+      setItems(items.map((i) => ({ ...i, read: true })));
+      setUnread(0);
+    } catch {
+      // Non-fatal; the next poll retries.
+    }
+  }
+
+  function open(n: NotificationInfo) {
+    if (!n.read) {
+      api.markNotificationsRead([n.id]).catch(() => undefined);
+      setItems((prev) => prev.map((i) => (i.id === n.id ? { ...i, read: true } : i)));
+      setUnread((u) => Math.max(0, u - 1));
+    }
+    if (n.clientId) navigate(`/clients/${n.clientId}${n.period ? `?period=${n.period}` : ''}`);
+  }
+
+  return (
+    <Menu withinPortal position="bottom-end" width={360} shadow="md">
+      <Menu.Target>
+        <Indicator disabled={unread === 0} label={unread > 9 ? '9+' : unread} size={16} color="red" offset={4}>
+          <ActionIcon variant="subtle" color="gray" size="lg" aria-label={`Notifications${unread ? ` (${unread} unread)` : ''}`}>
+            <IconBell size={20} stroke={1.6} />
+          </ActionIcon>
+        </Indicator>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Group justify="space-between" px="sm" py={6}>
+          <Text size="sm" fw={600}>Notifications</Text>
+          {unread > 0 && (
+            <Anchor component="button" type="button" size="xs" onClick={markAll}>
+              Mark all read
+            </Anchor>
+          )}
+        </Group>
+        <Menu.Divider />
+        {items.length === 0 ? (
+          <Text size="sm" c="dimmed" ta="center" py="md">
+            Nothing yet — new reports, client bookings and scheduling reminders land here.
+          </Text>
+        ) : (
+          <Box mah={380} style={{ overflowY: 'auto' }}>
+            {items.map((n) => {
+              const Icon = NOTIF_ICON[n.kind] ?? IconBell;
+              return (
+                <Menu.Item key={n.id} onClick={() => open(n)} leftSection={<Icon size={16} stroke={1.6} />}>
+                  <Stack gap={2}>
+                    <Text size="sm" fw={n.read ? 400 : 700} lineClamp={2}>{n.title}</Text>
+                    {n.body && <Text size="xs" c="dimmed" lineClamp={2}>{n.body}</Text>}
+                    <Text size="xs" c="dimmed">{new Date(n.at).toLocaleString()}</Text>
+                  </Stack>
+                </Menu.Item>
+              );
+            })}
+          </Box>
+        )}
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
 
 function UserMenu() {
   const [me, setMe] = useState<Me | null>(null);
@@ -92,7 +208,10 @@ export function App() {
               <Text size="xs" c="dimmed" lh={1.2}>Quarterly Business Reviews</Text>
             </Box>
           </Group>
-          <UserMenu />
+          <Group gap="sm">
+            <NotificationBell />
+            <UserMenu />
+          </Group>
         </Group>
       </AppShell.Header>
 

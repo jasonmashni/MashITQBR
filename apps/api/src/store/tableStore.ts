@@ -1,6 +1,6 @@
 import { TableClient, odata, type TableEntity } from '@azure/data-tables';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { AuditEvent, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, OpportunityRecord, QbrRecord } from './types.js';
+import type { AuditEvent, BookingRecord, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, NotificationRecord, OpportunityRecord, QbrRecord } from './types.js';
 
 const TABLES = {
   clients: 'qbrClients',
@@ -14,6 +14,8 @@ const TABLES = {
   documents: 'qbrDocuments',
   opportunities: 'qbrOpportunities',
   audit: 'qbrAudit',
+  bookings: 'qbrBookings',
+  notifications: 'qbrNotifications',
 } as const;
 
 interface Row extends TableEntity {
@@ -203,6 +205,52 @@ export class TableDataStore implements DataStore {
       break; // newest-first keys mean the first page IS the latest N
     }
     return out;
+  }
+
+  // booking links — one fixed partition, token as rowKey (point reads by token)
+  getBooking = (token: string) => this.get<BookingRecord>(TABLES.bookings, 'booking', token);
+  putBooking = (b: BookingRecord) => this.put(TABLES.bookings, 'booking', b.token, b);
+  async findBooking(clientId: string, period: string): Promise<BookingRecord | undefined> {
+    // Booking volume is tiny (one link per client per quarter) — a partition
+    // scan is fine; pick the newest for this client/period.
+    const all = await this.list<BookingRecord>(TABLES.bookings, 'booking');
+    return all
+      .filter((b) => b.clientId === clientId && b.period === period)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  }
+
+  // notifications — same descending-time layout as the audit trail
+  async appendNotification(record: NotificationRecord): Promise<void> {
+    const rowKey = `${String(9999999999999 - Date.parse(record.at)).padStart(13, '0')}-${record.id}`;
+    await this.put(TABLES.notifications, 'notif', rowKey, record);
+  }
+  async listNotifications(limit: number): Promise<NotificationRecord[]> {
+    const table = this.table(TABLES.notifications);
+    await ensureTable(table);
+    const out: NotificationRecord[] = [];
+    const pages = table
+      .listEntities<Row>({ queryOptions: { filter: odata`PartitionKey eq ${'notif'}` } })
+      .byPage({ maxPageSize: limit });
+    for await (const page of pages) {
+      for (const row of page) {
+        const json = joinEntityJson(row as unknown as Record<string, unknown>);
+        if (json) out.push(JSON.parse(json) as NotificationRecord);
+      }
+      break; // newest-first keys mean the first page IS the latest N
+    }
+    return out;
+  }
+  async markNotificationsRead(ids: string[] | 'all'): Promise<void> {
+    const table = this.table(TABLES.notifications);
+    await ensureTable(table);
+    const want = ids === 'all' ? null : new Set(ids);
+    for await (const row of table.listEntities<Row>({ queryOptions: { filter: odata`PartitionKey eq ${'notif'}` } })) {
+      const json = joinEntityJson(row as unknown as Record<string, unknown>);
+      if (!json) continue;
+      const n = JSON.parse(json) as NotificationRecord;
+      if (n.read || (want !== null && !want.has(n.id))) continue;
+      await this.put(TABLES.notifications, 'notif', row.rowKey as string, { ...n, read: true });
+    }
   }
 }
 

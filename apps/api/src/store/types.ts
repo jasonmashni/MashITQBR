@@ -66,6 +66,8 @@ export interface QbrRecord {
   period: string;
   status: QbrStatus;
   meeting?: { scheduledAt?: string; joinUrl?: string; heldAt?: string; attendees?: string[]; eventId?: string };
+  /** When the QBR package (email draft with the PDF) was last generated. */
+  packageSentAt?: string;
   updatedAt: string;
 }
 
@@ -163,6 +165,47 @@ export interface AuditEvent {
 }
 
 /**
+ * One client-facing scheduling link for a QBR. The token is the whole
+ * authorization for the public booking page — unguessable, single-purpose.
+ */
+export interface BookingRecord {
+  /** URL token (also the record id). */
+  token: string;
+  clientId: string;
+  period: string;
+  status: 'open' | 'booked' | 'cancelled';
+  createdAt: string;
+  createdBy: string;
+  /** Set when booked: local wall-clock start/end + the timezone they're in. */
+  start?: string;
+  end?: string;
+  timezone?: string;
+  attendeeName?: string;
+  attendeeEmail?: string;
+  extraAttendees?: string[];
+  notes?: string;
+  /** Graph event id + Teams link when the invite was created automatically. */
+  eventId?: string;
+  joinUrl?: string;
+  bookedAt?: string;
+}
+
+/** An in-portal notification (bell menu): new report, booking, QBR due… */
+export interface NotificationRecord {
+  id: string;
+  at: string;
+  /** e.g. `report`, `booking`, `qbr_due` — drives the icon. */
+  kind: string;
+  title: string;
+  body?: string;
+  clientId?: string;
+  period?: string;
+  read: boolean;
+  /** Optional stable key so recurring checks don't re-notify (kind:client:period). */
+  dedupeKey?: string;
+}
+
+/**
  * Persistence for all app data. Async so a Table Storage implementation fits;
  * the local JSON implementation just resolves immediately.
  */
@@ -216,6 +259,17 @@ export interface DataStore {
   // compliance audit trail
   appendAudit(event: AuditEvent): Promise<void>;
   listAudit(limit: number): Promise<AuditEvent[]>;
+
+  // client-facing booking links
+  getBooking(token: string): Promise<BookingRecord | undefined>;
+  putBooking(record: BookingRecord): Promise<BookingRecord>;
+  /** The newest booking for a client/period (any status), if one exists. */
+  findBooking(clientId: string, period: string): Promise<BookingRecord | undefined>;
+
+  // in-portal notifications (newest first)
+  appendNotification(record: NotificationRecord): Promise<void>;
+  listNotifications(limit: number): Promise<NotificationRecord[]>;
+  markNotificationsRead(ids: string[] | 'all'): Promise<void>;
 }
 
 /** Non-secret view of a connection for API responses. */

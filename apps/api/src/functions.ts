@@ -91,7 +91,7 @@ route('syncQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/sync', (req) => h.
 route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) => h.putStatus(req.params['clientId']!, req.params['period']!, (await body(req))['status']));
 route('putSchedule', 'PUT', 'api/clients/{clientId}/qbr/{period}/schedule', async (req) => h.putSchedule(req.params['clientId']!, req.params['period']!, (await body(req)) as { scheduledAt?: string; joinUrl?: string }));
 route('pushAction', 'POST', 'api/clients/{clientId}/qbr/{period}/actions/push', async (req) => h.pushQbrAction(req.params['clientId']!, req.params['period']!, (await body(req)) as { actionId?: string; target: PushInput['target'] }));
-route('emailDraft', 'GET', 'api/clients/{clientId}/qbr/{period}/email.eml', (req) => h.getEmailDraft(req.params['clientId']!, req.params['period']!, ai(req)));
+route('emailDraft', 'GET', 'api/clients/{clientId}/qbr/{period}/email.eml', (req) => h.getEmailDraft(req.params['clientId']!, req.params['period']!, ai(req), headerGet(req)));
 route('emailQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/email', async (req) => h.emailQbr(req.params['clientId']!, req.params['period']!, (await body(req)) as never, headerGet(req)));
 route('createMeeting', 'POST', 'api/clients/{clientId}/qbr/{period}/meeting', async (req) => h.createMeeting(req.params['clientId']!, req.params['period']!, (await body(req)) as never, headerGet(req)));
 
@@ -108,6 +108,20 @@ route('integrationMappings', 'PUT', 'api/integrations/{id}/mappings', async (req
 
 route('getOrgSettings', 'GET', 'api/settings/org', () => h.getOrgSettings());
 route('putOrgSettings', 'PUT', 'api/settings/org', async (req) => h.putOrgSettings(await body(req)));
+
+// Client self-scheduling. The /book/* and /api/book/* routes are PUBLIC by
+// design (the unguessable token is the authorization) — exclude them from
+// Easy Auth via the portal's "Excluded paths" setting.
+route('bookingState', 'GET', 'api/clients/{clientId}/qbr/{period}/booking', (req) => h.getBookingState(req.params['clientId']!, req.params['period']!));
+route('bookingCreate', 'POST', 'api/clients/{clientId}/qbr/{period}/booking', (req) => h.ensureBookingLink(req.params['clientId']!, req.params['period']!));
+route('bookingPage', 'GET', 'book/{token}', (req) => h.getBookingPage(req.params['token']!));
+route('bookingInfo', 'GET', 'api/book/{token}', (req) => h.publicBookingInfo(req.params['token']!));
+route('bookingSlots', 'GET', 'api/book/{token}/slots', (req) => h.publicBookingSlots(req.params['token']!, req.query.get('from'), req.query.get('to')));
+route('bookingBook', 'POST', 'api/book/{token}', async (req) => h.publicBook(req.params['token']!, await body(req)));
+
+// In-portal notifications (bell menu)
+route('notifications', 'GET', 'api/notifications', (req) => h.getNotifications(req.query.get('limit')));
+route('notificationsRead', 'POST', 'api/notifications/read', async (req) => h.markNotificationsRead(await body(req)));
 
 route('currentPeriod', 'GET', 'api/period/current', () => h.currentPeriod());
 // Observed in the field: functions serving /api/system routes never turn up
@@ -126,10 +140,10 @@ route('pollInbox', 'POST', 'api/inbox/poll', () => h.pollInbox());
 
 // Keeps a worker warm on the Consumption plan (softens cold starts; timers
 // ride the existing AzureWebJobsStorage and run singleton across instances).
-// The same tick drains the shared report mailbox when it's configured.
+// The same tick drains the shared report mailbox and runs QBR-due reminders.
 app.timer('keepWarm', {
   schedule: '0 */5 * * * *',
   handler: async () => {
-    await h.pollInbox().catch(() => undefined);
+    await h.timerTick().catch(() => undefined);
   },
 });

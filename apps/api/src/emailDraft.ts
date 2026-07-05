@@ -70,12 +70,22 @@ export function buildEmailDraft(input: EmailDraftInput): Buffer {
 }
 
 /** The short, human email body — the report does the talking. */
-export function qbrEmailBody(args: { contactName?: string; periodLabel: string; orgName: string; senderName?: string }): string {
+export function qbrEmailBody(args: {
+  contactName?: string;
+  periodLabel: string;
+  orgName: string;
+  senderName?: string;
+  /** Self-scheduling link — included until a meeting is on the calendar. */
+  bookingUrl?: string;
+}): string {
   const first = args.contactName?.split(/\s+/)[0];
   return [
     `Hi${first ? ` ${first}` : ''},`,
     '',
     `Attached is your ${args.periodLabel} business review from ${args.orgName}. We'll walk through it together in our meeting — feel free to reach out with any questions in the meantime.`,
+    ...(args.bookingUrl
+      ? ['', `Pick a time that works for you and a Teams invite will follow automatically: ${args.bookingUrl}`]
+      : []),
     '',
     'Best regards,',
     args.senderName ?? args.orgName,
