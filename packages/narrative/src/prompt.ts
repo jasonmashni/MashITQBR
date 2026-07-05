@@ -2,7 +2,8 @@ import type { NarrativeInput } from './input.js';
 
 /** Build the user message content: the metrics bundle wrapped in <metrics> tags. */
 export function buildUserContent(input: NarrativeInput): string {
-  const json = JSON.stringify(input, null, 2);
+  // Compact JSON — pretty-printing spent ~30% more input tokens per draft.
+  const json = JSON.stringify(input);
   return [
     `<metrics>`,
     json,

@@ -184,6 +184,19 @@ The QBR status advances itself (sync → schedule → approve → disposition �
 never backwards), and every AI narrative is cached per client/quarter — only a
 data change or explicit Regenerate calls Claude again.
 
+### AI cost controls
+
+The tool is deliberately stingy with the Claude API: every generated draft is
+cached (even ones that failed figure verification — the warning shows and
+Regenerate re-drafts), an API failure (rate limit, empty credits) triggers a
+5-minute cooldown instead of retrying on every page view, the metrics bundle
+is sent as compact JSON, and the AI matcher/extractor send at most 6 / 30 PDF
+pages respectively. Two optional app settings tune the cost/quality point of
+the narrative itself: `NARRATIVE_MODEL` (default `claude-opus-4-8` at $5/$25
+per MTok; `claude-sonnet-5` runs ~40% cheaper) and `NARRATIVE_EFFORT`
+(default `high`; `medium` spends fewer reasoning tokens). Changing the model
+regenerates narratives on next view (the model id is part of the cache key).
+
 Persistence is a local JSON store + secret file in dev (`.data/`, gitignored;
 override the dir with `QBR_DATA_DIR`); in Azure it uses **Azure Table Storage**
 (app data, references only) + **Key Vault** (secrets) + **Blob Storage**

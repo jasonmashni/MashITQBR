@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { seedDataSource } from '../src/dataSource.js';
-import { buildQbrReport, renderQbrHtml } from '../src/service.js';
+import { _resetAiFailureCooldown, buildQbrReport, renderQbrHtml } from '../src/service.js';
 
 describe('buildQbrReport (offline narrative, seed data)', () => {
   it('builds a verified report for ANP Q1 2026 with QoQ trends', async () => {
@@ -47,15 +47,35 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     await expect(buildQbrReport(seedDataSource, 'nope', '2026-Q1')).rejects.toThrow(/Unknown client/);
   });
 
-  it('falls back to the offline draft when the AI model fails (rate limit)', async () => {
-    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
-      narrativeModel: async () => {
-        throw new Error('429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your organization\'s rate limit"}}');
-      },
-    });
+  it('falls back to the offline draft when the AI model fails, then cools down', async () => {
+    _resetAiFailureCooldown();
+    let calls = 0;
+    const throwing = async () => {
+      calls++;
+      throw new Error('429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your organization\'s rate limit"}}');
+    };
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', { narrativeModel: throwing });
     // The build still succeeds, prose exists, and the author is told why.
     expect(report.model.executive.paragraphs.length).toBeGreaterThan(0);
     expect(report.warnings.some((w) => /rate-limited/.test(w))).toBe(true);
+    expect(calls).toBe(1);
+
+    // A repeat view within the cooldown must NOT re-bill the API.
+    const again = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', { narrativeModel: throwing });
+    expect(calls).toBe(1);
+    expect(again.warnings.some((w) => /cooling down/.test(w))).toBe(true);
+    _resetAiFailureCooldown();
+  });
+
+  it('explains an empty credit balance in plain words', async () => {
+    _resetAiFailureCooldown();
+    const report = await buildQbrReport(seedDataSource, 'kpca', '2026-Q1', {
+      narrativeModel: async () => {
+        throw new Error('400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}');
+      },
+    });
+    expect(report.warnings.some((w) => /out of API credits/.test(w))).toBe(true);
+    _resetAiFailureCooldown();
   });
 
   it('caches verified AI narratives and skips the model on a repeat build', async () => {
@@ -86,23 +106,31 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     expect(second.model.executive.headline).toBe('Cached headline');
   });
 
-  it('does not cache narratives that fail figure verification', async () => {
+  it('caches unverified narratives too — repeat views must not re-bill', async () => {
+    let calls = 0;
     const backing = new Map<string, never>();
     const cache = {
       get: async (hash: string) => backing.get(hash),
       put: async (hash: string, result: never) => void backing.set(hash, result),
     };
-    await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
-      narrativeModel: async () => ({
+    const model = async () => {
+      calls++;
+      return {
         headline: 'Made up',
         summary_paragraphs: [],
         highlights: [],
         recommendations: [],
         figures_referenced: [{ label: 'phantom', value: '123456' }],
-      }),
-      narrativeCache: cache,
-    });
-    expect(backing.size).toBe(0);
+      };
+    };
+    const first = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', { narrativeModel: model, narrativeCache: cache });
+    expect(first.narrative.verification.ok).toBe(false);
+    expect(backing.size).toBe(1); // pinned despite failing verification
+    // generateNarrative retries the correction once → 2 calls for the draft…
+    const draftCalls = calls;
+    const second = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', { narrativeModel: model, narrativeCache: cache });
+    expect(calls).toBe(draftCalls); // …and the repeat view costs nothing
+    expect(second.warnings.some((w) => /could not be verified/.test(w))).toBe(true);
   });
 
   it('never consults the cache for the offline drafter', async () => {

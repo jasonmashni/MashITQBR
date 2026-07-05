@@ -21,8 +21,16 @@ export interface NarrativeResult {
   attempts: number;
 }
 
-/** Default model id — grounded against the claude-api skill. */
-export const NARRATIVE_MODEL_ID = 'claude-opus-4-8';
+/**
+ * Narrative model id — Opus 4.8 by default (the prose is the product), but
+ * overridable via the NARRATIVE_MODEL app setting (e.g. claude-sonnet-5 at
+ * roughly 60% of the cost). The id is part of the cache key, so switching
+ * regenerates rather than serving prose from another model.
+ */
+export const NARRATIVE_MODEL_ID = process.env['NARRATIVE_MODEL']?.trim() || 'claude-opus-4-8';
+
+/** Reasoning effort for narrative drafts (NARRATIVE_EFFORT: low|medium|high). */
+const NARRATIVE_EFFORT = process.env['NARRATIVE_EFFORT']?.trim() || 'high';
 
 /**
  * Generate a grounded QBR narrative. Calls the model, verifies every cited
@@ -70,7 +78,7 @@ export function createClaudeNarrativeModel(
       system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
       thinking: { type: 'adaptive' },
       output_config: {
-        effort: 'high',
+        effort: NARRATIVE_EFFORT,
         format: { type: 'json_schema', schema: NARRATIVE_JSON_SCHEMA },
       },
       messages: messages.map((m) => ({ role: m.role, content: m.content })),

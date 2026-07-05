@@ -26,6 +26,24 @@ export async function appendPdfAttachments(main: Buffer, attachments: Buffer[]):
   return Buffer.from(await out.save());
 }
 
+/**
+ * First `maxPages` pages of a PDF (input returned unchanged when already
+ * within the cap, or unreadable). The AI matcher/extractor pay input tokens
+ * per page — a 60-page carrier report doesn't need to ride along whole.
+ */
+export async function pdfFirstPages(bytes: Buffer, maxPages: number): Promise<Buffer> {
+  try {
+    const src = await PDFDocument.load(new Uint8Array(bytes), { ignoreEncryption: true });
+    if (src.getPageCount() <= maxPages) return bytes;
+    const out = await PDFDocument.create();
+    const pages = await out.copyPages(src, [...Array(maxPages).keys()]);
+    for (const page of pages) out.addPage(page);
+    return Buffer.from(await out.save());
+  } catch {
+    return bytes;
+  }
+}
+
 /** Load the bytes of every attached PDF document for a client/period. */
 export async function loadPdfAttachments(store: DataStore, docs: DocContentStore, clientId: string, period: string): Promise<Buffer[]> {
   const records = (await store.listDocuments(clientId, period)).filter((d) => /pdf/i.test(d.contentType) || /\.pdf$/i.test(d.name));

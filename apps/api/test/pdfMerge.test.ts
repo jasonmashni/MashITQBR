@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
-import { appendPdfAttachments } from '../src/pdfMerge.js';
+import { appendPdfAttachments, pdfFirstPages } from '../src/pdfMerge.js';
 
 async function makePdf(pages: number): Promise<Buffer> {
   const doc = await PDFDocument.create();
@@ -28,5 +28,19 @@ describe('appendPdfAttachments', () => {
   it('returns the main PDF untouched when there is nothing to append', async () => {
     const main = await makePdf(1);
     expect(await appendPdfAttachments(main, [])).toBe(main);
+  });
+});
+
+describe('pdfFirstPages (AI token cap)', () => {
+  it('slices long PDFs to the cap and passes short ones through untouched', async () => {
+    const long = await makePdf(10);
+    const capped = await pdfFirstPages(long, 6);
+    expect((await PDFDocument.load(capped)).getPageCount()).toBe(6);
+
+    const short = await makePdf(3);
+    expect(await pdfFirstPages(short, 6)).toBe(short); // same buffer, no re-encode
+
+    const garbage = Buffer.from('not a pdf');
+    expect(await pdfFirstPages(garbage, 6)).toBe(garbage); // unreadable → unchanged
   });
 });

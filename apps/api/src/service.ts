@@ -51,6 +51,14 @@ export interface BuildQbrOptions {
   documents?: Array<{ name: string; source: string }>;
 }
 
+/** Per-input AI failure cooldown (module scope — survives across builds). */
+const aiFailureCooldown = new Map<string, number>();
+
+/** Test hook: clear the AI failure cooldown between cases. */
+export function _resetAiFailureCooldown(): void {
+  aiFailureCooldown.clear();
+}
+
 export interface QbrReport {
   clientId: string;
   period: string;
@@ -99,6 +107,11 @@ export async function buildQbrReport(
     },
   });
 
+  // After an AI failure (rate limit, empty credits, outage), don't retry on
+  // every page view — the Workspace rebuilds the report each visit, and each
+  // retry costs real money. One attempt per cooldown window per input.
+  const AI_RETRY_COOLDOWN_MS = 5 * 60_000;
+
   const offlineDraft = (): NarrativeResult => {
     const output = draftOfflineNarrative(input);
     const verification = verifyFigures(output.figures_referenced, buildAllowedNumbers(input));
@@ -120,20 +133,30 @@ export async function buildQbrReport(
     const cached = await opts.narrativeCache?.get(hash).catch(() => undefined);
     if (cached) {
       narrative = cached;
+    } else if ((aiFailureCooldown.get(hash) ?? 0) > Date.now()) {
+      // A recent attempt failed — serve the offline draft without re-billing.
+      aiFailure = 'The AI narrative failed a few minutes ago and is cooling down — this build used the offline draft. Regenerate to try again now.';
+      narrative = offlineDraft();
     } else {
       try {
-        narrative = await generateNarrative(input, opts.narrativeModel);
-        // Only pin verified narratives — a failed one should retry next build.
-        if (narrative.verification.ok) {
-          await opts.narrativeCache?.put(hash, narrative).catch(() => undefined);
-        }
+        // One correction retry (2 calls max) — a second rarely fixes what the
+        // first correction couldn't, and each retry is a full model call.
+        narrative = await generateNarrative(input, opts.narrativeModel, { maxRetries: 1 });
+        // Cache EVERY generated draft, verified or not. An unverified draft
+        // carries its warning and Regenerate clears it — but re-drafting on
+        // every page view multiplied API spend for no benefit.
+        await opts.narrativeCache?.put(hash, narrative).catch(() => undefined);
       } catch (e) {
-        // An AI outage or rate limit must never fail the report — fall back to
-        // the deterministic offline draft and tell the author why.
+        // An AI outage, rate limit, or empty credit balance must never fail
+        // the report — fall back to the offline draft and say why.
         const msg = e instanceof Error ? e.message : 'error';
-        aiFailure = /rate_limit|429/i.test(msg)
-          ? 'The Claude API is rate-limited right now, so this build used the offline draft. Try Regenerate in a minute or two — or raise the limit at console.anthropic.com/settings/limits.'
-          : `The AI narrative failed (${msg.slice(0, 160)}) — this build used the offline draft. Try Regenerate.`;
+        aiFailure = /credit balance/i.test(msg)
+          ? 'Your Anthropic account is out of API credits, so this build used the offline draft. Add credits (or turn on auto-reload) at console.anthropic.com/settings/billing, then Regenerate.'
+          : /rate_limit|429/i.test(msg)
+            ? 'The Claude API is rate-limited right now, so this build used the offline draft. Try Regenerate in a minute or two — or raise the limit at console.anthropic.com/settings/limits.'
+            : `The AI narrative failed (${msg.slice(0, 160)}) — this build used the offline draft. Try Regenerate.`;
+        aiFailureCooldown.set(hash, Date.now() + AI_RETRY_COOLDOWN_MS);
+        if (aiFailureCooldown.size > 500) aiFailureCooldown.clear();
         narrative = offlineDraft();
       }
     }

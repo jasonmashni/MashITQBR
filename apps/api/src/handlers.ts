@@ -42,7 +42,7 @@ import { directHaloConn, importHaloClients, listOrgs, syncClientMetrics, testCon
 import { pushAction, type PushInput } from './actions.js';
 import { buildEmailDraft, qbrEmailBody } from './emailDraft.js';
 import { clientInboxAddress, inboxConfigFromEnv, pollReportInbox } from './reportInbox.js';
-import { appendPdfAttachments, loadPdfAttachments } from './pdfMerge.js';
+import { appendPdfAttachments, loadPdfAttachments, pdfFirstPages } from './pdfMerge.js';
 import { createClaudeDocMatcher, type DocMatchModel } from './docMatch.js';
 import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
@@ -494,8 +494,11 @@ export async function matchQbrDocument(
 
   const model = matcher ?? createClaudeDocMatcher();
   try {
+    // Identification (vendor/period/title) lives in the first pages — capping
+    // what we send cuts the per-document token cost sharply on long reports.
+    const capped = await pdfFirstPages(bytes, 6);
     const suggestion = await model({
-      pdfBase64: bytes.toString('base64'),
+      pdfBase64: capped.toString('base64'),
       clientName: client?.name ?? clientId,
       currentName: record.name,
       currentPeriod: record.period,
@@ -544,8 +547,11 @@ export async function extractQbrDocument(
 
   const model = extractor ?? createClaudeDocExtractor();
   try {
+    // 30 pages covers every vendor report we've seen (Check Point checkups
+    // run ~11) while keeping token spend bounded on oversized uploads.
+    const capped = await pdfFirstPages(bytes, 30);
     const extraction = await model({
-      pdfBase64: bytes.toString('base64'),
+      pdfBase64: capped.toString('base64'),
       clientName: client?.name ?? clientId,
       period: record.period,
       knownKeys: [...knownKeys.entries()].map(([key, label]) => ({ key, label })),
