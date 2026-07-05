@@ -99,6 +99,13 @@ function renderScorecard(m: ReportModel): string {
     <span class="chip ${ratingClass(s.overall.rating)}">${overall} / 100 · ${s.overall.rating}</span>
     <span class="meta">(${formatPercent(s.overall.coverage * 100)} of controls measured)</span></p>
   <div class="scorecard">${s.functions.map(fnCard).join('')}</div>
+  <p class="meta">How to read this: we check the safeguards protecting your business (MFA, endpoint protection, patching, backups…) against
+  CIS Controls v8 — an industry checklist of security best practices — and group the results under the six NIST Cybersecurity Framework
+  functions so you can see where defenses are strong and where to invest. It is a posture guide, not a compliance certification.${
+    m.client.complianceStandard
+      ? ` Because ${esc(m.client.name)} answers to ${esc(m.client.complianceStandard)}, findings are weighed with ${esc(m.client.complianceStandard)} expectations in mind.`
+      : ''
+  }</p>
   ${s.remediations.length ? `<h2>Priority Remediations</h2><ul>${s.remediations.map(remediation).join('')}</ul>` : ''}
 </section>`;
 }

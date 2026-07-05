@@ -69,28 +69,30 @@ export function Audit() {
         ) : filtered.length === 0 ? (
           <Text c="dimmed" size="sm">No audit entries{query || action ? ' match the filter' : ' yet — actions will appear here as you work'}.</Text>
         ) : (
-          <Table highlightOnHover verticalSpacing="xs">
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>When</Table.Th>
-                <Table.Th>Actor</Table.Th>
-                <Table.Th>Action</Table.Th>
-                <Table.Th>Target</Table.Th>
-                <Table.Th>Detail</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {filtered.map((e) => (
-                <Table.Tr key={e.id + e.at}>
-                  <Table.Td><Text size="sm" style={{ whiteSpace: 'nowrap' }}>{new Date(e.at).toLocaleString()}</Text></Table.Td>
-                  <Table.Td><Text size="sm">{e.actor}</Text></Table.Td>
-                  <Table.Td><Badge size="sm" variant="light" color={ACTION_COLOR[e.action] ?? 'gray'}>{e.action}</Badge></Table.Td>
-                  <Table.Td><Text size="sm" ff="monospace">{e.target}</Text></Table.Td>
-                  <Table.Td><Text size="sm" c="dimmed" lineClamp={1}>{e.detail ?? ''}</Text></Table.Td>
+          <Table.ScrollContainer minWidth={760}>
+            <Table highlightOnHover verticalSpacing="xs">
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>When</Table.Th>
+                  <Table.Th>Actor</Table.Th>
+                  <Table.Th>Action</Table.Th>
+                  <Table.Th>Target</Table.Th>
+                  <Table.Th>Detail</Table.Th>
                 </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+              </Table.Thead>
+              <Table.Tbody>
+                {filtered.map((e) => (
+                  <Table.Tr key={e.id + e.at}>
+                    <Table.Td><Text size="sm" style={{ whiteSpace: 'nowrap' }}>{new Date(e.at).toLocaleString()}</Text></Table.Td>
+                    <Table.Td><Text size="sm">{e.actor}</Text></Table.Td>
+                    <Table.Td><Badge size="sm" variant="light" color={ACTION_COLOR[e.action] ?? 'gray'}>{e.action}</Badge></Table.Td>
+                    <Table.Td><Text size="sm" ff="monospace">{e.target}</Text></Table.Td>
+                    <Table.Td><Text size="sm" c="dimmed" lineClamp={1}>{e.detail ?? ''}</Text></Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
         )}
       </Card>
     </Stack>

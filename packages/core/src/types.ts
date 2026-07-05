@@ -216,6 +216,12 @@ export interface ReportConfig {
   excludedMetrics?: string[];
   customSections?: CustomSection[];
   brand?: Brand;
+  /** Narrative direction: what this QBR should emphasize (drives the AI). */
+  narrativeFocus?: string;
+  /** Free-form standing guidance for the AI narrative. */
+  narrativeGuidance?: string;
+  /** Per-section guidance/comments, keyed by MetricCategory. */
+  sectionGuidance?: Partial<Record<MetricCategory, string>>;
 }
 
 /** One captured discussion point from the QBR review (question/decision + response). */
@@ -253,6 +259,8 @@ export interface Client {
   /** Sector hint, used for benchmarking and HIPAA handling. */
   industry?: string;
   hipaa?: boolean;
+  /** Compliance framework this client answers to (HIPAA, TISAX, SOC 2…). */
+  complianceStandard?: string;
   /** Whether this client gets QBRs (undefined = true; Halo imports default false). */
   qbrEnabled?: boolean;
   /** Map of integration -> per-client external identifier (e.g. Halo client id). */

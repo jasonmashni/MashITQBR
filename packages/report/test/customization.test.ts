@@ -27,11 +27,18 @@ const model = buildReportModel({
 });
 
 describe('resolveBrand', () => {
-  it('merges a partial brand over Mash IT defaults', () => {
+  it('takes only name + logo from a per-client brand — colors stay on theme', () => {
     const b = resolveBrand({ name: 'Acme MSP', primary: '#123456' });
     expect(b.name).toBe('Acme MSP');
+    // Stale per-client colors (from the old Studio pickers) must NOT override
+    // the house theme — deliverables always wear the Settings brand.
+    expect(b.primary).toBe(MASH_IT_BRAND.primary);
+    expect(b.accent).toBe(MASH_IT_BRAND.accent);
+  });
+  it('org settings colors do apply', () => {
+    const b = resolveBrand({ name: 'Acme MSP' }, { primary: '#123456' });
     expect(b.primary).toBe('#123456');
-    expect(b.accent).toBe(MASH_IT_BRAND.accent); // unset falls back
+    expect(b.name).toBe('Acme MSP');
   });
   it('returns defaults when no brand supplied', () => {
     expect(resolveBrand()).toEqual(MASH_IT_BRAND);
@@ -52,10 +59,11 @@ describe('buildReportModel customization', () => {
 describe('renderReportHtml customization', () => {
   const html = renderReportHtml(model);
 
-  it('embeds the logo and applies brand color + name', () => {
+  it('embeds the logo and name but keeps the house colors', () => {
     expect(html).toContain('<img class="logo" src="data:image/png;base64,AAAA"');
     expect(html).toContain('Acme MSP');
-    expect(html).toContain('--primary:#123456');
+    expect(html).toContain(`--primary:${MASH_IT_BRAND.primary}`);
+    expect(html).not.toContain('#123456');
   });
 
   it('renders the custom section and omits the hidden spend section', () => {

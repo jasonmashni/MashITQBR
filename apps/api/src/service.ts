@@ -86,7 +86,18 @@ export async function buildQbrReport(
   const current = filter(currentRaw);
   const previous = previousRaw ? filter(previousRaw) : undefined;
 
-  const input = buildNarrativeInput({ client, current, previous });
+  const input = buildNarrativeInput({
+    client,
+    current,
+    previous,
+    // Author steering (focus / guidance / per-section comments). Because the
+    // input feeds the cache key, changing direction regenerates the prose.
+    direction: {
+      focus: opts.config?.narrativeFocus,
+      guidance: opts.config?.narrativeGuidance,
+      sectionGuidance: opts.config?.sectionGuidance as Record<string, string> | undefined,
+    },
+  });
 
   let narrative: NarrativeResult;
   if (opts.narrativeModel) {

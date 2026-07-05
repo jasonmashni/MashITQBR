@@ -61,7 +61,10 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
   vulnerabilities, security incidents, maturity drops, spend spikes). Rows
   click straight into the workspace; report/PDF are one click from here.
 - **Clients** — all clients with a **QBR toggle** (you don't review everyone —
-  imports from Halo arrive with QBR off; enable just the ones you do).
+  imports from Halo arrive with QBR off; enable just the ones you do). Each
+  client can carry a **compliance standard** (HIPAA, TISAX, SOC 2…) — the AI
+  narrative and the scorecard framing reflect it with a light touch (compliance
+  *intent*, never an audit report).
 - **Integrations** — every tool connects **directly with its own API
   credentials**: HaloPSA (Client ID/Secret — tickets with real date windows
   and a **ticket-type allowlist** so only the categories you report on count,
@@ -72,12 +75,15 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
   from the install history, org-scoped backup), Hudu (API key — assets +
   warranty/domain/SSL expirations), Huntress (API key/secret — quarterly
   summary + MFA), **CIPP** (the CIPP-API app registration — per-tenant M365
-  posture: MFA registration coverage, user counts, Conditional Access,
+  posture: MFA coverage **scoped to licensed users on the primary domain**
+  the same way Huntress is, user counts, Conditional Access,
   license waste), **Google Workspace** (service account with domain-wide
   delegation — users + 2-Step Verification coverage; each connection is
   dedicated to one QBR client), Check Point (Infinity Portal Client ID +
   Access Key — keys are per-tenant, so dedicate the connection to that
-  client), Dropsuite (reseller token), Printix (tenant + API client),
+  client), Dropsuite (reseller token — mailbox backup health plus **protected
+  data volume, emails protected, stale-backup detection, seats, OneDrive and
+  SharePoint coverage, connection failures**), Printix (tenant + API client),
   ConnectSecure (pod + Client ID/Secret), and Zomentum. Each connection has
   **Test** and **Map clients** (pick who's who from the orgs found in the
   tool) — and **Halo mappings accept multiple entities per client** (service
@@ -94,7 +100,13 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
   - *Overview* — what the client will see: executive summary with the **Edit
     narrative** editor (save wording instantly with no AI call; **Regenerate**
     re-drafts; **Approve** advances the workflow), maturity ring + radar, QoQ
-    chart, recommendations, attached reports.
+    chart, recommendations, attached reports. The editor also carries the
+    **AI direction** controls: pick a **QBR focus** (business security,
+    continuity, cost optimization…), add standing guidance ("backup counts
+    changed because we re-tuned monitoring — not a trend"), and comment on any
+    **section summary** with a small edit button — regenerate re-drafts with
+    your feedback included. Direction is remembered per client and feeds every
+    future quarter's draft.
   - *Data* — everything Sync pulled, grouped by source, **reviewed before it
     enters the QBR**: untick metrics to exclude them everywhere, add **manual
     metrics** for the API gaps (Synology, SAT), and manage **attached
@@ -111,8 +123,17 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
     set the summary, details, **ticket type, agent, team and priority**
     (lookup lists come live from Halo); Halo/Zomentum opportunities push
     one-click.
+  - *Reports* — the client's report repository across all quarters: rename,
+    categorize, move between quarters — or hit **AI match** and Claude reads
+    each PDF (native PDF input) and suggests the vendor, a clean name, the
+    quarter its *content* covers, and a category, with a one-click **Match**
+    button to accept. Handles the pile the report inbox accumulates.
+  - *Opportunities* — the cross-quarter initiative board (idea → discussing →
+    approved → pushed → closed) with drag-and-drop and push-to-Halo.
   - *Studio* — per-client branding overrides (client logo shows alongside the
-    Mash IT logo), section show/hide, custom sections.
+    Mash IT logo), section show/hide, custom sections. Deliverables always
+    wear the Mash IT theme from Settings — per-client config contributes only
+    the display name and logo.
 
 **Email draft** deserves a note: it downloads a ready-to-send `.eml` that
 opens in Outlook desktop as an **unsent draft** — recipient prefilled from the

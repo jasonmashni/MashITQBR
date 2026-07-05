@@ -89,19 +89,48 @@ const asNum = (v: unknown): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-/** MFA registration coverage over enabled users (CIPP ListMFAUsers rows). */
+const upnOf = (r: Json) => String(r['UPN'] ?? r['userPrincipalName'] ?? r['upn'] ?? '');
+
+/**
+ * Scope MFA rows the way the Huntress collector scopes identities: enabled
+ * accounts, licensed when the report carries a license flag, and the tenant's
+ * dominant UPN domain. Raw tenant lists carry guests, externals, and service
+ * accounts that make the executive MFA % misleading.
+ */
+export function scopeCippMfaRows(rows: Json[]): Json[] {
+  let active = rows.filter((r) => r['AccountEnabled'] !== false && r['AccountEnabled'] !== 'false');
+  const licenseOf = (r: Json) => r['IsLicensed'] ?? r['isLicensed'] ?? r['Licensed'];
+  if (active.some((r) => licenseOf(r) !== undefined)) active = active.filter((r) => truthy(licenseOf(r)));
+  const counts = new Map<string, number>();
+  for (const r of active) {
+    const domain = upnOf(r).split('@')[1]?.toLowerCase();
+    if (domain) counts.set(domain, (counts.get(domain) ?? 0) + 1);
+  }
+  const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  return dominant ? active.filter((r) => upnOf(r).toLowerCase().endsWith(`@${dominant}`)) : active;
+}
+
+/** MFA registration coverage over scoped users (CIPP ListMFAUsers rows). */
 export function normalizeCippMfa(rows: Json[]): MetricValue[] {
-  const enabled = rows.filter((r) => r['AccountEnabled'] !== false && r['AccountEnabled'] !== 'false');
-  if (enabled.length === 0) return [];
-  const registered = enabled.filter((r) => truthy(r['MFARegistration'] ?? r['mfaRegistered'])).length;
+  const scoped = scopeCippMfaRows(rows);
+  if (scoped.length === 0) return [];
+  const isRegistered = (r: Json) => truthy(r['MFARegistration'] ?? r['mfaRegistered']);
+  const registered = scoped.filter(isRegistered).length;
+  const details = scoped
+    .slice(0, 100)
+    .map((r) => ({ identity: upnOf(r), mfa: isRegistered(r) ? 'yes' : 'NO' }))
+    .sort((a, b) => a.mfa.localeCompare(b.mfa)); // the gaps float to the top
   return [
-    metric('identity.mfa_coverage_pct', 'MFA registration coverage', Math.round((1000 * registered) / enabled.length) / 10, {
-      category: 'identity',
-      source: 'cipp',
-      unit: '%',
-      higherIsBetter: true,
-    }),
-    metric('identity.users_without_mfa', 'Users without MFA', enabled.length - registered, {
+    {
+      ...metric('identity.mfa_coverage_pct', 'MFA coverage (licensed users)', Math.round((1000 * registered) / scoped.length) / 10, {
+        category: 'identity',
+        source: 'cipp',
+        unit: '%',
+        higherIsBetter: true,
+      }),
+      details,
+    },
+    metric('identity.users_without_mfa', 'Licensed users without MFA', scoped.length - registered, {
       category: 'identity',
       source: 'cipp',
       unit: 'count',
@@ -192,7 +221,16 @@ export async function collectCipp(ctx: CollectorContext, http: HttpTransport, cf
     }
   };
 
-  await pull('ListMFAUsers', (j) => normalizeCippMfa(toArray<Json>(j, ['Results'])));
+  try {
+    const rows = toArray<Json>(await cippGet(http, cfg, 'ListMFAUsers', { tenantFilter }), ['Results']);
+    const scoped = scopeCippMfaRows(rows);
+    metrics.push(...normalizeCippMfa(rows));
+    if (scoped.length > 0 && scoped.length < rows.length) {
+      warnings.push(`MFA coverage scoped to ${scoped.length} licensed primary-domain users (of ${rows.length} identities in the tenant).`);
+    }
+  } catch (e) {
+    warnings.push(`CIPP ListMFAUsers failed: ${e instanceof Error ? e.message : 'error'}`);
+  }
   await pull('ListUserCounts', normalizeCippUserCounts);
   await pull('ListDevices', (j) => normalizeCippDevices(toArray<Json>(j, ['Results'])));
   await pull('ListConditionalAccessPolicies', (j) => normalizeCippCa(toArray<Json>(j, ['Results'])));

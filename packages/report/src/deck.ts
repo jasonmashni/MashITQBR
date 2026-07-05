@@ -282,10 +282,24 @@ function dispositionLabel(d: DiscussionItem): string {
   return d.status === 'discussed' ? 'Discussed' : 'Planned';
 }
 
+// Telemetry-volume metrics (SIEM events, log counts) dwarf everything else on
+// a shared axis and aren't executive QoQ material anyway.
+const QOQ_EXCLUDE = /siem|logs|events|signals/i;
+const QOQ_MAX_MAGNITUDE = 100_000;
+
 /** The most meaningful QoQ movers: numeric both quarters, biggest % change first. */
-function pickMovers(trends: MetricTrend[], max = 6): MetricTrend[] {
+export function pickMovers(trends: MetricTrend[], max = 6): MetricTrend[] {
   return trends
-    .filter((t) => t.current !== null && t.previous !== null && t.deltaPct !== null && t.previous !== 0)
+    .filter(
+      (t) =>
+        t.current !== null &&
+        t.previous !== null &&
+        t.deltaPct !== null &&
+        t.previous !== 0 &&
+        !QOQ_EXCLUDE.test(t.key) &&
+        Math.abs(t.current) < QOQ_MAX_MAGNITUDE &&
+        Math.abs(t.previous) < QOQ_MAX_MAGNITUDE,
+    )
     .sort((a, b) => Math.abs(b.deltaPct ?? 0) - Math.abs(a.deltaPct ?? 0))
     .slice(0, max);
 }

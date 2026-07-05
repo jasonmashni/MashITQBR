@@ -9,6 +9,8 @@ export interface Client {
   primaryContact?: { name: string; email?: string; role?: string };
   industry?: string;
   hipaa?: boolean;
+  /** Compliance framework this client answers to (HIPAA, TISAX, SOC 2…). */
+  complianceStandard?: string;
   /** Whether this client gets QBRs (undefined = true). */
   qbrEnabled?: boolean;
   integrationRefs?: Record<string, string>;
@@ -109,6 +111,8 @@ export interface ReportModel {
     functions: FunctionScore[];
   };
   trends: MetricTrend[];
+  /** Metric sections with their one-line executive summaries. */
+  sections?: Array<{ category: string; title: string; summary?: string }>;
   recommendations: string[];
 }
 
@@ -143,6 +147,12 @@ export interface ReportConfig {
   hiddenSections?: string[];
   customSections?: CustomSection[];
   brand?: Brand;
+  /** Theme the AI narrative should emphasize (business security, continuity…). */
+  narrativeFocus?: string;
+  /** Standing author instruction applied to every narrative draft. */
+  narrativeGuidance?: string;
+  /** Per-section comments applied to that section's summary on regenerate. */
+  sectionGuidance?: Record<string, string>;
 }
 
 export interface DiscussionItem {
@@ -179,6 +189,17 @@ export interface DocumentInfo {
   size: number;
   uploadedAt: string;
   uploadedBy: string;
+}
+
+/** AI suggestion for where a filed document belongs (Reports tab matcher). */
+export interface DocMatchSuggestion {
+  vendor: string;
+  suggestedName: string;
+  suggestedPeriod: string;
+  suggestedCategory: string;
+  clientMatch: 'yes' | 'no' | 'unsure';
+  confidence: 'high' | 'medium' | 'low';
+  rationale: string;
 }
 
 /** Halo lookup lists for the push-ticket modal. */

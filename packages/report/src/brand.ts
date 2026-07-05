@@ -62,13 +62,12 @@ export function resolveBrand(brand?: Brand, orgBrand?: Brand): BrandTokens {
     font: orgBrand?.font ?? MASH_IT_BRAND.font,
   };
   if (!brand) return org;
+  // Deliverables ALWAYS wear the Mash IT theme (colors/fonts from Settings) —
+  // per-client config contributes only a display name and the client's logo.
+  // (Stale per-client colors from an older Studio version must not override.)
   return {
     ...org,
     name: brand.name ?? org.name,
     logoDataUri: brand.logoDataUri,
-    primary: brand.primary ?? org.primary,
-    accent: brand.accent ?? org.accent,
-    ink: brand.ink ?? org.ink,
-    font: brand.font ?? org.font,
   };
 }

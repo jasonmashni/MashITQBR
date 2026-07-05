@@ -19,6 +19,7 @@ import {
   ActionIcon,
   Tooltip,
   SegmentedControl,
+  Autocomplete,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
@@ -85,7 +86,13 @@ export function Clients() {
     // Drop empty ref values.
     const refs = Object.fromEntries(Object.entries(draft.integrationRefs ?? {}).filter(([, v]) => v && v.trim()));
     try {
-      await api.updateClient(id, { name: draft.name, industry: draft.industry, hipaa: draft.hipaa, integrationRefs: refs });
+      await api.updateClient(id, {
+        name: draft.name,
+        industry: draft.industry,
+        hipaa: draft.hipaa,
+        complianceStandard: draft.complianceStandard?.trim() || undefined,
+        integrationRefs: refs,
+      });
       notifications.show({ color: 'teal', message: `Saved ${draft.name}.` });
       close();
       await load();
@@ -144,6 +151,9 @@ export function Clients() {
                     <Group gap={6}>
                       <Anchor component={Link} to={`/clients/${c.id}`} fw={600}>{c.name}</Anchor>
                       {c.hipaa && <Badge size="xs" color="grape" variant="light">HIPAA</Badge>}
+                      {c.complianceStandard && c.complianceStandard.toUpperCase() !== 'HIPAA' && (
+                        <Badge size="xs" color="navy" variant="light">{c.complianceStandard}</Badge>
+                      )}
                     </Group>
                   </Table.Td>
                   <Table.Td>
@@ -199,6 +209,14 @@ export function Clients() {
             <TextInput label="Name" required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.currentTarget.value })} />
             {isNew && <Text size="xs" c="dimmed">Client id will be <b>{slug(draft.name || 'client')}</b>.</Text>}
             <TextInput label="Industry" value={draft.industry ?? ''} onChange={(e) => setDraft({ ...draft, industry: e.currentTarget.value })} />
+            <Autocomplete
+              label="Compliance standard"
+              description="The framework this client answers to — the QBR narrative and scorecard framing reflect it with a light touch."
+              placeholder="e.g. HIPAA, TISAX, SOC 2, CMMC, PCI DSS"
+              data={['HIPAA', 'TISAX', 'SOC 2', 'CMMC', 'PCI DSS', 'NIST 800-171', 'ISO 27001', 'FTC Safeguards']}
+              value={draft.complianceStandard ?? ''}
+              onChange={(v) => setDraft({ ...draft, complianceStandard: v })}
+            />
             <Switch label="HIPAA client (ePHI handling)" checked={!!draft.hipaa} onChange={(e) => setDraft({ ...draft, hipaa: e.currentTarget.checked })} />
             <Fieldset legend="Tool mappings (per-client external ids)">
               <Stack gap="xs">

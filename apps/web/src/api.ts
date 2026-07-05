@@ -5,6 +5,7 @@ import type {
   Client,
   ConnectionView,
   Discussion,
+  DocMatchSuggestion,
   DocumentInfo,
   HaloMeta,
   Me,
@@ -140,6 +141,11 @@ export const api = {
   listClientDocuments: (clientId: string) => send('GET', `/api/clients/${clientId}/documents`).then(json<{ documents: DocumentInfo[] }>),
   updateDocument: (clientId: string, period: string, id: string, body: { name?: string; category?: string; period?: string }) =>
     send('PATCH', `/api/clients/${clientId}/qbr/${period}/documents/${id}`, body).then(json<{ document: DocumentInfo }>),
+  /** Ask the AI to read a filed PDF and suggest vendor/name/quarter/category. */
+  matchDocument: (clientId: string, period: string, id: string) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/documents/${id}/match`).then(
+      json<{ suggestion: DocMatchSuggestion; document: DocumentInfo }>,
+    ),
 
   // Opportunity board
   listOpportunities: (clientId: string) => send('GET', `/api/clients/${clientId}/opportunities`).then(json<{ opportunities: Opportunity[] }>),

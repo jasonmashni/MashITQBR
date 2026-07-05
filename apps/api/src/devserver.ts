@@ -69,6 +69,7 @@ const routes: Route[] = [
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)$/, run: (m) => h.downloadQbrDocument(m[1]!, m[2]!, m[3]!) },
   { method: 'PATCH', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)$/, run: (m, b) => h.updateQbrDocument(m[1]!, m[2]!, m[3]!, b) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/documents$/, run: (m) => h.listClientDocuments(m[1]!) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)\/match$/, run: (m) => h.matchQbrDocument(m[1]!, m[2]!, m[3]!) },
   { method: 'DELETE', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)$/, run: (m) => h.deleteQbrDocument(m[1]!, m[2]!, m[3]!) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m) => h.getDiscussion(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m, b) => h.putDiscussion(m[1]!, m[2]!, b) },

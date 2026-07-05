@@ -339,6 +339,36 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
     columnGap: 18,
     margin: [0, 4, 0, 14],
   });
+  // Plain-English explainer so a non-technical reader knows what the score is
+  // (and is not) — clients kept asking what "NIST" meant.
+  content.push({
+    table: {
+      widths: ['*'],
+      body: [
+        [
+          {
+            stack: [
+              { text: 'How to read this score', bold: true, fontSize: 9.5, color: brand.primary, margin: [0, 0, 0, 3] },
+              {
+                text:
+                  'We check the safeguards protecting your business — multi-factor authentication, endpoint protection, patching, backups, and more — against CIS Controls v8, a widely used industry checklist of security best practices. The results are grouped under the six functions of the NIST Cybersecurity Framework (Govern, Identify, Protect, Detect, Respond, Recover) so you can see at a glance where your defenses are strong and where we recommend investment. The score reflects what our connected tools can measure this quarter — it is a posture guide, not a compliance certification.' +
+                  (m.client.complianceStandard
+                    ? ` Because ${m.client.name} answers to ${m.client.complianceStandard}, we weigh these findings with ${m.client.complianceStandard} expectations in mind throughout this review.`
+                    : ''),
+                fontSize: 8.5,
+                color: GRAY,
+                lineHeight: 1.25,
+              },
+            ],
+            fillColor: '#f4f6f8',
+            margin: [10, 8, 10, 8],
+          },
+        ],
+      ],
+    },
+    layout: 'noBorders',
+    margin: [0, 0, 0, 14],
+  });
   if (s.remediations.length) {
     content.push({ text: 'Priority remediations', style: 'h2', color: brand.primary });
     content.push({

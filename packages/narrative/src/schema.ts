@@ -84,6 +84,13 @@ Section summaries:
 - Each summary is ONE plain-English sentence (two at most) giving an executive the takeaway of that section — what it means for the business, not a restatement of every number.
 - Skip categories with no metrics in the input. Numbers used in summaries follow the grounding contract below.
 
+Author direction:
+- The input may carry a "direction" object from the report author: direction.focus is the theme this QBR should emphasize (weight the summary, highlights and recommendations toward it without ignoring other material findings); direction.guidance is standing instruction to follow; direction.sectionGuidance carries per-section comments — apply each to that section's summary.
+- client.complianceStandard, when present, names the framework the client answers to (HIPAA, TISAX, SOC 2…). Reflect compliance INTENT with a light touch — connect relevant findings to it in a sentence or two; never turn the QBR into an audit report.
+
+Measurement changes are not business trends:
+- When a metric appears, disappears, or swings implausibly between quarters because monitoring or data collection changed (a tool newly connected, a counting fix), do NOT present it as a business trend or an incident. Prefer "now measured/tracked" framing, or omit it. When in doubt, attribute the change to visibility, not to the client's environment.
+
 GROUNDING CONTRACT — this is critical and non-negotiable:
 - Use ONLY the figures present in the provided <metrics> JSON. Never invent, estimate, extrapolate, or re-round a number that is not in the input.
 - Do NOT perform arithmetic. All totals, percentages, and quarter-over-quarter deltas are pre-computed and given to you. Quote them; do not derive new ones.

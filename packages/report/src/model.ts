@@ -31,7 +31,7 @@ export interface ReportSection {
 }
 
 export interface ReportModel {
-  client: { name: string; primaryContact?: string; industry?: string; hipaa?: boolean };
+  client: { name: string; primaryContact?: string; industry?: string; hipaa?: boolean; complianceStandard?: string };
   period: { id: string; label: string };
   previousPeriod?: { id: string; label: string };
   /** Caller-supplied display date (kept out of the builder to stay deterministic). */
@@ -111,6 +111,7 @@ export function buildReportModel(args: {
       primaryContact: client.primaryContact?.name,
       industry: client.industry,
       hipaa: client.hipaa,
+      complianceStandard: client.complianceStandard,
     },
     period: { id: period.id, label: period.label },
     previousPeriod: previous ? { id: parsePeriod(previous.period).id, label: parsePeriod(previous.period).label } : undefined,

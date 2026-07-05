@@ -243,6 +243,42 @@ describe('Dropsuite (sub-reseller API)', () => {
     expect(by['backup.protected_accounts']).toBe(1);
     expect(requests.some((r) => r.url.endsWith('/accounts'))).toBe(true);
   });
+
+  it('adds storage, message counts, staleness, and seats from the account rows', () => {
+    const now = Date.parse('2026-07-01T00:00:00Z');
+    const metrics = normalizeDropsuiteAccounts(
+      [
+        { email: 'a@mp.com', errors: {}, last_backup: '2026-06-30T12:00:00Z', storage: 2 * 1024 ** 3, msg_count: 1000, user: { seats_used: 12 } },
+        { email: 'b@mp.com', errors: {}, last_backup: '2026-05-01T12:00:00Z', storage: 1024 ** 3, msg_count: 500 },
+      ],
+      now,
+    );
+    const by = Object.fromEntries(metrics.map((m) => [m.key, m.value]));
+    expect(by['backup.email_data_gb']).toBe(3);
+    expect(by['backup.emails_protected']).toBe(1500);
+    expect(by['backup.stale_mailboxes']).toBe(1); // b@ last backed up 2 months ago
+    expect(by['backup.seats_used']).toBe(12);
+  });
+
+  it('collects OneDrive/SharePoint coverage and connection failures', async () => {
+    const { http } = fakeHttp((req) => {
+      if (req.url.endsWith('/users')) return { status: 200, json: [{ id: 29, authentication_token: 'ut' }] };
+      if (req.url.includes('/accounts/connection_failures')) return { status: 200, json: { result_set: [{ email: 'x@mp.com' }] } };
+      if (req.url.includes('/accounts')) return { status: 200, json: [{ email: 'a@mp.com', errors: {} }] };
+      if (req.url.includes('/onedrives')) return { status: 200, json: [{ email: 'a@mp.com', storage: 1024 ** 3, file_count: 10 }] };
+      if (req.url.includes('/sharepoints/domains')) return { status: 200, json: [{ domain_name: 'mp.com', site_count: 4, storage: 2 * 1024 ** 3 }] };
+      return { status: 404, json: {} };
+    });
+    const out = await collectDropsuite({ clientId: 'mp', period: P, externalRef: '29' }, http, { resellerToken: 'rt', accessToken: 'at' });
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['backup.connection_failures']).toBe(1);
+    expect(by['backup.onedrive_accounts']).toBe(1);
+    expect(by['backup.onedrive_data_gb']).toBe(1);
+    expect(by['backup.sharepoint_sites']).toBe(4);
+    expect(by['backup.sharepoint_data_gb']).toBe(2);
+    // Products a tenant doesn't license (403/404) must not spam warnings.
+    expect(out.warnings).toHaveLength(0);
+  });
 });
 
 describe('Printix', () => {

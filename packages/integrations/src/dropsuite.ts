@@ -87,10 +87,20 @@ export interface DropsuiteAccountRow {
   errors?: Record<string, unknown> | string;
   deactivated_since?: string | null;
   flg_deleted?: boolean;
+  /** Bytes of backed-up data for this mailbox. */
+  storage?: number;
+  /** Emails protected in this mailbox. */
+  msg_count?: number | null;
+  /** Owning tenant user — carries the seat counters. */
+  user?: { seats_used?: number; seats_available?: number; archive?: boolean } | null;
 }
 
+const round1 = (n: number) => Math.round(n * 10) / 10;
+const toGb = (bytes: number) => round1(bytes / 1024 ** 3);
+const STALE_DAYS = 7;
+
 /** Normalize per-account backup rows into seat + health metrics (with drill-down). */
-export function normalizeDropsuiteAccounts(rows: DropsuiteAccountRow[]): MetricValue[] {
+export function normalizeDropsuiteAccounts(rows: DropsuiteAccountRow[], now = Date.now()): MetricValue[] {
   const active = rows.filter((r) => r.flg_deleted !== true && !r.deactivated_since);
   const withErrors = active.filter((r) => {
     if (typeof r.errors === 'string') return r.errors.trim() !== '';
@@ -100,6 +110,8 @@ export function normalizeDropsuiteAccounts(rows: DropsuiteAccountRow[]): MetricV
     mailbox: r.email ?? '',
     status: r.current_backup_status ?? '',
     lastBackup: (r.last_backup ?? '').slice(0, 10),
+    emails: r.msg_count ?? 0,
+    dataGb: typeof r.storage === 'number' ? toGb(r.storage) : 0,
   }));
   const out: MetricValue[] = [
     {
@@ -120,6 +132,82 @@ export function normalizeDropsuiteAccounts(rows: DropsuiteAccountRow[]): MetricV
     const pct = Math.round((1000 * (active.length - withErrors.length)) / active.length) / 10;
     out.push(metric('backup.success_pct', 'Backup success rate', pct, { category: 'backup', source: 'dropsuite', unit: '%', higherIsBetter: true }));
   }
+  // Mailboxes that have a backup history but haven't completed one recently —
+  // the silent-failure case an error object doesn't catch.
+  const stale = active.filter((r) => {
+    const t = r.last_backup ? Date.parse(r.last_backup) : NaN;
+    return Number.isFinite(t) && now - t > STALE_DAYS * 24 * 3600 * 1000;
+  });
+  if (stale.length > 0) {
+    out.push({
+      ...metric('backup.stale_mailboxes', `Mailboxes not backed up in ${STALE_DAYS}+ days`, stale.length, { category: 'backup', source: 'dropsuite', unit: 'count', higherIsBetter: false }),
+      details: stale.slice(0, 100).map((r) => ({ mailbox: r.email ?? '', lastBackup: (r.last_backup ?? '').slice(0, 10) })),
+    });
+  }
+  const bytes = active.reduce((sum, r) => sum + (typeof r.storage === 'number' ? r.storage : 0), 0);
+  if (bytes > 0) {
+    out.push(metric('backup.email_data_gb', 'Email backup data protected', toGb(bytes), { category: 'backup', source: 'dropsuite', unit: 'GB', higherIsBetter: true }));
+  }
+  const messages = active.reduce((sum, r) => sum + (typeof r.msg_count === 'number' ? r.msg_count : 0), 0);
+  if (messages > 0) {
+    out.push(metric('backup.emails_protected', 'Emails protected', messages, { category: 'backup', source: 'dropsuite', unit: 'count', higherIsBetter: true }));
+  }
+  const seats = active.map((r) => r.user?.seats_used).find((v) => typeof v === 'number');
+  if (typeof seats === 'number' && seats > 0) {
+    out.push(metric('backup.seats_used', 'Backup seats in use', seats, { category: 'backup', source: 'dropsuite', unit: 'count' }));
+  }
+  return out;
+}
+
+interface DropsuiteDriveRow {
+  email?: string;
+  domain_name?: string;
+  site_count?: number;
+  file_count?: number;
+  storage?: number;
+  last_backup?: string | null;
+  deactivated_since?: string | null;
+}
+
+/** OneDrive backup coverage (GET /onedrives). */
+export function normalizeDropsuiteOneDrives(rows: DropsuiteDriveRow[]): MetricValue[] {
+  const active = rows.filter((r) => !r.deactivated_since);
+  if (active.length === 0) return [];
+  const out: MetricValue[] = [
+    {
+      ...metric('backup.onedrive_accounts', 'OneDrive accounts backed up', active.length, { category: 'backup', source: 'dropsuite', unit: 'count', higherIsBetter: true }),
+      details: active.slice(0, 100).map((r) => ({
+        account: r.email ?? '',
+        files: r.file_count ?? 0,
+        dataGb: typeof r.storage === 'number' ? toGb(r.storage) : 0,
+        lastBackup: (r.last_backup ?? '').slice(0, 10),
+      })),
+    },
+  ];
+  const bytes = active.reduce((sum, r) => sum + (typeof r.storage === 'number' ? r.storage : 0), 0);
+  if (bytes > 0) out.push(metric('backup.onedrive_data_gb', 'OneDrive backup data', toGb(bytes), { category: 'backup', source: 'dropsuite', unit: 'GB', higherIsBetter: true }));
+  return out;
+}
+
+/** SharePoint backup coverage (GET /sharepoints/domains). */
+export function normalizeDropsuiteSharePoint(rows: DropsuiteDriveRow[]): MetricValue[] {
+  const active = rows.filter((r) => !r.deactivated_since);
+  if (active.length === 0) return [];
+  const sites = active.reduce((sum, r) => sum + (typeof r.site_count === 'number' ? r.site_count : 0), 0);
+  if (sites === 0) return [];
+  const out: MetricValue[] = [
+    {
+      ...metric('backup.sharepoint_sites', 'SharePoint sites backed up', sites, { category: 'backup', source: 'dropsuite', unit: 'count', higherIsBetter: true }),
+      details: active.slice(0, 100).map((r) => ({
+        domain: r.domain_name ?? '',
+        sites: r.site_count ?? 0,
+        files: r.file_count ?? 0,
+        dataGb: typeof r.storage === 'number' ? toGb(r.storage) : 0,
+      })),
+    },
+  ];
+  const bytes = active.reduce((sum, r) => sum + (typeof r.storage === 'number' ? r.storage : 0), 0);
+  if (bytes > 0) out.push(metric('backup.sharepoint_data_gb', 'SharePoint backup data', toGb(bytes), { category: 'backup', source: 'dropsuite', unit: 'GB', higherIsBetter: true }));
   return out;
 }
 
@@ -141,12 +229,53 @@ export async function collectDropsuite(ctx: CollectorContext, http: HttpTranspor
   }
 
   const warnings: string[] = [];
+  const token = user.authentication_token;
   let rows: DropsuiteAccountRow[] = [];
   try {
-    rows = toArray<DropsuiteAccountRow>(await dsGet(http, cfg, 'accounts', user.authentication_token), ['accounts']);
+    rows = toArray<DropsuiteAccountRow>(await dsGet(http, cfg, 'accounts', token), ['accounts']);
   } catch (e) {
     return { source: 'dropsuite', metrics: [], warnings: [`Dropsuite accounts unavailable: ${e instanceof Error ? e.message : 'error'}`] };
   }
   if (rows.length === 0) warnings.push('Dropsuite returned no backed-up accounts for this tenant.');
-  return { source: 'dropsuite', metrics: normalizeDropsuiteAccounts(rows), warnings };
+  const metrics = normalizeDropsuiteAccounts(rows);
+
+  // Not every tenant licenses every product — a 403/404 here just means "not
+  // backed up with Dropsuite", so only real failures become warnings.
+  const optional = async (label: string, fn: () => Promise<void>) => {
+    try {
+      await fn();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'error';
+      if (!/responded (403|404)/.test(msg)) warnings.push(`Dropsuite ${label} unavailable: ${msg}`);
+    }
+  };
+
+  await optional('connection failures', async () => {
+    const failures = toArray<DropsuiteAccountRow>(await dsGet(http, cfg, 'accounts/connection_failures', token), ['result_set']);
+    if (failures.length > 0) {
+      metrics.push({
+        ...metric('backup.connection_failures', 'Mailboxes with connection failures', failures.length, { category: 'backup', source: 'dropsuite', unit: 'count', higherIsBetter: false }),
+        details: failures.slice(0, 100).map((r) => ({ mailbox: r.email ?? '', lastBackup: (r.last_backup ?? '').slice(0, 10) })),
+      });
+    }
+  });
+  await optional('OneDrive backups', async () => {
+    metrics.push(...normalizeDropsuiteOneDrives(await dsPageAll(http, cfg, 'onedrives', token)));
+  });
+  await optional('SharePoint backups', async () => {
+    metrics.push(...normalizeDropsuiteSharePoint(await dsPageAll(http, cfg, 'sharepoints/domains', token)));
+  });
+
+  return { source: 'dropsuite', metrics, warnings };
+}
+
+/** Page through a 25-per-page Dropsuite list endpoint (capped). */
+async function dsPageAll<T>(http: HttpTransport, cfg: DropsuiteCfg, path: string, token: string, maxPages = 40): Promise<T[]> {
+  const out: T[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const rows = toArray<T>(await dsGet(http, cfg, path, token, { page }), ['result_set', 'data']);
+    out.push(...rows);
+    if (rows.length < 25) break;
+  }
+  return out;
 }

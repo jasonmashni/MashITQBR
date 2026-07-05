@@ -42,6 +42,7 @@ import { pushAction, type PushInput } from './actions.js';
 import { buildEmailDraft, qbrEmailBody } from './emailDraft.js';
 import { clientInboxAddress, inboxConfigFromEnv, pollReportInbox } from './reportInbox.js';
 import { appendPdfAttachments, loadPdfAttachments } from './pdfMerge.js';
+import { createClaudeDocMatcher, type DocMatchModel } from './docMatch.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 
 export interface ApiResult {
@@ -115,7 +116,7 @@ export async function listClients(): Promise<ApiResult> {
 }
 
 /** Fields a client PUT may change — everything else in the body is ignored. */
-const CLIENT_PATCH_FIELDS = ['name', 'industry', 'hipaa', 'qbrEnabled', 'integrationRefs', 'primaryContact'] as const;
+const CLIENT_PATCH_FIELDS = ['name', 'industry', 'hipaa', 'complianceStandard', 'qbrEnabled', 'integrationRefs', 'primaryContact'] as const;
 
 export async function updateClient(id: string, patch: Record<string, unknown>): Promise<ApiResult> {
   const store = getDataStore();
@@ -461,6 +462,47 @@ export async function updateQbrDocument(
     `${record.name}${newName !== record.name ? ` → ${newName}` : ''}${newPeriod !== record.period ? ` (moved from ${record.period})` : ''}`,
   );
   return ok({ document: updated });
+}
+
+/**
+ * AI document matcher: read a filed PDF with Claude and suggest the vendor,
+ * a clean name, the quarter its content covers, and a category. Returns the
+ * suggestion only — the author applies it with the Match button (which calls
+ * the regular document-update route).
+ */
+export async function matchQbrDocument(
+  clientId: string,
+  period: string,
+  id: string,
+  matcher?: DocMatchModel,
+): Promise<ApiResult> {
+  if (!matcher && !process.env['ANTHROPIC_API_KEY']) {
+    return err(501, 'AI document matching needs the ANTHROPIC_API_KEY app setting (same key the narrative uses).');
+  }
+  const store = getDataStore();
+  const record = await store.getDocument(clientId, period, id);
+  if (!record) return err(404, 'Unknown document');
+  const isPdf = record.contentType.includes('pdf') || /\.pdf$/i.test(record.name);
+  if (!isPdf) return err(400, 'AI matching currently reads PDFs only.');
+  const bytes = await getDocStore().get(docPath(clientId, period, record.id, record.name));
+  if (!bytes) return err(404, 'Document content missing');
+  const client = await store.getClient(clientId);
+
+  const model = matcher ?? createClaudeDocMatcher();
+  try {
+    const suggestion = await model({
+      pdfBase64: bytes.toString('base64'),
+      clientName: client?.name ?? clientId,
+      currentName: record.name,
+      currentPeriod: record.period,
+      periods: lastPeriods(periodFor(new Date()).id, 8),
+    });
+    if (!PERIOD_RE.test(suggestion.suggestedPeriod)) suggestion.suggestedPeriod = record.period;
+    audit('document.match', `qbr:${clientId}/${period}`, `${record.name} → ${suggestion.suggestedName} (${suggestion.suggestedPeriod}, ${suggestion.confidence})`);
+    return ok({ suggestion, document: record });
+  } catch (e) {
+    return err(502, `AI matching failed: ${e instanceof Error ? e.message : 'error'}`);
+  }
 }
 
 // ── Opportunity board (per-client Kanban of QBR initiatives) ─────────────────

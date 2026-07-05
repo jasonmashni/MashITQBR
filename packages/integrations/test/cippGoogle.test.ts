@@ -9,6 +9,7 @@ import {
   normalizeCippLicenses,
   normalizeCippMfa,
   normalizeCippUserCounts,
+  scopeCippMfaRows,
   normalizeGoogleWorkspaceUsers,
   type HttpRequest,
   type HttpResponse,
@@ -86,6 +87,25 @@ describe('CIPP', () => {
     for (const r of requests.filter((x) => x.url.includes('/api/List'))) {
       expect(r.url).toContain('tenantFilter=madisonpeds.com');
     }
+  });
+
+  it('scopes MFA to licensed users on the dominant domain (guests/services excluded)', () => {
+    const rows = [
+      { UPN: 'a@mp.com', AccountEnabled: true, MFARegistration: true, IsLicensed: true },
+      { UPN: 'b@mp.com', AccountEnabled: true, MFARegistration: false, IsLicensed: true },
+      { UPN: 'c@mp.com', AccountEnabled: true, MFARegistration: true, IsLicensed: true },
+      { UPN: 'svc@mp.com', AccountEnabled: true, MFARegistration: false, IsLicensed: false }, // unlicensed
+      { UPN: 'guest@partner.com', AccountEnabled: true, MFARegistration: false, IsLicensed: true }, // other domain
+      { UPN: 'old@mp.com', AccountEnabled: false, MFARegistration: false, IsLicensed: true }, // disabled
+    ];
+    expect(scopeCippMfaRows(rows)).toHaveLength(3);
+    const metrics = normalizeCippMfa(rows);
+    const by = Object.fromEntries(metrics.map((m) => [m.key, m.value]));
+    expect(by['identity.mfa_coverage_pct']).toBe(66.7);
+    expect(by['identity.users_without_mfa']).toBe(1);
+    const details = metrics.find((m) => m.key === 'identity.mfa_coverage_pct')?.details;
+    expect(details).toHaveLength(3);
+    expect(details?.[0]?.['mfa']).toBe('NO'); // the gaps float to the top
   });
 
   it('normalizers tolerate odd shapes', () => {

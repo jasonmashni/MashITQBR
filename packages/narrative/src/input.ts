@@ -9,9 +9,19 @@ import {
   type MetricTrend,
 } from '@mashit/core';
 
+/** Author steering for the narrative (focus, standing guidance, compliance). */
+export interface NarrativeDirection {
+  /** What this QBR should emphasize (e.g. "business security", "continuity"). */
+  focus?: string;
+  /** Standing free-form guidance from the author. */
+  guidance?: string;
+  /** Per-section comments, keyed by metric category. */
+  sectionGuidance?: Record<string, string>;
+}
+
 /** The compact, pre-computed bundle handed to the model. No raw records. */
 export interface NarrativeInput {
-  client: { name: string; industry?: string; hipaa?: boolean };
+  client: { name: string; industry?: string; hipaa?: boolean; complianceStandard?: string };
   period: { id: string; label: string };
   previousPeriod?: { id: string; label: string };
   metrics: Array<{ key: string; label: string; value: number | string | boolean | null; unit?: string; category: string }>;
@@ -21,6 +31,8 @@ export interface NarrativeInput {
     functions: Array<{ function: string; score: number | null; rating: string }>;
     remediations: Array<{ title: string; score: number | null; evidence: string }>;
   };
+  /** Present only when the author set direction — changes bust the AI cache. */
+  direction?: NarrativeDirection;
 }
 
 /** Assemble the narrative input from a client + current/previous snapshots. */
@@ -28,14 +40,19 @@ export function buildNarrativeInput(args: {
   client: Client;
   current: MetricSnapshot;
   previous?: MetricSnapshot;
+  direction?: NarrativeDirection;
 }): NarrativeInput {
   const { client, current, previous } = args;
+  const direction =
+    args.direction && (args.direction.focus || args.direction.guidance || Object.keys(args.direction.sectionGuidance ?? {}).length > 0)
+      ? args.direction
+      : undefined;
   const period = parsePeriod(current.period);
   const trends = computeTrends(current, previous);
   const scorecard = computeScorecard(current);
 
   return {
-    client: { name: client.name, industry: client.industry, hipaa: client.hipaa },
+    client: { name: client.name, industry: client.industry, hipaa: client.hipaa, complianceStandard: client.complianceStandard },
     period: { id: period.id, label: period.label },
     previousPeriod: previous
       ? { id: parsePeriod(previous.period).id, label: parsePeriod(previous.period).label }
@@ -53,6 +70,7 @@ export function buildNarrativeInput(args: {
       functions: scorecard.functions.map((f) => ({ function: f.function, score: f.score, rating: f.rating })),
       remediations: scorecard.remediations.map((r) => ({ title: r.title, score: r.score, evidence: r.evidence })),
     },
+    direction,
   };
 }
 

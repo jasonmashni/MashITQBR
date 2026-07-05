@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 import {
   Title,
@@ -19,6 +19,7 @@ import {
   Textarea,
   Checkbox,
   Fieldset,
+  Autocomplete,
   ActionIcon,
   Badge,
   FileButton,
@@ -55,6 +56,7 @@ import {
   IconBulb,
   IconDownload,
   IconExternalLink,
+  IconSparkles,
 } from '@tabler/icons-react';
 import { api, documentUrl, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
@@ -62,6 +64,7 @@ import type {
   Client,
   Discussion,
   DiscussionItem,
+  DocMatchSuggestion,
   DocumentInfo,
   HaloMeta,
   MetricRow,
@@ -121,6 +124,12 @@ export function Workspace() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  const [tab, setTab] = useState<string>('overview');
+  // Unsaved-work guards: a refresh must not clobber a mid-meeting agenda, and
+  // leaving the Data tab with staged review changes should ask first.
+  const discDirty = useRef(false);
+  const dataDirty = useRef(false);
+  const discKey = useRef('');
 
   useEffect(() => {
     api.listClients().then((d) => setClient(d.clients.find((c) => c.id === clientId) ?? null)).catch(() => {});
@@ -165,10 +174,16 @@ export function Workspace() {
         setError(e instanceof Error ? e.message : 'Failed to build QBR');
       })
       .finally(() => live && setLoading(false));
+    // Switching client/quarter always reloads the discussion; a plain refresh
+    // (Sync, saves elsewhere) must NOT overwrite answers typed mid-meeting.
+    if (discKey.current !== `${clientId}/${period}`) {
+      discKey.current = `${clientId}/${period}`;
+      discDirty.current = false;
+    }
     api
       .getDiscussion(clientId, period)
-      .then((d) => live && setDisc(d))
-      .catch(() => live && setDisc({ clientId, period, items: [] }));
+      .then((d) => live && !discDirty.current && setDisc(d))
+      .catch(() => live && !discDirty.current && setDisc({ clientId, period, items: [] }));
     return () => {
       live = false;
     };
@@ -235,7 +250,18 @@ export function Workspace() {
 
       {error && <Alert color="red" title="Could not build report">{error}. Try running a Sync, or check the client's tool mappings.</Alert>}
 
-      <Tabs defaultValue="overview" keepMounted={false}>
+      <Tabs
+        value={tab}
+        keepMounted={false}
+        onChange={(v) => {
+          if (!v) return;
+          if (tab === 'data' && dataDirty.current && !window.confirm('You have unsaved data-review changes. Leave the Data tab and discard them?')) {
+            return;
+          }
+          if (tab === 'data') dataDirty.current = false;
+          setTab(v);
+        }}
+      >
         <Tabs.List mb="md">
           <Tabs.Tab value="overview">Overview</Tabs.Tab>
           <Tabs.Tab value="data">Data</Tabs.Tab>
@@ -256,6 +282,8 @@ export function Workspace() {
               period={period}
               refresh={refresh}
               aiEnabled={system?.ai ?? false}
+              config={config}
+              setConfig={setConfig}
               onChanged={() => setRefresh((n) => n + 1)}
             />
           ) : (
@@ -266,7 +294,15 @@ export function Workspace() {
         <Tabs.Panel value="data">
           {period && config && (
             <Stack gap="lg" maw={900}>
-              <DataTab clientId={clientId} period={period} config={config} setConfig={setConfig} refresh={refresh} onSaved={() => setRefresh((n) => n + 1)} />
+              <DataTab
+                clientId={clientId}
+                period={period}
+                config={config}
+                setConfig={setConfig}
+                refresh={refresh}
+                onDirty={(d) => (dataDirty.current = d)}
+                onSaved={() => setRefresh((n) => n + 1)}
+              />
             </Stack>
           )}
         </Tabs.Panel>
@@ -279,6 +315,7 @@ export function Workspace() {
               periods={periods}
               refresh={refresh}
               reportsMailbox={system?.reportsMailbox ?? null}
+              aiEnabled={system?.ai ?? false}
               onChanged={() => setRefresh((n) => n + 1)}
             />
           )}
@@ -288,10 +325,14 @@ export function Workspace() {
           {disc && (
             <MeetingTab
               disc={disc}
-              setDisc={setDisc}
+              setDisc={(d) => {
+                discDirty.current = true;
+                setDisc(d);
+              }}
               clientId={clientId}
               period={period}
               meta={meta}
+              onSavedDiscussion={() => (discDirty.current = false)}
               onChanged={() => setRefresh((n) => n + 1)}
             />
           )}
@@ -320,6 +361,8 @@ function OverviewTab({
   period,
   refresh,
   aiEnabled,
+  config,
+  setConfig,
   onChanged,
 }: {
   qbr: QbrResponse;
@@ -327,17 +370,26 @@ function OverviewTab({
   period: string;
   refresh: number;
   aiEnabled: boolean;
+  config: ReportConfig | null;
+  setConfig: (c: ReportConfig) => void;
   onChanged: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [docs, setDocs] = useState<DocumentInfo[]>([]);
   const { model } = qbr;
   const score = model.scorecard.overall.score ?? 0;
-  const radar = model.scorecard.functions.map((f) => ({ function: f.function, score: f.score ?? 0 }));
+  const radar = useMemo(
+    () => model.scorecard.functions.map((f) => ({ function: f.function, score: f.score ?? 0 })),
+    [model.scorecard.functions],
+  );
+  const ringSections = useMemo(
+    () => [{ value: score, color: RING_COLOR[model.scorecard.overall.rating] ?? 'gray' }],
+    [score, model.scorecard.overall.rating],
+  );
   const trendData = useMemo(
     () =>
       model.trends
-        .filter((t) => t.current !== null && (t.category === 'operations' || t.category === 'security'))
+        .filter((t) => t.current !== null && (t.category === 'operations' || t.category === 'security') && !/siem|logs|events|signals/i.test(t.key))
         .slice(0, 6)
         .map((t) => ({
           label: t.label.length > 14 ? t.label.slice(0, 13) + '…' : t.label,
@@ -346,16 +398,21 @@ function OverviewTab({
         })),
     [model.trends],
   );
-  // High-level spend picture for the client-facing overview.
-  const spendData = useMemo(
-    () =>
-      model.trends
-        .filter((t) => t.current !== null && (t.key.startsWith('finance.invoiced.') || t.key.startsWith('finance.recurring.')))
-        .map((t) => ({ label: t.label.length > 26 ? t.label.slice(0, 25) + '…' : t.label, amount: t.current ?? 0 }))
-        .sort((a, b) => b.amount - a.amount)
-        .slice(0, 8),
-    [model.trends],
-  );
+  // High-level spend picture for the client-facing overview. Quarterly
+  // invoiced categories only — mixing monthly recurring amounts onto the same
+  // axis would compare different measures.
+  const spendData = useMemo(() => {
+    const invoiced = model.trends.filter((t) => t.current !== null && t.key.startsWith('finance.invoiced.'));
+    const rows = invoiced.length > 0 ? invoiced : model.trends.filter((t) => t.current !== null && t.key.startsWith('finance.recurring.'));
+    return rows
+      .map((t) => ({
+        label: (t.label.length > 20 ? t.label.slice(0, 19) + '…' : t.label).replace(/\s+/g, ' '),
+        amount: t.current ?? 0,
+      }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 6);
+  }, [model.trends]);
+  const spendIsRecurring = useMemo(() => !model.trends.some((t) => t.key.startsWith('finance.invoiced.')), [model.trends]);
 
   useEffect(() => {
     let live = true;
@@ -394,6 +451,8 @@ function OverviewTab({
           model={model}
           aiEnabled={aiEnabled}
           status={qbr.meta.status}
+          config={config}
+          setConfig={setConfig}
           onChanged={() => {
             setEditing(false);
             onChanged();
@@ -409,7 +468,7 @@ function OverviewTab({
               size={150}
               thickness={14}
               roundCaps
-              sections={[{ value: score, color: RING_COLOR[model.scorecard.overall.rating] ?? 'gray' }]}
+              sections={ringSections}
               label={<Center><Stack gap={0} align="center"><Text fw={700} size="xl">{model.scorecard.overall.score ?? '—'}</Text><Text size="xs" c="dimmed">/ 100</Text></Stack></Center>}
             />
             <Stack gap={4}>
@@ -447,14 +506,20 @@ function OverviewTab({
 
       {spendData.length > 0 && (
         <Card withBorder radius="md" padding="lg">
-          <Title order={5} mb="md">IT spend breakdown</Title>
+          <Title order={5} mb={2}>{spendIsRecurring ? 'Monthly recurring breakdown' : 'IT spend breakdown'}</Title>
+          <Text size="xs" c="dimmed" mb="md">{spendIsRecurring ? 'Composition of the monthly bill.' : 'Invoiced this quarter, by category.'}</Text>
           <BarChart
-            h={Math.max(160, spendData.length * 40)}
+            h={spendData.length * 44 + 40}
             data={spendData}
             dataKey="label"
             orientation="vertical"
-            series={[{ name: 'amount', label: 'USD', color: 'teal.7' }]}
+            series={[{ name: 'amount', label: 'USD', color: 'navy.6' }]}
             valueFormatter={(v) => `$${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
+            barProps={{ maxBarSize: 22, radius: [0, 4, 4, 0] }}
+            gridAxis="x"
+            withTooltip
+            yAxisProps={{ width: 150, tickLine: false }}
+            xAxisProps={{ tickLine: false }}
           />
         </Card>
       )}
@@ -492,12 +557,23 @@ function OverviewTab({
 }
 
 // ── Narrative editor ──────────────────────────────────────────────────────────
+const FOCUS_OPTIONS = [
+  'Business security',
+  'Business continuity',
+  'Infrastructure & lifecycle',
+  'Cost optimization',
+  'Compliance readiness',
+  'Service experience',
+];
+
 function NarrativeEditor({
   clientId,
   period,
   model,
   aiEnabled,
   status,
+  config,
+  setConfig,
   onChanged,
 }: {
   clientId: string;
@@ -505,6 +581,8 @@ function NarrativeEditor({
   model: ReportModel;
   aiEnabled: boolean;
   status: string;
+  config: ReportConfig | null;
+  setConfig: (c: ReportConfig) => void;
   onChanged: () => void;
 }) {
   const [headline, setHeadline] = useState(model.executive.headline ?? '');
@@ -513,6 +591,11 @@ function NarrativeEditor({
   const [recommendations, setRecommendations] = useState(model.recommendations.join('\n'));
   const [editedBy, setEditedBy] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // AI direction (persisted in the report config; changing it re-drafts).
+  const [focus, setFocus] = useState(config?.narrativeFocus ?? '');
+  const [guidance, setGuidance] = useState(config?.narrativeGuidance ?? '');
+  const [sectionNotes, setSectionNotes] = useState<Record<string, string>>(config?.sectionGuidance ?? {});
+  const [openSection, setOpenSection] = useState<string | null>(null);
 
   useEffect(() => {
     api.getNarrative(clientId, period).then((d) => setEditedBy(d.edits ? `${d.edits.editedBy} · ${new Date(d.edits.editedAt).toLocaleString()}` : null)).catch(() => {});
@@ -567,6 +650,38 @@ function NarrativeEditor({
     }
   }
 
+  /**
+   * Persist focus/guidance/section comments into the report config, then clear
+   * the cached draft so the next build re-drafts with the direction included.
+   */
+  async function applyDirection(notes: Record<string, string>, busyKey: string) {
+    setBusy(busyKey);
+    try {
+      const cleanNotes = Object.fromEntries(Object.entries(notes).filter(([, v]) => v.trim() !== ''));
+      const next: ReportConfig = {
+        ...(config ?? { clientId }),
+        clientId,
+        narrativeFocus: focus.trim() || undefined,
+        narrativeGuidance: guidance.trim() || undefined,
+        sectionGuidance: Object.keys(cleanNotes).length ? cleanNotes : undefined,
+      };
+      await api.putConfig(clientId, next);
+      setConfig(next);
+      await api.regenerateNarrative(clientId, period);
+      notifications.show({
+        color: 'teal',
+        message: aiEnabled ? 'Direction saved — regenerating the narrative with it.' : 'Direction saved (connect the AI key to use it).',
+      });
+      onChanged();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Could not apply direction', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const sections = model.sections ?? [];
+
   return (
     <Card withBorder radius="md" padding="lg">
       <Group justify="space-between" mb="sm">
@@ -597,6 +712,87 @@ function NarrativeEditor({
           Edits are saved per client/quarter and always win over generated text — no regeneration happens when you tweak wording.
           Regenerate discards edits and the cached draft.
         </Text>
+
+        <Divider label="AI direction" labelPosition="left" mt="xs" />
+        <Group grow align="flex-start">
+          <Autocomplete
+            label="QBR focus"
+            description="The theme this QBR should emphasize — pick one or type your own."
+            placeholder="e.g. Business security"
+            data={FOCUS_OPTIONS}
+            value={focus}
+            onChange={setFocus}
+          />
+        </Group>
+        <Textarea
+          label="Guidance for the AI"
+          description="Standing instruction applied every time the narrative is drafted (e.g. “backup counts changed because we re-tuned monitoring — do not present that as a trend”)."
+          autosize
+          minRows={2}
+          value={guidance}
+          onChange={(e) => setGuidance(e.currentTarget.value)}
+        />
+        <Group>
+          <Button
+            variant="light"
+            leftSection={<IconSparkles size={16} />}
+            loading={busy === 'direction'}
+            onClick={() => applyDirection(sectionNotes, 'direction')}
+          >
+            Save direction &amp; regenerate
+          </Button>
+        </Group>
+
+        {sections.length > 0 && (
+          <>
+            <Divider label="Section summaries" labelPosition="left" mt="xs" />
+            <Stack gap="xs">
+              {sections.map((s) => (
+                <div key={s.category}>
+                  <Group gap="xs" wrap="nowrap" align="flex-start">
+                    <div style={{ flex: 1 }}>
+                      <Text size="sm" fw={600}>{s.title}</Text>
+                      <Text size="xs" c="dimmed">{s.summary ?? 'No summary drafted for this section yet.'}</Text>
+                    </div>
+                    <Tooltip label="Comment on this section and regenerate">
+                      <ActionIcon
+                        variant={openSection === s.category || sectionNotes[s.category] ? 'light' : 'subtle'}
+                        color="teal"
+                        aria-label={`Adjust ${s.title} summary`}
+                        onClick={() => setOpenSection(openSection === s.category ? null : s.category)}
+                      >
+                        <IconPencil size={15} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Group>
+                  {openSection === s.category && (
+                    <Group mt={6} gap="xs" align="flex-start" wrap="nowrap">
+                      <Textarea
+                        style={{ flex: 1 }}
+                        autosize
+                        minRows={1}
+                        placeholder="What should change in this section? (e.g. “don't call the backup drop a decline — we re-tuned what we measure”)"
+                        value={sectionNotes[s.category] ?? ''}
+                        onChange={(e) => setSectionNotes({ ...sectionNotes, [s.category]: e.currentTarget.value })}
+                      />
+                      <Button
+                        size="xs"
+                        variant="light"
+                        loading={busy === `section:${s.category}`}
+                        onClick={() => applyDirection(sectionNotes, `section:${s.category}`)}
+                      >
+                        Regenerate
+                      </Button>
+                    </Group>
+                  )}
+                </div>
+              ))}
+            </Stack>
+            <Text size="xs" c="dimmed">
+              Section comments are remembered and applied on every regenerate — clear a comment and regenerate to drop it.
+            </Text>
+          </>
+        )}
       </Stack>
     </Card>
   );
@@ -609,6 +805,7 @@ function DataTab({
   config,
   setConfig,
   refresh,
+  onDirty,
   onSaved,
 }: {
   clientId: string;
@@ -616,6 +813,8 @@ function DataTab({
   config: ReportConfig;
   setConfig: (c: ReportConfig) => void;
   refresh: number;
+  /** Reports staged-but-unsaved review changes so the parent can guard tab switches. */
+  onDirty?: (dirty: boolean) => void;
   onSaved: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<SnapshotView | null>(null);
@@ -639,6 +838,7 @@ function DataTab({
         setExcluded(new Set(d.excluded));
         setManual(d.snapshot.metrics.filter((m) => m.source === 'manual'));
         setLoadError(null);
+        onDirty?.(false);
       })
       .catch((e) => live && setLoadError(e instanceof Error ? e.message : 'No data'))
       .finally(() => live && setLoading(false));
@@ -665,6 +865,7 @@ function DataTab({
       },
     ]);
     setDraft({ label: '', value: '', unit: '', category: draft.category });
+    onDirty?.(true);
   }
 
   async function save() {
@@ -675,6 +876,7 @@ function DataTab({
       await api.putConfig(clientId, nextConfig);
       setConfig(nextConfig);
       notifications.show({ color: 'teal', message: 'Data review saved — the report reflects it immediately.' });
+      onDirty?.(false);
       onSaved();
     } catch (e) {
       notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
@@ -736,6 +938,7 @@ function DataTab({
                           if (e.currentTarget.checked) next.delete(m.key);
                           else next.add(m.key);
                           setExcluded(next);
+                          onDirty?.(true);
                         }}
                       />
                     </Table.Td>
@@ -826,7 +1029,7 @@ function DataTab({
               <Text size="sm" style={{ flex: 1 }}>{m.label}</Text>
               <Text size="sm" fw={600}>{fmt(m)}</Text>
               <Text size="sm" c="dimmed">{m.category}</Text>
-              <ActionIcon color="red" variant="subtle" aria-label={`Remove ${m.label}`} onClick={() => setManual(manual.filter((_, j) => j !== i))}>
+              <ActionIcon color="red" variant="subtle" aria-label={`Remove ${m.label}`} onClick={() => { setManual(manual.filter((_, j) => j !== i)); onDirty?.(true); }}>
                 <IconTrash size={16} />
               </ActionIcon>
             </Group>
@@ -858,6 +1061,7 @@ function ReportsTab({
   periods,
   refresh,
   reportsMailbox,
+  aiEnabled,
   onChanged,
 }: {
   clientId: string;
@@ -865,12 +1069,16 @@ function ReportsTab({
   periods: Array<{ value: string; label: string }>;
   refresh: number;
   reportsMailbox: string | null;
+  aiEnabled: boolean;
   onChanged: () => void;
 }) {
   const [docs, setDocs] = useState<DocumentInfo[] | null>(null);
   const [uploading, setUploading] = useState(false);
   const [renaming, setRenaming] = useState<DocumentInfo | null>(null);
   const [newName, setNewName] = useState('');
+  // AI matcher state, keyed by period:id (docs can move between quarters).
+  const [ai, setAi] = useState<Record<string, { loading?: boolean; suggestion?: DocMatchSuggestion }>>({});
+  const [bulkMatching, setBulkMatching] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -920,6 +1128,7 @@ function ReportsTab({
   }
 
   async function remove(doc: DocumentInfo) {
+    if (!window.confirm(`Permanently delete “${doc.name}”? It also disappears from the ${doc.period} report appendix.`)) return;
     try {
       await api.deleteDocument(clientId, doc.period, doc.id);
       notifications.show({ color: 'gray', message: `Removed ${doc.name}.` });
@@ -934,6 +1143,48 @@ function ReportsTab({
   const periodValues = periods.map((p) => ({ value: p.value, label: p.value }));
   const inboxAddress = reportsMailbox ? reportsMailbox.replace('@', `+${clientId}@`) : null;
 
+  const isPdf = (d: DocumentInfo) => d.contentType.includes('pdf') || /\.pdf$/i.test(d.name);
+  const aiKey = (d: DocumentInfo) => `${d.period}:${d.id}`;
+
+  async function analyze(d: DocumentInfo): Promise<void> {
+    const key = aiKey(d);
+    setAi((a) => ({ ...a, [key]: { ...a[key], loading: true } }));
+    try {
+      const { suggestion } = await api.matchDocument(clientId, d.period, d.id);
+      setAi((a) => ({ ...a, [key]: { suggestion } }));
+    } catch (e) {
+      setAi((a) => ({ ...a, [key]: {} }));
+      notifications.show({ color: 'red', title: `AI match failed for ${d.name}`, message: e instanceof Error ? e.message : 'Unknown error' });
+    }
+  }
+
+  /** Analyze every PDF that doesn't have a suggestion yet (sequential — each is a model call). */
+  async function analyzeAll() {
+    setBulkMatching(true);
+    try {
+      for (const d of (docs ?? []).filter(isPdf).filter((d) => !ai[aiKey(d)]?.suggestion)) await analyze(d);
+    } finally {
+      setBulkMatching(false);
+    }
+  }
+
+  async function acceptMatch(d: DocumentInfo, s: DocMatchSuggestion) {
+    await patch(
+      d,
+      { name: s.suggestedName, period: s.suggestedPeriod, category: s.suggestedCategory },
+      `Filed as “${s.suggestedName}” under ${s.suggestedPeriod} (${s.suggestedCategory}).`,
+    );
+    dismissMatch(d);
+  }
+
+  function dismissMatch(d: DocumentInfo) {
+    setAi((a) => {
+      const next = { ...a };
+      delete next[aiKey(d)];
+      return next;
+    });
+  }
+
   return (
     <Stack gap="lg">
       <Card withBorder radius="md" padding="lg">
@@ -943,16 +1194,26 @@ function ReportsTab({
             <Text size="xs" c="dimmed">
               Every vendor report and upload for this client, across all quarters — Huntress attaches on Sync, the report inbox
               files what you forward, and uploads land in the selected quarter ({period}). Rename, categorize, or move anything
-              filed to the wrong quarter. PDFs are appended to that quarter's QBR PDF and ride on its email draft.
+              filed to the wrong quarter — or let <b>AI match</b> read each PDF and suggest all three, then accept with one click.
+              PDFs are appended to that quarter's QBR PDF and ride on its email draft.
             </Text>
           </div>
-          <FileButton onChange={upload} accept="application/pdf,image/*,.csv,.xlsx,.docx">
-            {(props) => (
-              <Button {...props} variant="light" loading={uploading} leftSection={<IconUpload size={16} />}>
-                Upload to {period}
-              </Button>
+          <Group gap="xs">
+            {aiEnabled && (docs ?? []).some(isPdf) && (
+              <Tooltip label="The AI reads each PDF and suggests the vendor, a clean name, the quarter its content covers, and a category — you accept each match with one click.">
+                <Button variant="light" color="teal" loading={bulkMatching} leftSection={<IconSparkles size={16} />} onClick={analyzeAll}>
+                  AI match PDFs
+                </Button>
+              </Tooltip>
             )}
-          </FileButton>
+            <FileButton onChange={upload} accept="application/pdf,image/*,.csv,.xlsx,.docx">
+              {(props) => (
+                <Button {...props} variant="light" loading={uploading} leftSection={<IconUpload size={16} />}>
+                  Upload to {period}
+                </Button>
+              )}
+            </FileButton>
+          </Group>
         </Group>
         {inboxAddress ? (
           <Alert color="teal" variant="light" p="xs">
@@ -1003,7 +1264,8 @@ function ReportsTab({
               </Table.Thead>
               <Table.Tbody>
                 {docs.map((d) => (
-                  <Table.Tr key={`${d.period}-${d.id}`}>
+                  <Fragment key={`${d.period}-${d.id}`}>
+                  <Table.Tr>
                     <Table.Td>
                       <Anchor href={documentUrl(clientId, d.period, d.id)} size="sm" fw={600}>
                         {d.name}
@@ -1035,6 +1297,19 @@ function ReportsTab({
                     <Table.Td><Text size="xs" c="dimmed">{new Date(d.uploadedAt).toLocaleDateString()}</Text></Table.Td>
                     <Table.Td>
                       <Group gap={2} wrap="nowrap" justify="flex-end">
+                        {aiEnabled && isPdf(d) && (
+                          <Tooltip label="AI match: read the PDF and suggest name / quarter / category">
+                            <ActionIcon
+                              variant="subtle"
+                              color="teal"
+                              aria-label={`AI match ${d.name}`}
+                              loading={ai[aiKey(d)]?.loading}
+                              onClick={() => analyze(d)}
+                            >
+                              <IconSparkles size={15} />
+                            </ActionIcon>
+                          </Tooltip>
+                        )}
                         <Tooltip label="Rename">
                           <ActionIcon variant="subtle" aria-label={`Rename ${d.name}`} onClick={() => { setRenaming(d); setNewName(d.name); }}>
                             <IconPencil size={15} />
@@ -1046,6 +1321,39 @@ function ReportsTab({
                       </Group>
                     </Table.Td>
                   </Table.Tr>
+                  {ai[aiKey(d)]?.suggestion && (() => {
+                    const s = ai[aiKey(d)]!.suggestion!;
+                    const conf = s.confidence === 'high' ? 'teal' : s.confidence === 'medium' ? 'yellow' : 'red';
+                    return (
+                      <Table.Tr>
+                        <Table.Td colSpan={7} p={0} style={{ borderTop: 'none' }}>
+                          <Alert color="teal" variant="light" p="xs" m={4} icon={<IconSparkles size={16} />}>
+                            <Group gap="sm" wrap="wrap" align="center">
+                              <div style={{ flex: 1, minWidth: 260 }}>
+                                <Group gap={6}>
+                                  <Text size="sm" fw={600}>{s.suggestedName}</Text>
+                                  <Badge size="sm" variant="light" color="navy">{s.suggestedPeriod}</Badge>
+                                  <Badge size="sm" variant="light" color="gray">{s.suggestedCategory}</Badge>
+                                  <Badge size="sm" variant="dot" color={conf}>{s.confidence} confidence</Badge>
+                                </Group>
+                                <Text size="xs" c="dimmed" mt={2}>{s.vendor ? `${s.vendor} — ` : ''}{s.rationale}</Text>
+                                {s.clientMatch === 'no' && (
+                                  <Text size="xs" c="red" fw={600} mt={2}>
+                                    ⚠ This document looks like it belongs to a different client — check before matching.
+                                  </Text>
+                                )}
+                              </div>
+                              <Group gap="xs" wrap="nowrap">
+                                <Button size="compact-sm" color="teal" onClick={() => acceptMatch(d, s)}>Match</Button>
+                                <Button size="compact-sm" variant="subtle" color="gray" onClick={() => dismissMatch(d)}>Dismiss</Button>
+                              </Group>
+                            </Group>
+                          </Alert>
+                        </Table.Td>
+                      </Table.Tr>
+                    );
+                  })()}
+                  </Fragment>
                 ))}
               </Table.Tbody>
             </Table>
@@ -1080,6 +1388,7 @@ function MeetingTab({
   clientId,
   period,
   meta,
+  onSavedDiscussion,
   onChanged,
 }: {
   disc: Discussion;
@@ -1087,6 +1396,8 @@ function MeetingTab({
   clientId: string;
   period: string;
   meta: QbrResponse['meta'] | undefined;
+  /** Clears the parent's unsaved-agenda guard after a successful save. */
+  onSavedDiscussion?: () => void;
   onChanged: () => void;
 }) {
   const [saving, setSaving] = useState(false);
@@ -1134,6 +1445,7 @@ function MeetingTab({
       await api.putDiscussion(clientId, period, { ...disc, items });
       setDisc({ ...disc, items });
       notifications.show({ color: 'teal', message: 'Agenda saved — answered items flow onto the final report.' });
+      onSavedDiscussion?.();
       onChanged();
     } catch (e) {
       notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
@@ -1182,11 +1494,11 @@ function MeetingTab({
                 <TextInput style={{ flex: 1 }} placeholder="Topic / question / decision" value={it.topic} onChange={(e) => update(i, { topic: e.currentTarget.value })} />
                 <Group gap={4} wrap="nowrap">
                   <Tooltip label="Flag as opportunity (adds to the board)">
-                    <ActionIcon variant="subtle" color="yellow" aria-label="Flag as opportunity" onClick={() => flagOpportunity(it)}><IconBulb size={16} /></ActionIcon>
+                    <ActionIcon variant="subtle" color="yellow" aria-label={`Flag "${it.topic || 'topic'}" as opportunity`} onClick={() => flagOpportunity(it)}><IconBulb size={16} /></ActionIcon>
                   </Tooltip>
-                  <ActionIcon variant="subtle" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}><IconArrowUp size={16} /></ActionIcon>
-                  <ActionIcon variant="subtle" aria-label="Move down" disabled={i === disc.items.length - 1} onClick={() => move(i, 1)}><IconArrowDown size={16} /></ActionIcon>
-                  <ActionIcon color="red" variant="subtle" aria-label="Remove item" onClick={() => setDisc({ ...disc, items: disc.items.filter((x) => x.id !== it.id) })}><IconTrash size={16} /></ActionIcon>
+                  <ActionIcon variant="subtle" aria-label={`Move "${it.topic || 'topic'}" up`} disabled={i === 0} onClick={() => move(i, -1)}><IconArrowUp size={16} /></ActionIcon>
+                  <ActionIcon variant="subtle" aria-label={`Move "${it.topic || 'topic'}" down`} disabled={i === disc.items.length - 1} onClick={() => move(i, 1)}><IconArrowDown size={16} /></ActionIcon>
+                  <ActionIcon color="red" variant="subtle" aria-label={`Remove "${it.topic || 'topic'}"`} onClick={() => setDisc({ ...disc, items: disc.items.filter((x) => x.id !== it.id) })}><IconTrash size={16} /></ActionIcon>
                 </Group>
               </Group>
               <Textarea
@@ -1225,8 +1537,12 @@ function MeetingTab({
       </Card>
 
       <Card withBorder radius="md" padding="lg">
-        <Title order={5} mb="md">General notes</Title>
+        <Group justify="space-between" mb="md">
+          <Title order={5}>General notes</Title>
+          <Button size="xs" variant="light" loading={saving} onClick={save}>Save notes</Button>
+        </Group>
         <Textarea autosize minRows={3} value={disc.notes ?? ''} onChange={(e) => setDisc({ ...disc, notes: e.currentTarget.value })} />
+        <Text size="xs" c="dimmed" mt={4}>Notes land on the final report with the discussion. “Save agenda” saves these too.</Text>
       </Card>
 
       <ScheduleCard clientId={clientId} period={period} meta={meta} onChanged={onChanged} />
@@ -1727,17 +2043,27 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
   }
 
   async function save(o: Opportunity, patch: Partial<Opportunity>, quiet = false) {
+    // Optimistic: a dragged card lands in its column immediately; a failure
+    // reloads the true state.
+    setItems((prev) => prev.map((x) => (x.id === o.id ? { ...x, ...patch } : x)));
     try {
       await api.saveOpportunity(clientId, { ...o, ...patch });
       await load();
       if (!quiet) notifications.show({ color: 'teal', message: 'Saved.' });
     } catch (e) {
-      notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Update failed' });
+      await load();
+      notifications.show({ color: 'red', title: 'Update failed', message: e instanceof Error ? e.message : 'Unknown error' });
     }
   }
 
   async function remove(o: Opportunity) {
-    await api.deleteOpportunity(clientId, o.id).catch(() => {});
+    if (!window.confirm(`Delete “${o.title}” from the board?`)) return;
+    try {
+      await api.deleteOpportunity(clientId, o.id);
+      notifications.show({ color: 'gray', message: `Removed “${o.title}”.` });
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Delete failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    }
     await load();
   }
 
@@ -1809,7 +2135,7 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
                 >
                   <Group justify="space-between" wrap="nowrap" align="flex-start">
                     <Text size="sm" fw={600}>{o.title}</Text>
-                    <ActionIcon variant="subtle" size="sm" aria-label="Edit" onClick={() => setEditing(o)}>
+                    <ActionIcon variant="subtle" size="sm" aria-label={`Edit ${o.title}`} onClick={() => setEditing(o)}>
                       <IconPencil size={14} />
                     </ActionIcon>
                   </Group>
@@ -1827,7 +2153,7 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
                         </Button>
                       </Tooltip>
                     )}
-                    <ActionIcon color="red" variant="subtle" aria-label="Delete opportunity" onClick={() => remove(o)}>
+                    <ActionIcon color="red" variant="subtle" aria-label={`Delete ${o.title}`} onClick={() => remove(o)}>
                       <IconTrash size={15} />
                     </ActionIcon>
                   </Group>
@@ -1871,11 +2197,13 @@ function OpportunityEditModal({
   const [title, setTitle] = useState('');
   const [detail, setDetail] = useState('');
   const [owner, setOwner] = useState('');
+  const [status, setStatus] = useState<Opportunity['status']>('idea');
 
   useEffect(() => {
     setTitle(opportunity?.title ?? '');
     setDetail(opportunity?.detail ?? '');
     setOwner(opportunity?.owner ?? '');
+    setStatus(opportunity?.status ?? 'idea');
   }, [opportunity]);
 
   return (
@@ -1884,9 +2212,17 @@ function OpportunityEditModal({
         <TextInput label="Title" value={title} onChange={(e) => setTitle(e.currentTarget.value)} />
         <Textarea label="Details" autosize minRows={3} value={detail} onChange={(e) => setDetail(e.currentTarget.value)} />
         <TextInput label="Owner" placeholder="Who's driving this — e.g. Jason" value={owner} onChange={(e) => setOwner(e.currentTarget.value)} />
+        <Select
+          label="Column"
+          description="Same as dragging the card — handy on a touch screen."
+          data={OPP_COLUMNS.map(([value, label]) => ({ value, label }))}
+          value={status}
+          onChange={(v) => v && setStatus(v as Opportunity['status'])}
+          allowDeselect={false}
+        />
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => onSave({ title: title.trim() || opportunity?.title, detail, owner })}>Save</Button>
+          <Button onClick={() => onSave({ title: title.trim() || opportunity?.title, detail, owner, status })}>Save</Button>
         </Group>
       </Stack>
     </Modal>

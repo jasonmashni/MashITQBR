@@ -406,10 +406,24 @@ export function Integrations() {
     const input: ConnectionInput = { type, label, config, secrets };
     const savedSecrets = Object.values(secrets).some((v) => v && v.length > 0);
     try {
-      if (editId) await api.updateIntegration(editId, input);
-      else await api.createIntegration(input);
+      if (editId) {
+        await api.updateIntegration(editId, input);
+        close();
+      } else {
+        const created = await api.createIntegration(input);
+        // Halo/Ninja scoping pickers (ticket types, device roles) need a saved
+        // connection to fetch against — flip straight into Edit so the user can
+        // scope now instead of save → reopen.
+        if (type === 'halo' || type === 'ninja') {
+          setEditId(created.id);
+          setSecrets({});
+          notifications.show({ color: 'teal', message: `Saved ${label} — pick the scoping below, then Save again.` });
+          await load();
+          return;
+        }
+        close();
+      }
       notifications.show({ color: 'teal', message: `Saved ${label}.${savedSecrets ? ` Secrets stored in ${secretHome}.` : ''}` });
-      close();
       await load();
     } catch (e) {
       notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });

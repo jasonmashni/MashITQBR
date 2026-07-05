@@ -65,6 +65,7 @@ route('uploadDoc', 'POST', 'api/clients/{clientId}/qbr/{period}/documents', asyn
 route('downloadDoc', 'GET', 'api/clients/{clientId}/qbr/{period}/documents/{docId}', (req) => h.downloadQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
 route('updateDoc', 'PATCH', 'api/clients/{clientId}/qbr/{period}/documents/{docId}', async (req) => h.updateQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!, await body(req)));
 route('clientDocs', 'GET', 'api/clients/{clientId}/documents', (req) => h.listClientDocuments(req.params['clientId']!));
+route('matchDoc', 'POST', 'api/clients/{clientId}/qbr/{period}/documents/{docId}/match', (req) => h.matchQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
 route('deleteDoc', 'DELETE', 'api/clients/{clientId}/qbr/{period}/documents/{docId}', (req) => h.deleteQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
 
 // Opportunity board

@@ -4,6 +4,7 @@ import {
   ActionIcon,
   Anchor,
   Badge,
+  Button,
   Card,
   Center,
   Group,
@@ -47,23 +48,27 @@ export function Dashboard() {
   const [rows, setRows] = useState<OverviewRow[]>([]);
   const [period, setPeriod] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
   const navigate = useNavigate();
 
   useEffect(() => {
     let live = true;
+    setLoading(true);
     api
       .overview()
       .then((o) => {
         if (!live) return;
         setRows(o.clients);
         setPeriod(o.currentPeriod);
+        setLoadError(null);
       })
-      .catch(() => {})
+      .catch((e) => live && setLoadError(e instanceof Error ? e.message : 'Request failed'))
       .finally(() => live && setLoading(false));
     return () => {
       live = false;
     };
-  }, []);
+  }, [retry]);
 
   const totalMrr = rows.reduce((sum, r) => sum + (r.mrr ?? 0), 0);
   const flagged = rows.filter((r) => r.flags.length > 0).length;
@@ -143,6 +148,11 @@ export function Dashboard() {
           <Center h={160}>
             <Loader />
           </Center>
+        ) : loadError ? (
+          <Group gap="sm">
+            <Text c="red" size="sm">Could not load the overview: {loadError}</Text>
+            <Button size="compact-sm" variant="light" onClick={() => setRetry((n) => n + 1)}>Retry</Button>
+          </Group>
         ) : rows.length === 0 ? (
           <Text c="dimmed" size="sm">
             No QBR-enabled clients yet — flip the QBR toggle on the Clients page.
@@ -181,9 +191,7 @@ export function Dashboard() {
                             <Text size="sm" fw={600}>{r.period}</Text>
                             <Group gap={6} mt={2}>
                               <StatusBadge status={r.status} />
-                              {r.meetingAt && (
-                                <Text size="xs" c="dimmed">{new Date(r.meetingAt).toLocaleDateString()}</Text>
-                              )}
+                              {r.meetingAt && <Text size="xs" c="dimmed">{when(r.meetingAt)}</Text>}
                             </Group>
                           </>
                         ) : (
