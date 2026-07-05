@@ -27,6 +27,7 @@ import {
   Divider,
   Tooltip,
   Table,
+  Progress,
   Modal,
   Anchor,
   SegmentedControl,
@@ -57,6 +58,7 @@ import {
   IconDownload,
   IconExternalLink,
   IconSparkles,
+  IconTableImport,
 } from '@tabler/icons-react';
 import { api, documentUrl, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
@@ -64,6 +66,7 @@ import type {
   Client,
   Discussion,
   DiscussionItem,
+  DocExtraction,
   DocMatchSuggestion,
   DocumentInfo,
   HaloMeta,
@@ -378,10 +381,11 @@ function OverviewTab({
   const [docs, setDocs] = useState<DocumentInfo[]>([]);
   const { model } = qbr;
   const score = model.scorecard.overall.score ?? 0;
-  const radar = useMemo(
-    () => model.scorecard.functions.map((f) => ({ function: f.function, score: f.score ?? 0 })),
-    [model.scorecard.functions],
-  );
+  // Unmeasured functions (score null) must not render as 0 — with sparse data
+  // a radar collapses into misleading spikes, so fall back to bars.
+  const measuredFns = useMemo(() => model.scorecard.functions.filter((f) => f.score !== null), [model.scorecard.functions]);
+  const unmeasuredFns = useMemo(() => model.scorecard.functions.filter((f) => f.score === null), [model.scorecard.functions]);
+  const radar = useMemo(() => measuredFns.map((f) => ({ function: f.function, score: f.score ?? 0 })), [measuredFns]);
   const ringSections = useMemo(
     () => [{ value: score, color: RING_COLOR[model.scorecard.overall.rating] ?? 'gray' }],
     [score, model.scorecard.overall.rating],
@@ -481,10 +485,27 @@ function OverviewTab({
 
         <Card withBorder radius="md" padding="lg">
           <Title order={5} mb="md">Maturity by function</Title>
-          {radar.some((r) => r.score > 0) ? (
+          {measuredFns.length >= 3 ? (
             <RadarChart h={230} data={radar} dataKey="function" withPolarRadiusAxis series={[{ name: 'score', color: 'teal.7', opacity: 0.35 }]} />
+          ) : measuredFns.length > 0 ? (
+            <Stack gap="sm">
+              {measuredFns.map((f) => (
+                <div key={f.function}>
+                  <Group justify="space-between" mb={2}>
+                    <Text size="sm" fw={600}>{f.function}</Text>
+                    <Text size="sm" c="dimmed">{Math.round(f.score ?? 0)} / 100</Text>
+                  </Group>
+                  <Progress value={f.score ?? 0} color={RING_COLOR[f.rating] ?? 'teal'} size="md" radius="sm" />
+                </div>
+              ))}
+            </Stack>
           ) : (
-            <Text size="sm" c="dimmed">No function scores available.</Text>
+            <Text size="sm" c="dimmed">No function scores available yet — run a Sync with mapped tools.</Text>
+          )}
+          {measuredFns.length > 0 && unmeasuredFns.length > 0 && (
+            <Text size="xs" c="dimmed" mt="sm">
+              Not yet measured: {unmeasuredFns.map((f) => f.function).join(', ')} — connect more tools to light these up.
+            </Text>
           )}
         </Card>
       </SimpleGrid>
@@ -1079,6 +1100,12 @@ function ReportsTab({
   // AI matcher state, keyed by period:id (docs can move between quarters).
   const [ai, setAi] = useState<Record<string, { loading?: boolean; suggestion?: DocMatchSuggestion }>>({});
   const [bulkMatching, setBulkMatching] = useState(false);
+  // Multi-select for bulk delete + the AI metric-extraction review modal.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [extracting, setExtracting] = useState<string | null>(null);
+  const [review, setReview] = useState<{ doc: DocumentInfo; extraction: DocExtraction; source: string; checked: Set<number> } | null>(null);
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -1185,6 +1212,71 @@ function ReportsTab({
     });
   }
 
+  /** AI metric extraction: read the PDF, then review before importing. */
+  async function extract(d: DocumentInfo) {
+    setExtracting(aiKey(d));
+    try {
+      const { extraction, source } = await api.extractDocument(clientId, d.period, d.id);
+      if (extraction.metrics.length === 0) {
+        notifications.show({ color: 'yellow', message: `No importable metrics found in ${d.name}.` });
+      } else {
+        setReview({ doc: d, extraction, source, checked: new Set(extraction.metrics.map((_, i) => i)) });
+      }
+    } catch (e) {
+      notifications.show({ color: 'red', title: `Extraction failed for ${d.name}`, message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setExtracting(null);
+    }
+  }
+
+  async function importReviewed() {
+    if (!review) return;
+    setImporting(true);
+    try {
+      const metrics = review.extraction.metrics.filter((_, i) => review.checked.has(i));
+      const r = await api.importDocMetrics(clientId, review.doc.period, { source: review.source, metrics });
+      notifications.show({ color: 'teal', message: `${r.imported} metric(s) added to ${review.doc.period} — review them on the Data tab.` });
+      setReview(null);
+      onChanged();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Import failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function removeSelected() {
+    const chosen = (docs ?? []).filter((d) => selected.has(aiKey(d)));
+    if (chosen.length === 0) return;
+    if (!window.confirm(`Permanently delete ${chosen.length} report(s)? They also disappear from their quarters' appendices.`)) return;
+    setBulkDeleting(true);
+    let failed = 0;
+    for (const d of chosen) {
+      try {
+        await api.deleteDocument(clientId, d.period, d.id);
+      } catch {
+        failed++;
+      }
+    }
+    setBulkDeleting(false);
+    setSelected(new Set());
+    notifications.show({
+      color: failed ? 'yellow' : 'gray',
+      message: failed ? `Deleted ${chosen.length - failed} report(s); ${failed} failed.` : `Deleted ${chosen.length} report(s).`,
+    });
+    await reload();
+    onChanged();
+  }
+
+  function toggleSelected(key: string, on: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }
+
   return (
     <Stack gap="lg">
       <Card withBorder radius="md" padding="lg">
@@ -1195,7 +1287,8 @@ function ReportsTab({
               Every vendor report and upload for this client, across all quarters — Huntress attaches on Sync, the report inbox
               files what you forward, and uploads land in the selected quarter ({period}). Rename, categorize, or move anything
               filed to the wrong quarter — or let <b>AI match</b> read each PDF and suggest all three, then accept with one click.
-              PDFs are appended to that quarter's QBR PDF and ride on its email draft.
+              The <b>table-import</b> button reads a PDF's numbers into that quarter's data (great for Check Point checkups and for
+              ingesting a previous QBR so trends have history). PDFs are appended to that quarter's QBR PDF and ride on its email draft.
             </Text>
           </div>
           <Group gap="xs">
@@ -1249,23 +1342,46 @@ function ReportsTab({
         ) : docs.length === 0 ? (
           <Text size="sm" c="dimmed">Nothing filed yet.</Text>
         ) : (
-          <Table.ScrollContainer minWidth={820}>
+          <Table.ScrollContainer minWidth={860}>
             <Table verticalSpacing={6}>
               <Table.Thead>
                 <Table.Tr>
+                  <Table.Th w={36}>
+                    <Checkbox
+                      size="xs"
+                      aria-label="Select all reports"
+                      checked={docs.length > 0 && selected.size === docs.length}
+                      indeterminate={selected.size > 0 && selected.size < docs.length}
+                      onChange={(e) => setSelected(e.currentTarget.checked ? new Set(docs.map(aiKey)) : new Set())}
+                    />
+                  </Table.Th>
                   <Table.Th>Report</Table.Th>
                   <Table.Th w={130}>Category</Table.Th>
                   <Table.Th w={110}>Quarter</Table.Th>
                   <Table.Th>Source</Table.Th>
                   <Table.Th>Size</Table.Th>
                   <Table.Th>Filed</Table.Th>
-                  <Table.Th w={80} />
+                  <Table.Th w={110}>
+                    {selected.size > 0 && (
+                      <Button size="compact-xs" color="red" variant="light" loading={bulkDeleting} onClick={removeSelected}>
+                        Delete {selected.size}
+                      </Button>
+                    )}
+                  </Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
                 {docs.map((d) => (
                   <Fragment key={`${d.period}-${d.id}`}>
                   <Table.Tr>
+                    <Table.Td>
+                      <Checkbox
+                        size="xs"
+                        aria-label={`Select ${d.name}`}
+                        checked={selected.has(aiKey(d))}
+                        onChange={(e) => toggleSelected(aiKey(d), e.currentTarget.checked)}
+                      />
+                    </Table.Td>
                     <Table.Td>
                       <Anchor href={documentUrl(clientId, d.period, d.id)} size="sm" fw={600}>
                         {d.name}
@@ -1310,6 +1426,19 @@ function ReportsTab({
                             </ActionIcon>
                           </Tooltip>
                         )}
+                        {aiEnabled && isPdf(d) && (
+                          <Tooltip label={`Extract metrics: read the numbers in this PDF into ${d.period}'s data`}>
+                            <ActionIcon
+                              variant="subtle"
+                              color="navy"
+                              aria-label={`Extract metrics from ${d.name}`}
+                              loading={extracting === aiKey(d)}
+                              onClick={() => extract(d)}
+                            >
+                              <IconTableImport size={15} />
+                            </ActionIcon>
+                          </Tooltip>
+                        )}
                         <Tooltip label="Rename">
                           <ActionIcon variant="subtle" aria-label={`Rename ${d.name}`} onClick={() => { setRenaming(d); setNewName(d.name); }}>
                             <IconPencil size={15} />
@@ -1326,7 +1455,7 @@ function ReportsTab({
                     const conf = s.confidence === 'high' ? 'teal' : s.confidence === 'medium' ? 'yellow' : 'red';
                     return (
                       <Table.Tr>
-                        <Table.Td colSpan={7} p={0} style={{ borderTop: 'none' }}>
+                        <Table.Td colSpan={8} p={0} style={{ borderTop: 'none' }}>
                           <Alert color="teal" variant="light" p="xs" m={4} icon={<IconSparkles size={16} />}>
                             <Group gap="sm" wrap="wrap" align="center">
                               <div style={{ flex: 1, minWidth: 260 }}>
@@ -1376,6 +1505,83 @@ function ReportsTab({
             Save
           </Button>
         </Group>
+      </Modal>
+
+      <Modal opened={review !== null} onClose={() => setReview(null)} title={`Metrics found in ${review?.doc.name ?? ''}`} size="lg">
+        {review && (
+          <Stack gap="sm">
+            {review.extraction.note && <Text size="sm" c="dimmed">{review.extraction.note}</Text>}
+            {review.extraction.periodHint && review.extraction.periodHint !== review.doc.period && (
+              <Alert color="yellow" p="xs">
+                <Text size="xs">
+                  This document's content covers <b>{review.extraction.periodHint}</b> but it's filed under <b>{review.doc.period}</b> —
+                  metrics import into the quarter the file is FILED under. Cancel and move the file first (AI match does this) if that's wrong.
+                </Text>
+              </Alert>
+            )}
+            <Table.ScrollContainer minWidth={560}>
+              <Table verticalSpacing={4}>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th w={36}>
+                      <Checkbox
+                        size="xs"
+                        aria-label="Select all metrics"
+                        checked={review.checked.size === review.extraction.metrics.length}
+                        indeterminate={review.checked.size > 0 && review.checked.size < review.extraction.metrics.length}
+                        onChange={(e) =>
+                          setReview({ ...review, checked: e.currentTarget.checked ? new Set(review.extraction.metrics.map((_, i) => i)) : new Set() })
+                        }
+                      />
+                    </Table.Th>
+                    <Table.Th>Metric</Table.Th>
+                    <Table.Th ta="right">Value</Table.Th>
+                    <Table.Th>Category</Table.Th>
+                    <Table.Th>Key</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {review.extraction.metrics.map((m, i) => (
+                    <Table.Tr key={i} opacity={review.checked.has(i) ? 1 : 0.45}>
+                      <Table.Td>
+                        <Checkbox
+                          size="xs"
+                          aria-label={`Include ${m.label}`}
+                          checked={review.checked.has(i)}
+                          onChange={(e) => {
+                            const checked = new Set(review.checked);
+                            if (e.currentTarget.checked) checked.add(i);
+                            else checked.delete(i);
+                            setReview({ ...review, checked });
+                          }}
+                        />
+                      </Table.Td>
+                      <Table.Td><Text size="sm">{m.label}</Text></Table.Td>
+                      <Table.Td ta="right">
+                        <Text size="sm" fw={600}>
+                          {m.value.toLocaleString()}
+                          {m.unit && m.unit !== 'count' ? ` ${m.unit}` : ''}
+                        </Text>
+                      </Table.Td>
+                      <Table.Td><Badge size="sm" variant="light" color="gray">{m.category}</Badge></Table.Td>
+                      <Table.Td><Text size="xs" c="dimmed" ff="monospace">{m.key}</Text></Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Table.ScrollContainer>
+            <Text size="xs" c="dimmed">
+              Imported metrics appear on the Data tab under source “{review.source}” — include/exclude them there like any synced
+              metric. Extracting this document again replaces its previous import.
+            </Text>
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => setReview(null)}>Cancel</Button>
+              <Button color="teal" loading={importing} disabled={review.checked.size === 0} onClick={importReviewed}>
+                Import {review.checked.size} into {review.doc.period}
+              </Button>
+            </Group>
+          </Stack>
+        )}
       </Modal>
     </Stack>
   );

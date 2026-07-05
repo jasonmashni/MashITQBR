@@ -83,7 +83,9 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
   Access Key — keys are per-tenant, so dedicate the connection to that
   client), Dropsuite (reseller token — mailbox backup health plus **protected
   data volume, emails protected, stale-backup detection, seats, OneDrive and
-  SharePoint coverage, connection failures**), Printix (tenant + API client),
+  SharePoint coverage, connection failures**), Printix (tenant + API client —
+  Printix tenants are per-client, so add one connection per client and
+  dedicate it to that QBR client),
   ConnectSecure (pod + Client ID/Secret), and Zomentum. Each connection has
   **Test** and **Map clients** (pick who's who from the orgs found in the
   tool) — and **Halo mappings accept multiple entities per client** (service
@@ -124,10 +126,17 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
     (lookup lists come live from Halo); Halo/Zomentum opportunities push
     one-click.
   - *Reports* — the client's report repository across all quarters: rename,
-    categorize, move between quarters — or hit **AI match** and Claude reads
-    each PDF (native PDF input) and suggests the vendor, a clean name, the
-    quarter its *content* covers, and a category, with a one-click **Match**
-    button to accept. Handles the pile the report inbox accumulates.
+    categorize, move between quarters (multi-select to delete in bulk) — or
+    hit **AI match** and Claude reads each PDF (native PDF input) and suggests
+    the vendor, a clean name, the quarter its *content* covers, and a
+    category, with a one-click **Match** button to accept. The
+    **Extract metrics** button goes further: Claude pulls the quarter-scoped
+    numbers out of the PDF (a Check Point Security Checkup's phishing/spam/
+    DLP counts, a Dropsuite digest…) into a review list; what you accept
+    joins that quarter's snapshot under a `pdf:<vendor>` source and flows
+    into the report, scorecard and trends like any synced metric. Upload a
+    **previous QBR** to a past quarter and extract it the same way — instant
+    quarter-over-quarter history for a new client.
   - *Opportunities* — the cross-quarter initiative board (idea → discussing →
     approved → pushed → closed) with drag-and-drop and push-to-Halo.
   - *Studio* — per-client branding overrides (client logo shows alongside the

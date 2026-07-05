@@ -1,6 +1,6 @@
 import type { DiscussionItem, FunctionScore, MetricTrend, Rating } from '@mashit/core';
 import type { BrandTokens } from './brand.js';
-import { formatPercent, formatValue, ratingColor } from './format.js';
+import { formatPercent, formatValue, ratingColor, discussionOutcome } from './format.js';
 import type { ReportModel, ReportSection } from './model.js';
 
 /**
@@ -71,13 +71,6 @@ function logoNode(dataUri: string | undefined, opts: { width?: number; height?: 
   return { image: dataUri, fit: [opts.width ?? 170, opts.height ?? 44], alignment: opts.alignment };
 }
 
-const DISPOSITION_LABEL: Record<string, string> = {
-  pending: 'Pending',
-  create_opportunity: 'Opportunity',
-  create_ticket: 'Ticket',
-  accept_risk: 'Accept risk',
-  no_action: 'No action',
-};
 
 /**
  * Trend text safe for the PDF standard fonts (no ▲/▼ — those glyphs aren't in
@@ -212,7 +205,7 @@ function discussionTable(items: DiscussionItem[], brand: BrandTokens): Node {
       { text: d.response ?? '—', style: 'td' },
       {
         stack: [
-          { text: d.disposition ? DISPOSITION_LABEL[d.disposition] ?? d.disposition : d.status === 'discussed' ? 'Discussed' : 'Planned', style: 'td', color: brand.accent, bold: true },
+          { text: discussionOutcome(d), style: 'td', color: brand.accent, bold: true },
           ...(d.owner ? [{ text: d.owner, style: 'small' }] : []),
         ],
       },

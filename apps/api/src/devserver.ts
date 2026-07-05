@@ -70,6 +70,8 @@ const routes: Route[] = [
   { method: 'PATCH', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)$/, run: (m, b) => h.updateQbrDocument(m[1]!, m[2]!, m[3]!, b) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/documents$/, run: (m) => h.listClientDocuments(m[1]!) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)\/match$/, run: (m) => h.matchQbrDocument(m[1]!, m[2]!, m[3]!) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)\/extract$/, run: (m) => h.extractQbrDocument(m[1]!, m[2]!, m[3]!) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/metrics\/import$/, run: (m, b) => h.importDocumentMetrics(m[1]!, m[2]!, b) },
   { method: 'DELETE', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)$/, run: (m) => h.deleteQbrDocument(m[1]!, m[2]!, m[3]!) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m) => h.getDiscussion(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m, b) => h.putDiscussion(m[1]!, m[2]!, b) },
@@ -129,7 +131,11 @@ const server = createServer(async (req, res) => {
       const result = await runWithActor(actorFrom(header), async () => rt.run(m, b, url, header));
       if (result.html !== undefined) { res.writeHead(result.status, { 'Content-Type': 'text/html; charset=utf-8', ...cors }); return res.end(result.html); }
       if (result.pdf !== undefined) { res.writeHead(result.status, { 'Content-Type': 'application/pdf', ...cors }); return res.end(result.pdf); }
-      if (result.pptx !== undefined) { res.writeHead(result.status, { 'Content-Type': PPTX, 'Content-Disposition': 'attachment', ...cors }); return res.end(result.pptx); }
+      if (result.pptx !== undefined) {
+        const cd = result.filename ? `attachment; filename="${result.filename.replace(/["\\]/g, '')}"` : 'attachment';
+        res.writeHead(result.status, { 'Content-Type': PPTX, 'Content-Disposition': cd, ...cors });
+        return res.end(result.pptx);
+      }
       if (result.file !== undefined) {
         res.writeHead(result.status, {
           'Content-Type': result.file.contentType,

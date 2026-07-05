@@ -4,6 +4,7 @@ import {
   computeScorecard,
   isQbrStatus,
   lastPeriods,
+  METRIC_CATEGORIES,
   periodFor,
   previousPeriod,
   type MetricCategory,
@@ -43,6 +44,7 @@ import { buildEmailDraft, qbrEmailBody } from './emailDraft.js';
 import { clientInboxAddress, inboxConfigFromEnv, pollReportInbox } from './reportInbox.js';
 import { appendPdfAttachments, loadPdfAttachments } from './pdfMerge.js';
 import { createClaudeDocMatcher, type DocMatchModel } from './docMatch.js';
+import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 
 export interface ApiResult {
@@ -51,6 +53,8 @@ export interface ApiResult {
   html?: string;
   pdf?: Buffer;
   pptx?: Buffer;
+  /** Download name for pdf/pptx payloads (Content-Disposition). */
+  filename?: string;
   /** Arbitrary file download (attached documents, .eml drafts). */
   file?: { bytes: Buffer; contentType: string; filename: string };
 }
@@ -181,7 +185,8 @@ export async function getReportDeck(clientId: string, period: string, ai: string
     return mapBuildError(e);
   }
   try {
-    return { status: 200, pptx: await renderDeck(report.model) };
+    const safeName = report.model.client.name.replace(/[^\w .&()-]+/g, '').trim() || clientId;
+    return { status: 200, pptx: await renderDeck(report.model), filename: `${safeName} QBR ${period}.pptx` };
   } catch (e) {
     return err(501, e instanceof Error ? e.message : 'Deck rendering unavailable');
   }
@@ -284,7 +289,6 @@ export async function getMetrics(clientId: string, period: string): Promise<ApiR
   return ok({ snapshot, excluded: config?.excludedMetrics ?? [] });
 }
 
-const METRIC_CATEGORIES: readonly MetricCategory[] = ['operations', 'security', 'identity', 'backup', 'infrastructure', 'spend'];
 
 /** Replace the snapshot's manual metrics with the submitted set (add/edit/delete). */
 export async function putManualMetrics(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
@@ -503,6 +507,102 @@ export async function matchQbrDocument(
   } catch (e) {
     return err(502, `AI matching failed: ${e instanceof Error ? e.message : 'error'}`);
   }
+}
+
+/**
+ * AI metric extraction: read a filed vendor PDF (Check Point checkup,
+ * Dropsuite digest, a previous QBR…) and suggest quarter-scoped metrics for
+ * the snapshot. Returns suggestions only — the author reviews and imports via
+ * importDocumentMetrics.
+ */
+export async function extractQbrDocument(
+  clientId: string,
+  period: string,
+  id: string,
+  extractor?: DocExtractModel,
+): Promise<ApiResult> {
+  if (!extractor && !process.env['ANTHROPIC_API_KEY']) {
+    return err(501, 'AI metric extraction needs the ANTHROPIC_API_KEY app setting (same key the narrative uses).');
+  }
+  const store = getDataStore();
+  const record = await store.getDocument(clientId, period, id);
+  if (!record) return err(404, 'Unknown document');
+  const isPdf = record.contentType.includes('pdf') || /\.pdf$/i.test(record.name);
+  if (!isPdf) return err(400, 'AI extraction currently reads PDFs only.');
+  const bytes = await getDocStore().get(docPath(clientId, period, record.id, record.name));
+  if (!bytes) return err(404, 'Document content missing');
+  const client = await store.getClient(clientId);
+
+  // Canonical keys from this client's snapshots (this quarter + neighbors) so
+  // the extractor reuses them — that's what makes QoQ trending line up.
+  const knownKeys = new Map<string, string>();
+  const ds = storeDataSource(store);
+  for (const p of [record.period, previousPeriod(record.period).id, periodFor(new Date()).id]) {
+    const snap = await ds.getSnapshot(clientId, p).catch(() => undefined);
+    for (const m of snap?.metrics ?? []) if (!knownKeys.has(m.key)) knownKeys.set(m.key, m.label);
+  }
+
+  const model = extractor ?? createClaudeDocExtractor();
+  try {
+    const extraction = await model({
+      pdfBase64: bytes.toString('base64'),
+      clientName: client?.name ?? clientId,
+      period: record.period,
+      knownKeys: [...knownKeys.entries()].map(([key, label]) => ({ key, label })),
+    });
+    audit('document.extract', `qbr:${clientId}/${record.period}`, `${record.name} → ${extraction.metrics.length} metric(s)`);
+    return ok({ extraction, source: pdfSourceSlug(extraction.vendor), document: record });
+  } catch (e) {
+    return err(502, `AI extraction failed: ${e instanceof Error ? e.message : 'error'}`);
+  }
+}
+
+/**
+ * Import reviewed document metrics into the quarter's snapshot under a
+ * `pdf:<vendor>` source. Re-importing the same source replaces its previous
+ * rows; a missing snapshot (previous-QBR ingestion) is created.
+ */
+export async function importDocumentMetrics(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const source = (typeof body['source'] === 'string' ? body['source'].trim() : '') as `pdf:${string}`;
+  if (!/^pdf:[a-z0-9-]{1,40}$/.test(source)) return err(400, 'source must look like pdf:<vendor>.');
+  if (!PERIOD_RE.test(period)) return err(400, 'Invalid period.');
+
+  const rows = Array.isArray(body['metrics']) ? (body['metrics'] as Array<Record<string, unknown>>) : [];
+  const imported: MetricValue[] = [];
+  for (const raw of rows) {
+    const label = typeof raw['label'] === 'string' ? raw['label'].trim() : '';
+    const value = raw['value'];
+    const category = raw['category'];
+    if (!label || (typeof value !== 'number' && typeof value !== 'string' && typeof value !== 'boolean')) {
+      return err(400, 'Each metric needs a label and a value.');
+    }
+    if (!METRIC_CATEGORIES.includes(category as MetricCategory)) return err(400, `Unknown category: ${String(category)}`);
+    const rawKey = typeof raw['key'] === 'string' ? raw['key'].trim().toLowerCase() : '';
+    if (!/^[a-z0-9][a-z0-9._-]{1,79}$/.test(rawKey)) return err(400, `Invalid metric key: ${rawKey || '(empty)'}`);
+    imported.push({
+      key: rawKey,
+      label,
+      value,
+      unit: typeof raw['unit'] === 'string' && raw['unit'] ? raw['unit'] : undefined,
+      source,
+      category: category as MetricCategory,
+      higherIsBetter: typeof raw['higherIsBetter'] === 'boolean' ? raw['higherIsBetter'] : undefined,
+    });
+  }
+  if (imported.length === 0) return err(400, 'No metrics to import.');
+
+  const store = getDataStore();
+  // Previous-QBR ingestion targets quarters that never had a sync — create.
+  const base = (await storeDataSource(store).getSnapshot(clientId, period)) ?? {
+    clientId,
+    period,
+    capturedAt: new Date().toISOString(),
+    metrics: [] as MetricValue[],
+  };
+  const kept = base.metrics.filter((m) => m.source !== source);
+  await store.putSnapshot({ ...base, clientId, period, metrics: [...kept, ...imported] });
+  audit('metrics.import', `qbr:${clientId}/${period}`, `${imported.length} metric(s) from ${source}`);
+  return ok({ imported: imported.length, source, period });
 }
 
 // ── Opportunity board (per-client Kanban of QBR initiatives) ─────────────────

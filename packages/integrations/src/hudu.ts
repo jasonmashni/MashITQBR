@@ -19,9 +19,17 @@ type Json = Record<string, unknown>;
 
 async function huduGet(http: HttpTransport, cfg: HuduCfg, path: string, params: Record<string, string | number> = {}): Promise<unknown> {
   const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)]))).toString();
-  const url = `${cfg.baseUrl.replace(/\/+$/, '')}/api/v1/${path}${qs ? `?${qs}` : ''}`;
-  const res = await http.request({ method: 'GET', url, headers: { 'x-api-key': cfg.apiKey, Accept: 'application/json' } });
-  if (res.status < 200 || res.status >= 300) throw new Error(`Hudu responded ${res.status} for /api/v1/${path}`);
+  // Tolerate a base URL pasted with the API path already on it.
+  const base = cfg.baseUrl.replace(/\/+$/, '').replace(/\/api\/v1$/i, '');
+  const url = `${base}/api/v1/${path}${qs ? `?${qs}` : ''}`;
+  const res = await http.request({ method: 'GET', url, headers: { 'x-api-key': cfg.apiKey.trim(), Accept: 'application/json' } });
+  if (res.status < 200 || res.status >= 300) {
+    const hint =
+      res.status === 401
+        ? ' — a 401 from Hudu means the API key is wrong, revoked, or lacks access: in Hudu go to Admin → API Keys, create a key (no extra permissions needed for read), and paste it exactly.'
+        : '';
+    throw new Error(`Hudu responded ${res.status} for /api/v1/${path}${hint}`);
+  }
   return res.json;
 }
 

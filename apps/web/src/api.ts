@@ -5,6 +5,7 @@ import type {
   Client,
   ConnectionView,
   Discussion,
+  DocExtraction,
   DocMatchSuggestion,
   DocumentInfo,
   HaloMeta,
@@ -146,6 +147,14 @@ export const api = {
     send('POST', `/api/clients/${clientId}/qbr/${period}/documents/${id}/match`).then(
       json<{ suggestion: DocMatchSuggestion; document: DocumentInfo }>,
     ),
+  /** Ask the AI to read a filed PDF and extract QBR metrics for review. */
+  extractDocument: (clientId: string, period: string, id: string) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/documents/${id}/extract`).then(
+      json<{ extraction: DocExtraction; source: string; document: DocumentInfo }>,
+    ),
+  /** Import reviewed document metrics into the quarter's snapshot. */
+  importDocMetrics: (clientId: string, period: string, body: { source: string; metrics: DocExtraction['metrics'] }) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/metrics/import`, body).then(json<{ imported: number; source: string; period: string }>),
 
   // Opportunity board
   listOpportunities: (clientId: string) => send('GET', `/api/clients/${clientId}/opportunities`).then(json<{ opportunities: Opportunity[] }>),

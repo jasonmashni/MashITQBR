@@ -202,6 +202,14 @@ export interface DocMatchSuggestion {
   rationale: string;
 }
 
+/** AI-extracted metrics from a filed PDF (review before import). */
+export interface DocExtraction {
+  vendor: string;
+  periodHint: string;
+  metrics: Array<{ key: string; label: string; value: number; unit?: string; category: string; higherIsBetter?: boolean }>;
+  note: string;
+}
+
 /** Halo lookup lists for the push-ticket modal. */
 export interface HaloMeta {
   ticketTypes: Array<{ id: string; name: string }>;

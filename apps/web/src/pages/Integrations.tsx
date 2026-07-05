@@ -146,12 +146,13 @@ const TYPES: TypeDef[] = [
   {
     value: 'printix',
     label: 'Printix',
-    hint: 'Print fleet size & health. Register an API client in the Printix admin portal.',
+    hint: 'Print fleet size & health. Each client has their OWN Printix tenant — register an API client in THAT tenant\'s admin portal and dedicate this connection to the QBR client (add one connection per client).',
     config: [
       { key: 'tenantId', label: 'Tenant ID (GUID)' },
       { key: 'clientId', label: 'Client ID' },
     ],
     secrets: [{ key: 'clientSecret', label: 'Client Secret' }],
+    perClient: 'required',
   },
   {
     value: 'connectsecure',
@@ -259,8 +260,10 @@ function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved
     <Modal opened onClose={() => onClose(false)} title={`Map clients — ${conn.label}`} size="lg">
       <Stack>
         <Text size="sm" c="dimmed">
-          Tell {typeDef(conn.type)?.label ?? conn.type} which of your QBR clients is which
-          {orgs ? ' — pick from the orgs found in the tool.' : ' — enter each client’s id in the tool.'}
+          Match each QBR client to its record in {typeDef(conn.type)?.label ?? conn.type}
+          {orgs
+            ? ' — pick from the organizations found in the tool.'
+            : ` — the tool's organization list couldn't be loaded, so type each client's ${typeDef(conn.type)?.label ?? conn.type} id manually (or fix the connection and reopen).`}
           {multi && ' You can pick multiple Halo entities per client (e.g. a service + a billing entity) — their numbers are combined.'}
         </Text>
         {orgError && <Text size="sm" c="red.7">{orgError}</Text>}

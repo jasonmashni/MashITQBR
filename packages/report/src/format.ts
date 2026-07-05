@@ -69,3 +69,20 @@ export function ratingColor(rating: Rating): string {
 export function ratingClass(rating: Rating): string {
   return `rating-${rating}`;
 }
+
+const DISPOSITION_LABEL: Record<string, string> = {
+  create_opportunity: 'Opportunity',
+  create_ticket: 'Ticket',
+  accept_risk: 'Accept risk',
+  no_action: 'No action',
+};
+
+/**
+ * Executive outcome label for a discussion item: a real disposition when one
+ * was chosen, otherwise the discussion state. Unanswered agenda items read
+ * "To discuss" — "Pending" made a pre-meeting report look broken.
+ */
+export function discussionOutcome(d: { disposition?: string; status?: string }): string {
+  if (d.disposition && d.disposition !== 'pending') return DISPOSITION_LABEL[d.disposition] ?? d.disposition;
+  return d.status === 'discussed' ? 'Discussed' : 'To discuss';
+}

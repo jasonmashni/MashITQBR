@@ -503,8 +503,14 @@ export async function syncClientMetrics(
     runs.push({ source: 'dropsuite', run: async () => collectDropsuite(ctx(refs.dropsuite), http, await dropsuiteCfg(secrets, dropsuite)) });
   }
 
+  // Printix tenants are per-client (each client's own Printix tenant id +
+  // API client) — run every connection dedicated to this client. A shared
+  // connection still works via the legacy per-client tenant-id mapping.
+  for (const px of allConns.filter((c) => c.type === 'printix' && c.config['qbrClientId'] === clientId)) {
+    runs.push({ source: 'printix', run: async () => collectPrintix(ctx(px.config['tenantId'] || refs.printix), http, await printixCfg(secrets, px, refs.printix)) });
+  }
   const printix = conns.get('printix');
-  if (printix && (refs.printix || printix.config['tenantId'])) {
+  if (printix && !printix.config['qbrClientId'] && refs.printix) {
     runs.push({ source: 'printix', run: async () => collectPrintix(ctx(refs.printix), http, await printixCfg(secrets, printix, refs.printix)) });
   }
 

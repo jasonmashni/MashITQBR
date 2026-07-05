@@ -187,6 +187,15 @@ describe('Hudu', () => {
     const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
     expect(by['docs.assets']).toBe(2);
   });
+
+  it('tolerates a base URL pasted with /api/v1 and explains a 401', async () => {
+    const { http, requests } = fakeHttp(() => ({ status: 401, json: {} }));
+    await expect(listHuduCompanies(http, { baseUrl: 'https://x.huducloud.com/api/v1/', apiKey: ' hk ' })).rejects.toThrow(
+      /401.*Admin → API Keys/,
+    );
+    expect(requests[0]!.url).toBe('https://x.huducloud.com/api/v1/companies?page=1&page_size=100');
+    expect(requests[0]!.headers?.['x-api-key']).toBe('hk'); // trimmed
+  });
 });
 
 describe('Check Point Infinity Portal auth', () => {

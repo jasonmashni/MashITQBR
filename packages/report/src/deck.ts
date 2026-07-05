@@ -1,5 +1,5 @@
 import type { DiscussionItem, MetricTrend } from '@mashit/core';
-import { ratingColor } from './format.js';
+import { discussionOutcome, ratingColor } from './format.js';
 import { formatValue } from './format.js';
 import type { ReportModel, ReportSection } from './model.js';
 
@@ -14,6 +14,66 @@ import type { ReportModel, ReportSection } from './model.js';
  */
 
 const hex = (c: string) => c.replace('#', '').toUpperCase();
+
+/**
+ * Intrinsic pixel (or unit) dimensions of a data-URI image — PNG, JPEG, GIF,
+ * WEBP (VP8/VP8L/VP8X) and SVG (width/height attrs or viewBox). Exported for
+ * tests. Returns undefined when the format can't be read; callers then fall
+ * back to the raw box.
+ */
+export function imageDims(dataUri: string): { w: number; h: number } | undefined {
+  const m = dataUri.match(/^data:image\/([a-z+.-]+);base64,(.*)$/i);
+  if (!m) return undefined;
+  const kind = m[1]!.toLowerCase();
+  const buf = Buffer.from(m[2]!, 'base64');
+  try {
+    if (kind === 'svg+xml') {
+      const svg = buf.toString('utf8');
+      const attr = (name: string) => {
+        const a = svg.match(new RegExp(`<svg[^>]*\\b${name}="([0-9.]+)(?:px)?"`, 'i'));
+        return a ? Number(a[1]) : undefined;
+      };
+      const w = attr('width');
+      const h = attr('height');
+      if (w && h) return { w, h };
+      const vb = svg.match(/<svg[^>]*\bviewBox="[\d.\s-]*?([\d.]+)\s+([\d.]+)"/i);
+      if (vb) return { w: Number(vb[1]), h: Number(vb[2]) };
+      return undefined;
+    }
+    if (kind === 'png' && buf.length >= 24 && buf.readUInt32BE(12) === 0x49484452) {
+      return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+    }
+    if ((kind === 'jpeg' || kind === 'jpg') && buf[0] === 0xff && buf[1] === 0xd8) {
+      // Walk JPEG segments to a SOFn marker carrying the frame size.
+      let i = 2;
+      while (i + 9 < buf.length) {
+        if (buf[i] !== 0xff) break;
+        const marker = buf[i + 1]!;
+        const len = buf.readUInt16BE(i + 2);
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) };
+        }
+        i += 2 + len;
+      }
+      return undefined;
+    }
+    if (kind === 'gif' && buf.length >= 10) {
+      return { w: buf.readUInt16LE(6), h: buf.readUInt16LE(8) };
+    }
+    if (kind === 'webp' && buf.length >= 30 && buf.toString('ascii', 8, 12) === 'WEBP') {
+      const fourcc = buf.toString('ascii', 12, 16);
+      if (fourcc === 'VP8X') return { w: 1 + buf.readUIntLE(24, 3), h: 1 + buf.readUIntLE(27, 3) };
+      if (fourcc === 'VP8L') {
+        const b = buf.readUInt32LE(21);
+        return { w: 1 + (b & 0x3fff), h: 1 + ((b >> 14) & 0x3fff) };
+      }
+      if (fourcc === 'VP8 ') return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
 const GRAY = '5A6B7B';
 const LIGHT = 'E9EDF2';
 
@@ -78,10 +138,27 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     slide.addShape('rect', { x: CONTENT_X, y: TITLE_Y + 0.62, w: 1.1, h: 0.05, fill: { color: ACCENT }, line: { type: 'none' } });
   };
 
-  const logo = (slide: any, dataUri: string | undefined, opts: { x: number; y: number; w: number; h: number }) => {
+  // pptxgenjs can't read intrinsic dimensions out of a data URI, so its
+  // "contain" sizing stretches logos into the box. Compute the aspect-correct
+  // placement ourselves and anchor it to the box's edge.
+  const logo = (
+    slide: any,
+    dataUri: string | undefined,
+    opts: { x: number; y: number; w: number; h: number; anchor?: 'left' | 'right' },
+  ) => {
     if (!dataUri) return;
     try {
-      slide.addImage({ data: dataUri, x: opts.x, y: opts.y, w: opts.w, h: opts.h, sizing: { type: 'contain', w: opts.w, h: opts.h } });
+      const dims = imageDims(dataUri);
+      let { w, h } = opts;
+      let { x, y } = opts;
+      if (dims) {
+        const scale = Math.min(opts.w / dims.w, opts.h / dims.h);
+        w = dims.w * scale;
+        h = dims.h * scale;
+        if (opts.anchor === 'right') x = opts.x + opts.w - w;
+        y = opts.y + (opts.h - h) / 2;
+      }
+      slide.addImage({ data: dataUri, x, y, w, h });
     } catch {
       // A malformed logo must never break deck generation.
     }
@@ -91,8 +168,8 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
   {
     const s = pptx.addSlide({ masterName: 'TITLE' });
     s.addShape('rect', { x: 0, y: 0, w: PAGE_W, h: 0.22, fill: { color: ACCENT }, line: { type: 'none' } });
-    logo(s, brand.orgLogoDataUri, { x: CONTENT_X, y: 0.55, w: 2.8, h: 0.62 });
-    logo(s, brand.logoDataUri, { x: PAGE_W - CONTENT_X - 2.2, y: 0.55, w: 2.2, h: 0.62 });
+    logo(s, brand.orgLogoDataUri, { x: CONTENT_X, y: 0.45, w: 2.8, h: 0.85, anchor: 'left' });
+    logo(s, brand.logoDataUri, { x: PAGE_W - CONTENT_X - 2.2, y: 0.45, w: 2.2, h: 0.85, anchor: 'right' });
 
     s.addShape('rect', { x: CONTENT_X, y: 2.6, w: 0.12, h: 2.15, fill: { color: ACCENT }, line: { type: 'none' } });
     s.addText('QUARTERLY BUSINESS REVIEW', {
@@ -156,25 +233,55 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
       x: CONTENT_X, y: BODY_Y + 4.0, w: 4.0, h: 0.9, fontFace: FONT, fontSize: 10, color: GRAY, valign: 'top',
     });
 
-    const fns = sc.functions;
-    s.addChart(
-      pptx.ChartType.radar,
-      [{ name: 'Maturity', labels: fns.map((f) => f.function), values: fns.map((f) => f.score ?? 0) }],
-      {
-        x: 5.4, y: BODY_Y + 0.05, w: 7.2, h: 4.9,
-        radarStyle: 'filled',
-        chartColors: [ACCENT],
-        chartColorsOpacity: 35,
-        showLegend: false,
-        valAxisMaxVal: 100,
-        valAxisMinVal: 0,
-        catAxisLabelColor: PRIMARY,
-        catAxisLabelFontFace: FONT,
-        catAxisLabelFontSize: 11,
-        valAxisLabelFontSize: 8,
-        valAxisLabelColor: GRAY,
-      },
-    );
+    // Unmeasured functions must not chart as 0 — with sparse data a radar
+    // collapses into misleading spikes, so switch to horizontal bars.
+    const fns = sc.functions.filter((f) => f.score !== null);
+    if (fns.length >= 3) {
+      s.addChart(
+        pptx.ChartType.radar,
+        [{ name: 'Maturity', labels: fns.map((f) => f.function), values: fns.map((f) => f.score ?? 0) }],
+        {
+          x: 5.4, y: BODY_Y + 0.05, w: 7.2, h: 4.9,
+          radarStyle: 'filled',
+          chartColors: [ACCENT],
+          chartColorsOpacity: 35,
+          showLegend: false,
+          valAxisMaxVal: 100,
+          valAxisMinVal: 0,
+          catAxisLabelColor: PRIMARY,
+          catAxisLabelFontFace: FONT,
+          catAxisLabelFontSize: 11,
+          valAxisLabelFontSize: 8,
+          valAxisLabelColor: GRAY,
+        },
+      );
+    } else if (fns.length > 0) {
+      s.addChart(
+        pptx.ChartType.bar,
+        [{ name: 'Maturity', labels: fns.map((f) => f.function), values: fns.map((f) => f.score ?? 0) }],
+        {
+          x: 5.4, y: BODY_Y + 0.3, w: 7.2, h: 1.0 + fns.length * 0.8,
+          barDir: 'bar',
+          chartColors: [ACCENT],
+          showLegend: false,
+          valAxisMaxVal: 100,
+          valAxisMinVal: 0,
+          catAxisLabelFontFace: FONT,
+          catAxisLabelFontSize: 11,
+          catAxisLabelColor: PRIMARY,
+          valAxisLabelFontSize: 8,
+          valAxisLabelColor: GRAY,
+          dataLabelColor: PRIMARY,
+          showValue: true,
+        },
+      );
+      const missing = sc.functions.filter((f) => f.score === null).map((f) => f.function);
+      if (missing.length) {
+        s.addText(`Not yet measured: ${missing.join(', ')}`, {
+          x: 5.4, y: BODY_Y + 1.5 + fns.length * 0.8, w: 7.2, h: 0.4, fontFace: FONT, fontSize: 10, color: GRAY, valign: 'top',
+        });
+      }
+    }
   }
 
   // ── Quarter-over-quarter movers (native bar chart) ──────────────────────
@@ -231,7 +338,7 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
         ...model.discussion.map((d: DiscussionItem) => [
           { text: d.topic, options: { fontFace: FONT, fontSize: 11, bold: true } },
           { text: d.response ?? '—', options: { fontFace: FONT, fontSize: 11 } },
-          { text: dispositionLabel(d), options: { fontFace: FONT, fontSize: 11, color: ACCENT, bold: true } },
+          { text: discussionOutcome(d), options: { fontFace: FONT, fontSize: 11, color: ACCENT, bold: true } },
         ]),
       ];
       s.addTable(rows, {
@@ -270,17 +377,6 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
   return out as Buffer;
 }
 
-function dispositionLabel(d: DiscussionItem): string {
-  const labels: Record<string, string> = {
-    pending: 'Pending',
-    create_opportunity: 'Opportunity',
-    create_ticket: 'Ticket',
-    accept_risk: 'Accept risk',
-    no_action: 'No action',
-  };
-  if (d.disposition) return labels[d.disposition] ?? d.disposition;
-  return d.status === 'discussed' ? 'Discussed' : 'Planned';
-}
 
 // Telemetry-volume metrics (SIEM events, log counts) dwarf everything else on
 // a shared axis and aren't executive QoQ material anyway.

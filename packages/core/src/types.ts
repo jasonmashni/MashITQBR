@@ -19,7 +19,9 @@ export type IntegrationId =
   | 'connectsecure'
   | 'googleworkspace'
   | 'synology'
-  | 'manual';
+  | 'manual'
+  // Metrics imported from a filed document (AI extraction), e.g. pdf:check-point.
+  | `pdf:${string}`;
 
 /** High-level grouping a metric belongs to (drives report section placement). */
 export type MetricCategory =
@@ -29,6 +31,9 @@ export type MetricCategory =
   | 'backup'
   | 'infrastructure'
   | 'spend';
+
+/** Runtime list of the categories (validation + AI schema enums). */
+export const METRIC_CATEGORIES: readonly MetricCategory[] = ['operations', 'security', 'identity', 'backup', 'infrastructure', 'spend'];
 
 /** A normalized, point-in-time metric value collected from an integration. */
 export interface MetricValue {

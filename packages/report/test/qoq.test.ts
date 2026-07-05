@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MetricTrend } from '@mashit/core';
-import { pickMovers } from '@mashit/report';
+import { discussionOutcome, imageDims, pickMovers } from '@mashit/report';
 
 const trend = (key: string, current: number, previous: number): MetricTrend => ({
   key,
@@ -36,5 +36,37 @@ describe('deck QoQ movers', () => {
       trend('c.real', 10, 5),
     ]);
     expect(picked.map((t) => t.key)).toEqual(['c.real']);
+  });
+});
+
+describe('discussionOutcome', () => {
+  it('reads "To discuss" for unanswered agenda items, never "Pending"', () => {
+    expect(discussionOutcome({ disposition: 'pending', status: 'planned' })).toBe('To discuss');
+    expect(discussionOutcome({ status: 'planned' })).toBe('To discuss');
+    expect(discussionOutcome({ disposition: 'pending', status: 'discussed' })).toBe('Discussed');
+    expect(discussionOutcome({ disposition: 'create_ticket' })).toBe('Ticket');
+    expect(discussionOutcome({ disposition: 'no_action', status: 'planned' })).toBe('No action');
+  });
+});
+
+describe('imageDims (deck logo aspect ratio)', () => {
+  it('reads PNG dimensions from the IHDR chunk', () => {
+    const png = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]),
+      Buffer.from('IHDR'),
+      Buffer.from([0, 0, 1, 0x2c, 0, 0, 0, 0x64, 8, 6, 0, 0, 0]), // 300 × 100
+    ]);
+    expect(imageDims(`data:image/png;base64,${png.toString('base64')}`)).toEqual({ w: 300, h: 100 });
+  });
+
+  it('reads SVG dimensions from attributes and viewBox', () => {
+    const svg = (markup: string) => `data:image/svg+xml;base64,${Buffer.from(markup).toString('base64')}`;
+    expect(imageDims(svg('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="64"></svg>'))).toEqual({ w: 300, h: 64 });
+    expect(imageDims(svg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40"></svg>'))).toEqual({ w: 120, h: 40 });
+  });
+
+  it('returns undefined for unreadable input (caller keeps the raw box)', () => {
+    expect(imageDims('data:image/png;base64,AAAA')).toBeUndefined();
+    expect(imageDims('not-a-data-uri')).toBeUndefined();
   });
 });

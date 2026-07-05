@@ -14,7 +14,10 @@ function toResponse(r: ApiResult): HttpResponseInit {
   const sec = SECURITY_HEADERS;
   if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...sec }, body: r.html };
   if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf', ...sec }, body: r.pdf };
-  if (r.pptx !== undefined) return { status: r.status, headers: { 'Content-Type': PPTX, 'Content-Disposition': 'attachment', ...sec }, body: r.pptx };
+  if (r.pptx !== undefined) {
+    const cd = r.filename ? `attachment; filename="${r.filename.replace(/["\\]/g, '')}"` : 'attachment';
+    return { status: r.status, headers: { 'Content-Type': PPTX, 'Content-Disposition': cd, ...sec }, body: r.pptx };
+  }
   if (r.file !== undefined) {
     return {
       status: r.status,
@@ -66,6 +69,8 @@ route('downloadDoc', 'GET', 'api/clients/{clientId}/qbr/{period}/documents/{docI
 route('updateDoc', 'PATCH', 'api/clients/{clientId}/qbr/{period}/documents/{docId}', async (req) => h.updateQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!, await body(req)));
 route('clientDocs', 'GET', 'api/clients/{clientId}/documents', (req) => h.listClientDocuments(req.params['clientId']!));
 route('matchDoc', 'POST', 'api/clients/{clientId}/qbr/{period}/documents/{docId}/match', (req) => h.matchQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
+route('extractDoc', 'POST', 'api/clients/{clientId}/qbr/{period}/documents/{docId}/extract', (req) => h.extractQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
+route('importDocMetrics', 'POST', 'api/clients/{clientId}/qbr/{period}/metrics/import', async (req) => h.importDocumentMetrics(req.params['clientId']!, req.params['period']!, await body(req)));
 route('deleteDoc', 'DELETE', 'api/clients/{clientId}/qbr/{period}/documents/{docId}', (req) => h.deleteQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
 
 // Opportunity board

@@ -1,6 +1,6 @@
 import type { CustomSection, DiscussionItem, FunctionScore, SafeguardResult } from '@mashit/core';
 import { MASH_IT_BRAND, type BrandTokens } from './brand.js';
-import { formatPercent, formatTrend, formatValue, ratingClass } from './format.js';
+import { formatPercent, formatTrend, formatValue, ratingClass, discussionOutcome } from './format.js';
 import type { ReportModel, ReportSection } from './model.js';
 
 function esc(s: string): string {
@@ -124,20 +124,13 @@ function renderSection(section: ReportSection): string {
   <tbody>${rows}</tbody></table>`;
 }
 
-const DISPOSITION_LABEL: Record<string, string> = {
-  pending: 'Pending',
-  create_opportunity: 'Opportunity',
-  create_ticket: 'Ticket',
-  accept_risk: 'Accept risk',
-  no_action: 'No action',
-};
 
 function renderDiscussion(m: ReportModel): string {
   if (m.discussion.length === 0 && !m.notes) return '';
   const row = (d: DiscussionItem) =>
-    `<tr><td>${esc(d.topic)}</td><td>${esc(d.response ?? '')}</td><td>${
-      d.disposition ? `<span class="chip disp">${esc(DISPOSITION_LABEL[d.disposition] ?? d.disposition)}</span>` : ''
-    }${d.owner ? `<br><span class="meta">${esc(d.owner)}</span>` : ''}</td></tr>`;
+    `<tr><td>${esc(d.topic)}</td><td>${esc(d.response ?? '')}</td><td><span class="chip disp">${esc(discussionOutcome(d))}</span>${
+      d.owner ? `<br><span class="meta">${esc(d.owner)}</span>` : ''
+    }</td></tr>`;
   const table = m.discussion.length
     ? `<table><thead><tr><th>Discussion / Decision</th><th>Client response &amp; notes</th><th>Disposition</th></tr></thead>
        <tbody>${m.discussion.map(row).join('\n')}</tbody></table>`
