@@ -175,6 +175,22 @@ async function haloPageAll(
 
 /** Fields that plausibly carry a recurring monthly amount on contract rows. */
 const MRR_FIELDS = ['monthlyvalue', 'monthly_value', 'periodicbillingamount', 'periodic_billing_amount', 'monthlycharge', 'recurringvalue'];
+/** Contract end/renewal date fields (varies by Halo instance). */
+const END_DATE_FIELDS = ['enddate', 'end_date', 'expirydate', 'expiry_date', 'contractenddate', 'contract_end_date', 'renewaldate', 'renewal_date'];
+/** Contracts ending within this many days of the quarter close are "up for renewal". */
+const RENEWAL_WINDOW_DAYS = 90;
+
+/** First parseable date field → 'YYYY-MM-DD', else undefined. */
+const firstDate = (row: Json, keys: string[]): string | undefined => {
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === 'string' && v) {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) return new Date(t).toISOString().slice(0, 10);
+    }
+  }
+  return undefined;
+};
 /** Fields that plausibly carry an invoice total (net preferred over gross). */
 const INVOICE_TOTAL_FIELDS = ['nettotal', 'net_total', 'total', 'totalprice', 'totalinctax'];
 const INVOICE_DATE_FIELDS = ['invoicedate', 'invoice_date', 'date', 'datesent'];
@@ -378,13 +394,27 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
     let mrr = 0;
     let recognized = 0;
     const contractRows: DetailRow[] = [];
+    // Renewal readiness: contracts ending between the quarter start and 90 days
+    // past its close are the ones to raise for renewal (drives the agenda + a
+    // dashboard flag). End-date fields vary by instance; absent → simply skipped.
+    const windowStart = Date.parse(`${input.periodStart}T00:00:00Z`);
+    const windowEnd = Date.parse(`${input.periodEnd}T23:59:59Z`) + RENEWAL_WINDOW_DAYS * 86_400_000;
+    let expiring = 0;
+    const expiringRows: DetailRow[] = [];
     for (const c of input.contracts) {
+      const name = firstStr(c, ['ref', 'reference', 'name']) ?? String(c['id'] ?? '');
       const v = firstNum(c, MRR_FIELDS);
+      const ends = firstDate(c, END_DATE_FIELDS);
       if (v !== undefined) {
         mrr += v;
         recognized++;
-        if (contractRows.length < DETAIL_CAP) {
-          contractRows.push({ contract: firstStr(c, ['ref', 'reference', 'name']) ?? String(c['id'] ?? ''), monthly: v });
+        if (contractRows.length < DETAIL_CAP) contractRows.push({ contract: name, monthly: v, ...(ends ? { ends } : {}) });
+      }
+      if (ends) {
+        const t = Date.parse(`${ends}T12:00:00Z`);
+        if (t >= windowStart && t <= windowEnd) {
+          expiring++;
+          if (expiringRows.length < DETAIL_CAP) expiringRows.push({ contract: name, ends, ...(v !== undefined ? { monthly: v } : {}) });
         }
       }
     }
@@ -395,6 +425,16 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
       }
     } else {
       warnings.push('Halo contracts carry no recognizable recurring monthly value field — MRR not computed (check contract billing setup).');
+    }
+    if (expiring > 0) {
+      metrics.push(
+        metric('finance.contracts_expiring', 'Agreements up for renewal (90 days)', expiring, {
+          category: 'spend',
+          source: 'halo',
+          higherIsBetter: false,
+          details: expiringRows.sort((a, b) => String(a['ends']).localeCompare(String(b['ends']))),
+        }),
+      );
     }
   }
 

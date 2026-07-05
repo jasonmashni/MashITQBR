@@ -61,6 +61,7 @@ const HEADLINE_KEYS = [
   'infra.risky_services',
   'finance.mrr',
   'finance.quarter_invoiced',
+  'finance.contracts_expiring',
 ];
 
 const SENTIMENT_RANK: Record<string, number> = { negative: 0, neutral: 1, positive: 2, na: 3 };
@@ -110,6 +111,14 @@ const num = (ctx: AgendaContext, key: string): number | null => {
 export function offlineAgenda(ctx: AgendaContext): AgendaSuggestion[] {
   const out: AgendaSuggestion[] = [];
   const compliance = ctx.complianceStandard ? ` (relevant to ${ctx.complianceStandard})` : '';
+
+  const renewing = num(ctx, 'finance.contracts_expiring');
+  if (renewing && renewing > 0) {
+    out.push({
+      topic: 'Confirm renewals for agreements coming due',
+      rationale: `${renewing} agreement(s) are up for renewal within 90 days — a proactive renewal conversation protects recurring revenue and continuity.`,
+    });
+  }
 
   const warrantyExpired = num(ctx, 'assets.warranty_expired');
   if (warrantyExpired && warrantyExpired > 0) {

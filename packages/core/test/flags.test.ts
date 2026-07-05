@@ -38,6 +38,12 @@ describe('computeFlags', () => {
     expect(flags.map((f) => f.label)).toContain('Spend up 50% QoQ');
   });
 
+  it('flags agreements up for renewal', () => {
+    const flags = computeFlags(snap([['finance.contracts_expiring', 2]]));
+    expect(flags.map((f) => f.label)).toContain('2 agreements up for renewal');
+    expect(computeFlags(snap([['finance.contracts_expiring', 1]])).map((f) => f.label)).toContain('1 agreement up for renewal');
+  });
+
   it('stays quiet when posture is healthy', () => {
     const flags = computeFlags(
       snap([

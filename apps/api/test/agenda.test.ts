@@ -17,6 +17,7 @@ const current = snap('2026-Q2', [
   { key: 'assets.warranty_expired', label: 'Devices out of warranty', value: 10, source: 'hudu', category: 'infrastructure', higherIsBetter: false },
   { key: 'identity.mfa_coverage_pct', label: 'MFA coverage', value: 82, unit: '%', source: 'cipp', category: 'identity', higherIsBetter: true },
   { key: 'backup.failed_jobs', label: 'Failed backup jobs', value: 3, source: 'dropsuite', category: 'backup', higherIsBetter: false },
+  { key: 'finance.contracts_expiring', label: 'Agreements up for renewal (90 days)', value: 2, source: 'halo', category: 'spend', higherIsBetter: false },
 ]);
 const previous = snap('2026-Q1', [
   { key: 'tickets.total', label: 'Total tickets', value: 20, source: 'halo', category: 'operations', higherIsBetter: false },
@@ -41,8 +42,8 @@ describe('agenda suggestions', () => {
     expect(out.length).toBeGreaterThan(0);
     expect(out.length).toBeLessThanOrEqual(3);
     const blob = out.map((s) => `${s.topic} ${s.rationale}`).join(' ');
-    expect(blob).toMatch(/warranty|refresh/i); // 10 out-of-warranty devices surfaces
-    expect(blob).toMatch(/10|82|3/); // real figures cited, nothing invented
+    expect(blob).toMatch(/renewal|renew/i); // 2 agreements up for renewal surfaces first
+    expect(blob).toMatch(/10|82|3|2/); // real figures cited, nothing invented
   });
 
   it('handler falls back to offline suggestions without an AI key', async () => {

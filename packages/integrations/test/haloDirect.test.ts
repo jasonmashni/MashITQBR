@@ -494,6 +494,27 @@ describe('normalizeHaloFinance', () => {
     expect(by['finance.mrr']).toBe(2750);
   });
 
+  it('flags agreements up for renewal within 90 days of quarter close', () => {
+    const { metrics } = normalizeHaloFinance({
+      contracts: [
+        { id: 1, ref: 'Managed Services', monthlyvalue: 4000, enddate: '2026-08-15' }, // ~6 wks after close → renewing
+        { id: 2, ref: 'Cybersecurity', monthlyvalue: 1500, end_date: '2026-06-20' }, // expired during the quarter → renewing
+        { id: 3, ref: 'vCISO', monthlyvalue: 800, enddate: '2027-03-01' }, // far out → not renewing
+        { id: 4, ref: 'BDR', monthlyvalue: 500 }, // no end date → ignored for renewal
+      ],
+      invoices: [],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    const renew = metrics.find((m) => m.key === 'finance.contracts_expiring');
+    expect(renew?.value).toBe(2);
+    // Drill-down lists the two renewing agreements, soonest first, with dates.
+    expect(renew?.details?.map((d) => d['contract'])).toEqual(['Cybersecurity', 'Managed Services']);
+    expect(renew?.details?.[0]).toMatchObject({ ends: '2026-06-20', monthly: 1500 });
+    // MRR still totals every recognized contract.
+    expect(metrics.find((m) => m.key === 'finance.mrr')?.value).toBe(6800);
+  });
+
   it('says which contract fields it saw when no recurring items are recognizable', () => {
     const { warnings } = normalizeHaloFinance({
       contracts: [{ id: 1, monthlyvalue: 2750 }],

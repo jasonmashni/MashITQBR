@@ -49,6 +49,10 @@ export function computeFlags(
   const incidents = n('huntress.edr_incidents');
   if (incidents !== undefined && incidents > 0) flags.push({ severity: 'amber', label: `${incidents} security incident${incidents === 1 ? '' : 's'}` });
 
+  // Agreements up for renewal within 90 days — a proactive renewal conversation.
+  const renewing = n('finance.contracts_expiring');
+  if (renewing !== undefined && renewing > 0) flags.push({ severity: 'amber', label: `${renewing} agreement${renewing === 1 ? '' : 's'} up for renewal` });
+
   // Maturity rating regression quarter-over-quarter.
   if (ratings?.previous && ratings.previous !== 'unknown' && ratings.current !== 'unknown') {
     if (RATING_ORDER.indexOf(ratings.current) < RATING_ORDER.indexOf(ratings.previous)) {
