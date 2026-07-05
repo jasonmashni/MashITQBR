@@ -140,6 +140,20 @@ export function Workspace() {
     api.system().then(setSystem).catch(() => {});
   }, [clientId]);
 
+  // Reports needing attention: uncategorized files (fresh inbox arrivals land
+  // without a category until matched/filed) — surfaces a dot on the tab.
+  const [unfiled, setUnfiled] = useState(0);
+  useEffect(() => {
+    let live = true;
+    api
+      .listClientDocuments(clientId)
+      .then((d) => live && setUnfiled(d.documents.filter((doc) => !doc.category).length))
+      .catch(() => live && setUnfiled(0));
+    return () => {
+      live = false;
+    };
+  }, [clientId, refresh]);
+
   // One call tells us which of the last 8 quarters have data; land on the
   // newest one that does (else the current quarter).
   useEffect(() => {
@@ -268,7 +282,20 @@ export function Workspace() {
         <Tabs.List mb="md">
           <Tabs.Tab value="overview">Overview</Tabs.Tab>
           <Tabs.Tab value="data">Data</Tabs.Tab>
-          <Tabs.Tab value="reports">Reports</Tabs.Tab>
+          <Tabs.Tab
+            value="reports"
+            rightSection={
+              unfiled > 0 ? (
+                <Tooltip label={`${unfiled} report(s) need filing — categorize or AI-match them`}>
+                  <Badge size="xs" circle color="yellow" variant="filled">
+                    {unfiled}
+                  </Badge>
+                </Tooltip>
+              ) : undefined
+            }
+          >
+            Reports
+          </Tabs.Tab>
           <Tabs.Tab value="meeting">Meeting</Tabs.Tab>
           <Tabs.Tab value="actions">Actions</Tabs.Tab>
           <Tabs.Tab value="board">Opportunities</Tabs.Tab>
@@ -918,7 +945,11 @@ function DataTab({
 
   const collected = snapshot.metrics.filter((m) => m.source !== 'manual');
   const sources = [...new Set(collected.map((m) => m.source))];
-  const fmt = (m: MetricRow) => `${m.value === null ? '—' : String(m.value)}${m.unit && m.unit !== 'count' ? ` ${m.unit}` : ''}`;
+  // Millions read as 68.5M; fractional values keep one decimal (77.8 GB).
+  const fmtNum = (v: number) =>
+    Math.abs(v) >= 1e6 ? `${Math.round(v / 1e5) / 10}M` : Number.isInteger(v) ? v.toLocaleString() : String(Math.round(v * 10) / 10);
+  const fmt = (m: MetricRow) =>
+    `${m.value === null ? '—' : typeof m.value === 'number' ? fmtNum(m.value) : String(m.value)}${m.unit && m.unit !== 'count' ? ` ${m.unit}` : ''}`;
 
   return (
     <Stack gap="lg">

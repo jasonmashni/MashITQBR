@@ -38,8 +38,12 @@ export function formatValue(m: Pick<MetricValue, 'value' | 'unit'>): string {
       return formatPercent(m.value);
     case 'events':
       return abbreviate(m.value);
-    default:
-      return formatInt(m.value);
+    default: {
+      // Millions read as 68.5M (a raw 68,486,683 is noise to an executive);
+      // fractional values keep one decimal (77.8 GB, not 77.83365884423256).
+      const num = Math.abs(m.value) >= 1e6 ? abbreviate(m.value) : Number.isInteger(m.value) ? formatInt(m.value) : trim(m.value);
+      return m.unit && m.unit !== 'count' ? `${num} ${m.unit}` : num;
+    }
   }
 }
 

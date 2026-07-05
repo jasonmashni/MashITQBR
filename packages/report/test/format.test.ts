@@ -20,6 +20,10 @@ describe('format helpers', () => {
     expect(formatValue({ value: 87, unit: '%' })).toBe('87%');
     expect(formatValue({ value: 12_500_000, unit: 'events' })).toBe('12.5M');
     expect(formatValue({ value: 141, unit: 'count' })).toBe('141');
+    // Millions compact; fractions keep one decimal with their unit.
+    expect(formatValue({ value: 68_486_683, unit: 'count' })).toBe('68.5M');
+    expect(formatValue({ value: 77.83365884423256, unit: 'GB' })).toBe('77.8 GB');
+    expect(formatValue({ value: 12_500, unit: 'count' })).toBe('12,500');
     expect(formatValue({ value: null })).toBe('—');
   });
 

@@ -47,6 +47,17 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     await expect(buildQbrReport(seedDataSource, 'nope', '2026-Q1')).rejects.toThrow(/Unknown client/);
   });
 
+  it('falls back to the offline draft when the AI model fails (rate limit)', async () => {
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      narrativeModel: async () => {
+        throw new Error('429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your organization\'s rate limit"}}');
+      },
+    });
+    // The build still succeeds, prose exists, and the author is told why.
+    expect(report.model.executive.paragraphs.length).toBeGreaterThan(0);
+    expect(report.warnings.some((w) => /rate-limited/.test(w))).toBe(true);
+  });
+
   it('caches verified AI narratives and skips the model on a repeat build', async () => {
     let calls = 0;
     const model = async () => {

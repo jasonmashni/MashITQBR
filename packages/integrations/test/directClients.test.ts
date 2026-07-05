@@ -171,13 +171,15 @@ describe('Hudu', () => {
     expect(by['assets.expiring_90d']).toBe(2);
   });
 
-  it('collects assets + expirations for a company', async () => {
+  it('collects assets, expirations, and documentation counts for a company', async () => {
     const { http } = fakeHttp((req) => {
       if (req.url.includes('/companies/9/assets')) {
         expect(req.headers?.['x-api-key']).toBe('hk');
         return { status: 200, json: { assets: [{ id: 1 }, { id: 2 }] } };
       }
       if (req.url.includes('/expirations')) return { status: 200, json: { expirations: [] } };
+      if (req.url.includes('/articles')) return { status: 200, json: { articles: [{ id: 1 }, { id: 2 }, { id: 3 }] } };
+      if (req.url.includes('/asset_passwords')) return { status: 403, json: {} }; // key without password access
       if (req.url.includes('/companies')) return { status: 200, json: { companies: [{ id: 9, name: 'KPCA' }] } };
       return { status: 404, json: {} };
     });
@@ -186,6 +188,9 @@ describe('Hudu', () => {
     const out = await collectHudu({ clientId: 'kpca', period: P, externalRef: '9' }, http, cfg);
     const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
     expect(by['docs.assets']).toBe(2);
+    expect(by['docs.articles']).toBe(3);
+    expect(by['docs.passwords']).toBeUndefined(); // denied reads stay quiet
+    expect(out.warnings.every((w) => !w.includes('asset_passwords'))).toBe(true);
   });
 
   it('tolerates a base URL pasted with /api/v1 and explains a 401', async () => {

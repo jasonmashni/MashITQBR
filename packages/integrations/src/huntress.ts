@@ -101,7 +101,7 @@ export function normalizeHuntressUsage(u: HuntressUsages): MetricValue[] {
     out.push(metric('identity.protected', 'Protected identities', identities, { category: 'identity', source: 'huntress', unit: 'count' }));
   }
   if (typeof u.siem?.current_billing_cycle?.online_gb === 'number') {
-    out.push(metric('siem.online_gb', 'SIEM data (billing cycle)', u.siem.current_billing_cycle.online_gb, { category: 'security', source: 'huntress', unit: 'GB' }));
+    out.push(metric('siem.online_gb', 'SIEM data (billing cycle)', round1(u.siem.current_billing_cycle.online_gb), { category: 'security', source: 'huntress', unit: 'GB' }));
   }
   return out;
 }

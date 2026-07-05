@@ -99,7 +99,14 @@ export async function buildQbrReport(
     },
   });
 
+  const offlineDraft = (): NarrativeResult => {
+    const output = draftOfflineNarrative(input);
+    const verification = verifyFigures(output.figures_referenced, buildAllowedNumbers(input));
+    return { output, verification, attempts: 1 };
+  };
+
   let narrative: NarrativeResult;
+  let aiFailure: string | undefined;
   if (opts.narrativeModel) {
     // Cache Claude runs on a fingerprint of exactly what the narrative depends
     // on. Cache failures must never fail a build; concurrent misses may both
@@ -114,16 +121,24 @@ export async function buildQbrReport(
     if (cached) {
       narrative = cached;
     } else {
-      narrative = await generateNarrative(input, opts.narrativeModel);
-      // Only pin verified narratives — a failed one should retry next build.
-      if (narrative.verification.ok) {
-        await opts.narrativeCache?.put(hash, narrative).catch(() => undefined);
+      try {
+        narrative = await generateNarrative(input, opts.narrativeModel);
+        // Only pin verified narratives — a failed one should retry next build.
+        if (narrative.verification.ok) {
+          await opts.narrativeCache?.put(hash, narrative).catch(() => undefined);
+        }
+      } catch (e) {
+        // An AI outage or rate limit must never fail the report — fall back to
+        // the deterministic offline draft and tell the author why.
+        const msg = e instanceof Error ? e.message : 'error';
+        aiFailure = /rate_limit|429/i.test(msg)
+          ? 'The Claude API is rate-limited right now, so this build used the offline draft. Try Regenerate in a minute or two — or raise the limit at console.anthropic.com/settings/limits.'
+          : `The AI narrative failed (${msg.slice(0, 160)}) — this build used the offline draft. Try Regenerate.`;
+        narrative = offlineDraft();
       }
     }
   } else {
-    const output = draftOfflineNarrative(input);
-    const verification = verifyFigures(output.figures_referenced, buildAllowedNumbers(input));
-    narrative = { output, verification, attempts: 1 };
+    narrative = offlineDraft();
   }
 
   // Human edits win over whatever was generated — that's the approval loop.
@@ -156,6 +171,7 @@ export async function buildQbrReport(
   });
 
   const warnings: string[] = [];
+  if (aiFailure) warnings.push(aiFailure);
   if (!narrative.verification.ok) {
     warnings.push('AI narrative cited figures that could not be verified — review before sending.');
   }

@@ -56,17 +56,27 @@ export interface HuduExpiration {
 export function normalizeHuduExpirations(rows: HuduExpiration[], now: number): MetricValue[] {
   const soon = now + 90 * 24 * 3600 * 1000;
   let warrantyExpired = 0;
-  let expiringSoon = 0;
+  const upcoming: HuduExpiration[] = [];
   for (const r of rows) {
     const at = r.date ? Date.parse(r.date) : NaN;
     if (!Number.isFinite(at)) continue;
     const type = (r.expiration_type ?? '').toLowerCase();
     if (at < now && type.includes('warranty')) warrantyExpired++;
-    else if (at >= now && at <= soon) expiringSoon++;
+    else if (at >= now && at <= soon) upcoming.push(r);
   }
   const infra = (k: string, l: string, v: number) =>
     metric(k, l, v, { category: 'infrastructure', source: 'hudu', unit: 'count', higherIsBetter: false });
-  return [infra('assets.warranty_expired', 'Assets out of warranty', warrantyExpired), infra('assets.expiring_90d', 'Expirations in next 90 days', expiringSoon)];
+  return [
+    infra('assets.warranty_expired', 'Assets out of warranty', warrantyExpired),
+    {
+      ...infra('assets.expiring_90d', 'Expirations in next 90 days', upcoming.length),
+      // What exactly is expiring (domain / SSL / warranty) and when.
+      details: upcoming
+        .slice(0, 100)
+        .map((r) => ({ type: r.expiration_type ?? '', date: (r.date ?? '').slice(0, 10) }))
+        .sort((a, b) => a.date.localeCompare(b.date)),
+    },
+  ];
 }
 
 /** Collect Hudu documentation + expiration metrics for a company. */
@@ -108,6 +118,34 @@ export async function collectHudu(ctx: CollectorContext, http: HttpTransport, cf
     metrics.push(...normalizeHuduExpirations(rows, Date.now()));
   } catch (e) {
     warnings.push(`Hudu expirations unavailable: ${e instanceof Error ? e.message : 'error'}`);
+  }
+
+  // Documentation health: the KB + credential coverage Mash IT maintains for
+  // this client. Counts only — never the content.
+  const countAll = async (path: string, key: string): Promise<number> => {
+    let count = 0;
+    for (let page = 1; page <= 20; page++) {
+      const rows = toArray<Json>(await huduGet(http, cfg, path, { company_id: companyId, page, page_size: 250 }), [key]);
+      count += rows.length;
+      if (rows.length < 250) break;
+    }
+    return count;
+  };
+  try {
+    const articles = await countAll('articles', 'articles');
+    if (articles > 0) {
+      metrics.push(metric('docs.articles', 'Knowledge-base articles', articles, { category: 'operations', source: 'hudu', unit: 'count', higherIsBetter: true }));
+    }
+  } catch (e) {
+    warnings.push(`Hudu articles unavailable: ${e instanceof Error ? e.message : 'error'}`);
+  }
+  try {
+    const passwords = await countAll('asset_passwords', 'asset_passwords');
+    if (passwords > 0) {
+      metrics.push(metric('docs.passwords', 'Credentials documented', passwords, { category: 'operations', source: 'hudu', unit: 'count', higherIsBetter: true }));
+    }
+  } catch {
+    // Password reads depend on the key's permissions — stay quiet when denied.
   }
 
   return { source: 'hudu', metrics, warnings };
