@@ -219,8 +219,21 @@ self-contained package and deploy the folder:
 
 ```bash
 npm install
-npm run deploy:build          # builds web + API, assembles apps/api/deploy/
+npm run deploy:build          # builds web + API, assembles + prunes apps/api/deploy/
 # VS Code: Open Folder -> apps/api/deploy -> Azure -> Deploy to Function App
+```
+
+`deploy:build` prunes type-declaration/doc/map files from the deploy
+`node_modules` so the zip stays well under 65,535 entries — past that the zipper
+emits ZIP64 and Kudu rejects it with *"Offset to Central Directory cannot be
+held in an Int64"*. If a deploy still fails that way (or the VS Code zipper
+produces a bad archive), deploy from the CLI instead, which uses a reliable
+zipper:
+
+```bash
+# from apps/api/deploy   (PowerShell)
+Compress-Archive -Path * -DestinationPath ..\deploy.zip -Force
+az functionapp deployment source config-zip -g QBRTool -n mashqbr --src ..\deploy.zip
 ```
 
 Portal one-time: create the Function App (Node 20 / Linux / Consumption),
