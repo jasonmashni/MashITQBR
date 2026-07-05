@@ -28,6 +28,9 @@ export interface Opportunity {
   detail?: string;
   status: 'idea' | 'discussing' | 'approved' | 'pushed' | 'closed';
   owner?: string;
+  /** Estimated deal value (whole currency units) — internal only, never in the client report. */
+  value?: number;
+  valueKind?: 'recurring' | 'one_time';
   sourcePeriod?: string;
   createdAt: string;
   updatedAt: string;
@@ -61,6 +64,13 @@ export interface ClientFlag {
   label: string;
 }
 
+/** Holistic account-health rollup (internal dashboard only). */
+export interface AccountHealth {
+  score: number;
+  rating: Rating;
+  drivers: string[];
+}
+
 /** One row of GET /api/overview. */
 export interface OverviewRow {
   clientId: string;
@@ -76,6 +86,12 @@ export interface OverviewRow {
   spend: number | null;
   spendDeltaPct: number | null;
   flags: ClientFlag[];
+  /** Annualized open opportunity pipeline (dollarized roadmap). */
+  roadmapValue: number;
+  /** Count of open, valued opportunities. */
+  roadmapCount: number;
+  /** Account health score/rating/drivers. */
+  health: AccountHealth;
 }
 
 /** One row of GET /api/clients/{id}/periods. */

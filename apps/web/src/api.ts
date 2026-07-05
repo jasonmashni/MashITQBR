@@ -166,7 +166,8 @@ export const api = {
 
   // Opportunity board
   listOpportunities: (clientId: string) => send('GET', `/api/clients/${clientId}/opportunities`).then(json<{ opportunities: Opportunity[] }>),
-  saveOpportunity: (clientId: string, body: Partial<Opportunity>) =>
+  // `value: null` explicitly clears an estimate (undefined would be dropped by JSON.stringify and keep the old value).
+  saveOpportunity: (clientId: string, body: Omit<Partial<Opportunity>, 'value'> & { value?: number | null }) =>
     send('POST', `/api/clients/${clientId}/opportunities`, body).then(json<{ opportunity: Opportunity }>),
   deleteOpportunity: (clientId: string, id: string) => send('DELETE', `/api/clients/${clientId}/opportunities/${id}`).then(json<unknown>),
   pushOpportunity: (clientId: string, id: string, body: { target: string; ticketTypeId?: string; agentId?: string; team?: string; priorityId?: string }) =>

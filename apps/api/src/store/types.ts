@@ -142,6 +142,10 @@ export interface OpportunityRecord {
   status: OpportunityStatus;
   /** Who's driving it (free text — usually a Mash IT agent). */
   owner?: string;
+  /** Estimated deal value in whole currency units (e.g. 12000 for $12k). Internal only — never rendered in the client-facing report. */
+  value?: number;
+  /** Whether `value` is monthly recurring revenue or a one-time amount. Drives how the roadmap total is summarised. */
+  valueKind?: 'recurring' | 'one_time';
   /** The QBR quarter it came out of (e.g. "2026-Q2"), when flagged from one. */
   sourcePeriod?: string;
   createdAt: string;

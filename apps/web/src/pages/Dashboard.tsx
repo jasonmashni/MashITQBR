@@ -18,10 +18,24 @@ import {
 } from '@mantine/core';
 import { IconFileText, IconFileTypePdf, IconArrowUpRight, IconArrowDownRight, IconCalendarEvent, IconCalendarPlus } from '@tabler/icons-react';
 import { api, reportUrls } from '../api.js';
-import type { OverviewRow } from '../types.js';
+import type { AccountHealth, OverviewRow } from '../types.js';
 import { RatingBadge, StatusBadge } from '../ui.js';
 
 const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+// Compact currency for pipeline sums ($12K, $1.2M) so the column stays narrow.
+const compactMoney = (n: number) =>
+  n.toLocaleString('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 });
+
+function HealthBadge({ health }: { health: AccountHealth }) {
+  const color = health.rating === 'green' ? 'teal' : health.rating === 'amber' ? 'yellow' : health.rating === 'red' ? 'red' : 'gray';
+  return (
+    <Tooltip label={health.drivers.join(' · ')} multiline w={260} withArrow>
+      <Badge size="lg" variant="light" color={color}>
+        {health.score}
+      </Badge>
+    </Tooltip>
+  );
+}
 
 function SpendDelta({ pct }: { pct: number | null }) {
   if (pct === null) return <Text size="sm" c="dimmed">—</Text>;
@@ -71,6 +85,7 @@ export function Dashboard() {
   }, [retry]);
 
   const totalMrr = rows.reduce((sum, r) => sum + (r.mrr ?? 0), 0);
+  const totalRoadmap = rows.reduce((sum, r) => sum + (r.roadmapValue ?? 0), 0);
   const flagged = rows.filter((r) => r.flags.length > 0).length;
 
   // The QBR calendar at a glance: what's booked vs what still needs a date.
@@ -94,6 +109,7 @@ export function Dashboard() {
           <Text c="dimmed" size="sm">
             {period && `Current period ${period}`}
             {totalMrr > 0 && ` · ${money(totalMrr)} MRR across QBR clients`}
+            {totalRoadmap > 0 && ` · ${compactMoney(totalRoadmap)} roadmap pipeline`}
             {flagged > 0 && ` · ${flagged} client${flagged === 1 ? '' : 's'} flagged`}
           </Text>
         </div>
@@ -158,14 +174,16 @@ export function Dashboard() {
             No QBR-enabled clients yet — flip the QBR toggle on the Clients page.
           </Text>
         ) : (
-          <Table.ScrollContainer minWidth={860}>
+          <Table.ScrollContainer minWidth={1040}>
             <Table highlightOnHover verticalSpacing="sm">
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th>Client</Table.Th>
                   <Table.Th>Last QBR</Table.Th>
                   <Table.Th>Maturity</Table.Th>
+                  <Table.Th>Health</Table.Th>
                   <Table.Th ta="right">MRR</Table.Th>
+                  <Table.Th ta="right">Roadmap $</Table.Th>
                   <Table.Th>Spend Δ QoQ</Table.Th>
                   <Table.Th>Flags</Table.Th>
                   <Table.Th />
@@ -199,8 +217,19 @@ export function Dashboard() {
                         )}
                       </Table.Td>
                       <Table.Td>{r.period ? <RatingBadge rating={r.rating} score={r.score} /> : <Text size="sm" c="dimmed">—</Text>}</Table.Td>
+                      <Table.Td>{r.health ? <HealthBadge health={r.health} /> : <Text size="sm" c="dimmed">—</Text>}</Table.Td>
                       <Table.Td ta="right">
                         <Text size="sm" fw={600}>{r.mrr !== null ? money(r.mrr) : '—'}</Text>
+                      </Table.Td>
+                      <Table.Td ta="right">
+                        {r.roadmapValue > 0 ? (
+                          <>
+                            <Text size="sm" fw={600}>{compactMoney(r.roadmapValue)}</Text>
+                            <Text size="xs" c="dimmed">{r.roadmapCount} open</Text>
+                          </>
+                        ) : (
+                          <Text size="sm" c="dimmed">—</Text>
+                        )}
                       </Table.Td>
                       <Table.Td>
                         <SpendDelta pct={r.spendDeltaPct} />

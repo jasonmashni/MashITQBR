@@ -1,13 +1,16 @@
 import {
   advanceStatus,
+  computeAccountHealth,
   computeFlags,
   computeScorecard,
+  daysSince,
   isQbrStatus,
   lastPeriods,
   METRIC_CATEGORIES,
   parsePeriod,
   periodFor,
   previousPeriod,
+  roadmapValue,
   type MetricCategory,
   type MetricValue,
   type QbrStatus,
@@ -784,6 +787,20 @@ export async function putOpportunity(clientId: string, body: Record<string, unkn
   const id = typeof body['id'] === 'string' && body['id'] ? body['id'] : Math.random().toString(36).slice(2, 10);
   const existing = (await store.listOpportunities(clientId)).find((o) => o.id === id);
   const now = new Date().toISOString();
+  // Value is optional; accept a finite non-negative number, clear it on empty/null, else keep the prior value.
+  let value = existing?.value;
+  if ('value' in body) {
+    const raw = body['value'];
+    if (raw === null || raw === '') value = undefined;
+    else if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) value = raw;
+    else if (typeof raw === 'string' && raw.trim() !== '' && Number.isFinite(Number(raw)) && Number(raw) >= 0) value = Number(raw);
+  }
+  const valueKind =
+    body['valueKind'] === 'recurring' || body['valueKind'] === 'one_time'
+      ? (body['valueKind'] as 'recurring' | 'one_time')
+      : value === undefined
+        ? undefined
+        : (existing?.valueKind ?? 'one_time');
   const record: OpportunityRecord = {
     id,
     clientId,
@@ -791,6 +808,8 @@ export async function putOpportunity(clientId: string, body: Record<string, unkn
     detail: typeof body['detail'] === 'string' ? body['detail'] : existing?.detail,
     status,
     owner: typeof body['owner'] === 'string' ? body['owner'] || undefined : existing?.owner,
+    value,
+    valueKind,
     sourcePeriod: typeof body['sourcePeriod'] === 'string' && body['sourcePeriod'] ? body['sourcePeriod'] : existing?.sourcePeriod,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -1702,6 +1721,11 @@ function snapshotNum(s: { metrics: Array<{ key: string; value: unknown }> } | un
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
+/** Order maturity ratings so a lower rank = worse (for regression checks). */
+function ratingRank(r: string): number {
+  return r === 'red' ? 0 : r === 'amber' ? 1 : r === 'green' ? 2 : 3;
+}
+
 /**
  * Admin dashboard rollup in one call: for each QBR-enabled client, the newest
  * snapshot within the last 4 quarters scored with computeScorecard, plus the
@@ -1731,6 +1755,7 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
       const scorecard = snapshot ? computeScorecard(snapshot) : undefined;
       const prevScorecard = previous ? computeScorecard(previous) : undefined;
       const qbr = period ? await store.getQbr(client.id, period) : undefined;
+      const opportunities = await store.listOpportunities(client.id).catch(() => []);
 
       const mrr = snapshotNum(snapshot, 'finance.mrr');
       const spendNow = snapshotNum(snapshot, 'finance.quarter_invoiced');
@@ -1742,6 +1767,21 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
       const flags = computeFlags(snapshot, previous, {
         current: rating,
         previous: prevScorecard?.overall.rating,
+      });
+
+      // Growth pipeline (dollarized roadmap) + holistic account health — both
+      // internal dashboard rollups, never rendered in the client report.
+      const roadmap = roadmapValue(opportunities);
+      const ratingDropped =
+        rating !== 'unknown' && prevScorecard?.overall.rating && prevScorecard.overall.rating !== 'unknown'
+          ? ratingRank(rating) < ratingRank(prevScorecard.overall.rating)
+          : false;
+      const health = computeAccountHealth({
+        securityScore: scorecard?.overall.score ?? null,
+        flags,
+        daysSinceQbr: daysSince(qbr?.meeting?.heldAt),
+        ratingDropped,
+        spendDeltaPct,
       });
 
       return {
@@ -1758,6 +1798,9 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
         spend: spendNow,
         spendDeltaPct,
         flags,
+        roadmapValue: roadmap.annualValue,
+        roadmapCount: roadmap.count,
+        health: { score: health.score, rating: health.rating, drivers: health.drivers },
       };
     }),
   );

@@ -17,6 +17,7 @@ import {
   Center,
   TextInput,
   Textarea,
+  NumberInput,
   Checkbox,
   Fieldset,
   Autocomplete,
@@ -2672,6 +2673,13 @@ const OPP_COLUMNS: Array<[Opportunity['status'], string, string]> = [
   ['closed', 'Closed', 'dark'],
 ];
 
+// Compact currency for pipeline sums/badges ($12K, $1.2M) — internal only.
+const oppMoney = (n: number) =>
+  n.toLocaleString('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 });
+/** A card's label for its value: "$12K" one-time, "$1.2K/mo" recurring. */
+const oppValueLabel = (o: Opportunity): string | null =>
+  typeof o.value === 'number' && o.value > 0 ? oppMoney(o.value) + (o.valueKind === 'recurring' ? '/mo' : '') : null;
+
 function OpportunitiesTab({ clientId, period }: { clientId: string; period: string }) {
   const [items, setItems] = useState<Opportunity[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2714,10 +2722,10 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
     }
   }
 
-  async function save(o: Opportunity, patch: Partial<Opportunity>, quiet = false) {
+  async function save(o: Opportunity, patch: Omit<Partial<Opportunity>, 'value'> & { value?: number | null }, quiet = false) {
     // Optimistic: a dragged card lands in its column immediately; a failure
-    // reloads the true state.
-    setItems((prev) => prev.map((x) => (x.id === o.id ? { ...x, ...patch } : x)));
+    // reloads the true state. (null clears a value locally too.)
+    setItems((prev) => prev.map((x) => (x.id === o.id ? { ...x, ...patch, value: patch.value ?? undefined } : x)));
     try {
       await api.saveOpportunity(clientId, { ...o, ...patch });
       await load();
@@ -2741,13 +2749,30 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
 
   if (loading) return <Center h={160}><Loader /></Center>;
 
+  // Annualized value of every open (non-closed) opportunity — the roadmap figure.
+  const openPipeline = items.reduce(
+    (s, o) =>
+      o.status !== 'closed' && typeof o.value === 'number' && o.value > 0
+        ? s + (o.valueKind === 'recurring' ? o.value * 12 : o.value)
+        : s,
+    0,
+  );
+
   return (
     <Stack gap="lg">
       <Card withBorder radius="md" padding="lg">
-        <Title order={5} mb={4}>Opportunity board</Title>
+        <Group justify="space-between" align="flex-start" mb={4}>
+          <Title order={5}>Opportunity board</Title>
+          {openPipeline > 0 && (
+            <Badge size="lg" variant="light" color="teal" title="Annualized value of open opportunities (internal only)">
+              {oppMoney(openPipeline)}/yr open pipeline
+            </Badge>
+          )}
+        </Group>
         <Text size="xs" c="dimmed" mb="sm">
           Everything the client mentions that could become work — a new location, a refresh, a project — flagged from the
-          Meeting tab's agenda (the bulb icon) or added here. Drag cards between columns; push the real ones to Halo.
+          Meeting tab's agenda (the bulb icon) or added here. Drag cards between columns; push the real ones to Halo. Add a
+          value (internal only) to build the roadmap pipeline on the dashboard.
         </Text>
         <Group wrap="nowrap" align="flex-start">
           <Stack gap="xs" style={{ flex: 1 }}>
@@ -2768,6 +2793,10 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
       <SimpleGrid cols={{ base: 1, sm: 2, lg: 5 }} spacing="sm">
         {OPP_COLUMNS.map(([status, label, color]) => {
           const cards = items.filter((o) => o.status === status);
+          const colValue = cards.reduce(
+            (s, c) => s + (typeof c.value === 'number' && c.value > 0 ? (c.valueKind === 'recurring' ? c.value * 12 : c.value) : 0),
+            0,
+          );
           return (
             <Stack
               key={status}
@@ -2791,9 +2820,12 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
                 if (card && card.status !== status) save(card, { status }, true);
               }}
             >
-              <Group gap={6}>
-                <Badge variant="light" color={color}>{label}</Badge>
-                <Text size="xs" c="dimmed">{cards.length}</Text>
+              <Group gap={6} justify="space-between" wrap="nowrap">
+                <Group gap={6} wrap="nowrap">
+                  <Badge variant="light" color={color}>{label}</Badge>
+                  <Text size="xs" c="dimmed">{cards.length}</Text>
+                </Group>
+                {colValue > 0 && <Text size="xs" c="dimmed" title="Annualized pipeline value">{oppMoney(colValue)}/yr</Text>}
               </Group>
               {cards.map((o) => (
                 <Card
@@ -2813,6 +2845,7 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
                   </Group>
                   {o.detail && <Text size="xs" c="dimmed" lineClamp={3}>{o.detail}</Text>}
                   <Group gap={4} mt={6}>
+                    {oppValueLabel(o) && <Badge size="xs" variant="filled" color="teal">{oppValueLabel(o)}</Badge>}
                     {o.sourcePeriod && <Badge size="xs" variant="outline" color="gray">{o.sourcePeriod} QBR</Badge>}
                     {o.owner && <Badge size="xs" variant="light" color="navy">{o.owner}</Badge>}
                     {o.externalRef && <Badge size="xs" color="green" variant="light">halo #{o.externalRef}</Badge>}
@@ -2864,18 +2897,22 @@ function OpportunityEditModal({
 }: {
   opportunity: Opportunity | null;
   onClose: () => void;
-  onSave: (patch: Partial<Opportunity>) => Promise<void>;
+  onSave: (patch: Omit<Partial<Opportunity>, 'value'> & { value?: number | null }) => Promise<void>;
 }) {
   const [title, setTitle] = useState('');
   const [detail, setDetail] = useState('');
   const [owner, setOwner] = useState('');
   const [status, setStatus] = useState<Opportunity['status']>('idea');
+  const [value, setValue] = useState<number | ''>('');
+  const [valueKind, setValueKind] = useState<'one_time' | 'recurring'>('one_time');
 
   useEffect(() => {
     setTitle(opportunity?.title ?? '');
     setDetail(opportunity?.detail ?? '');
     setOwner(opportunity?.owner ?? '');
     setStatus(opportunity?.status ?? 'idea');
+    setValue(typeof opportunity?.value === 'number' ? opportunity.value : '');
+    setValueKind(opportunity?.valueKind === 'recurring' ? 'recurring' : 'one_time');
   }, [opportunity]);
 
   return (
@@ -2884,6 +2921,26 @@ function OpportunityEditModal({
         <TextInput label="Title" value={title} onChange={(e) => setTitle(e.currentTarget.value)} />
         <Textarea label="Details" autosize minRows={3} value={detail} onChange={(e) => setDetail(e.currentTarget.value)} />
         <TextInput label="Owner" placeholder="Who's driving this — e.g. Jason" value={owner} onChange={(e) => setOwner(e.currentTarget.value)} />
+        <Group grow align="flex-end">
+          <NumberInput
+            label="Estimated value"
+            description="Internal only — never shown to the client."
+            placeholder="e.g. 12000"
+            prefix="$"
+            thousandSeparator=","
+            min={0}
+            value={value}
+            onChange={(v) => setValue(v === '' || v === undefined ? '' : Number(v))}
+          />
+          <SegmentedControl
+            data={[
+              { value: 'one_time', label: 'One-time' },
+              { value: 'recurring', label: 'Monthly (MRR)' },
+            ]}
+            value={valueKind}
+            onChange={(v) => setValueKind(v as 'one_time' | 'recurring')}
+          />
+        </Group>
         <Select
           label="Column"
           description="Same as dragging the card — handy on a touch screen."
@@ -2894,7 +2951,20 @@ function OpportunityEditModal({
         />
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => onSave({ title: title.trim() || opportunity?.title, detail, owner, status })}>Save</Button>
+          <Button
+            onClick={() =>
+              onSave({
+                title: title.trim() || opportunity?.title,
+                detail,
+                owner,
+                status,
+                value: value === '' ? null : value,
+                valueKind: value === '' ? undefined : valueKind,
+              })
+            }
+          >
+            Save
+          </Button>
         </Group>
       </Stack>
     </Modal>
