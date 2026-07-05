@@ -156,3 +156,24 @@ export async function deleteOrganizerEvent(
 ): Promise<void> {
   await graphJson(cfg, fetchFn, 'DELETE', `/users/${encodeURIComponent(organizer)}/events/${encodeURIComponent(eventId)}`);
 }
+
+/**
+ * Send a plain heads-up email from the organizer mailbox (app-only). Used to
+ * ping the MSP when a client books. Needs the Mail.Send APPLICATION permission
+ * on the same app registration — best-effort, so a missing grant just no-ops.
+ */
+export async function sendOrganizerMail(
+  cfg: GraphAppConfig,
+  organizer: string,
+  mail: { subject: string; html: string; to: string[] },
+  fetchFn: FetchLike = fetch,
+): Promise<void> {
+  await graphJson(cfg, fetchFn, 'POST', `/users/${encodeURIComponent(organizer)}/sendMail`, {
+    message: {
+      subject: mail.subject,
+      body: { contentType: 'HTML', content: mail.html },
+      toRecipients: mail.to.map((a) => ({ emailAddress: { address: a } })),
+    },
+    saveToSentItems: false,
+  });
+}

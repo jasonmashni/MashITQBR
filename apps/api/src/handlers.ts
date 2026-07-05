@@ -54,7 +54,7 @@ import {
   resolveBookingSettings,
   slotEnd,
 } from './booking.js';
-import { createOrganizerEvent, deleteOrganizerEvent, getAvailabilityView, graphAppConfigFromEnv } from './graphApp.js';
+import { createOrganizerEvent, deleteOrganizerEvent, getAvailabilityView, graphAppConfigFromEnv, sendOrganizerMail } from './graphApp.js';
 import { renderBookingPage } from './bookingPage.js';
 import { appendPdfAttachments, loadPdfAttachments, pdfFirstPages } from './pdfMerge.js';
 import { createClaudeDocMatcher, type DocMatchModel } from './docMatch.js';
@@ -1290,7 +1290,9 @@ export async function getBookingState(clientId: string, period: string): Promise
   const { settings, graph } = await orgBookingContext();
   return ok({
     booking: booking ?? null,
-    path: booking ? `/book/${booking.token}` : null,
+    // Only an OPEN link is a live shareable link — a cancelled/booked one must
+    // NOT show a "copy" box, or the UI gets stuck on a dead link after a cancel.
+    path: booking?.status === 'open' ? `/book/${booking.token}` : null,
     configured: Boolean(settings.organizerEmail),
     calendarConnected: Boolean(graph && settings.organizerEmail),
   });
@@ -1446,12 +1448,34 @@ export async function publicBook(token: string, body: Record<string, unknown>): 
     // Booking record is the source of truth; workspace sync is best-effort.
   }
 
+  const whenLabel = new Date(localToUtc(start, settings.timezone)).toLocaleString('en-US', {
+    timeZone: settings.timezone,
+    dateStyle: 'full',
+    timeStyle: 'short',
+  });
   audit('booking.booked', `qbr:${booking.clientId}/${booking.period}`, `${name} <${email}> → ${start} (${settings.timezone})`);
   notify('booking', `${client?.name ?? booking.clientId} booked their QBR`, {
-    body: `${new Date(localToUtc(start, settings.timezone)).toLocaleString('en-US', { timeZone: settings.timezone, dateStyle: 'full', timeStyle: 'short' })}${eventId ? ' — Teams invite sent.' : ' — send the invite manually (calendar not connected).'}`,
+    body: `${whenLabel}${eventId ? ' — Teams invite sent.' : ' — send the invite manually (calendar not connected).'}`,
     clientId: booking.clientId,
     period: booking.period,
   });
+  // Heads-up email to the organizer (the calendar invite lands silently on
+  // their calendar; this is the "you got a booking" ping). Best-effort — needs
+  // Mail.Send application permission; a missing grant just skips it.
+  if (graph && settings.organizerEmail) {
+    const mailHtml = [
+      `<p><b>${escapeHtml(name)}</b> (${escapeHtml(email)}) booked their ${escapeHtml(periodLabel)} QBR.</p>`,
+      `<p><b>${escapeHtml(whenLabel)}</b> (${escapeHtml(settings.timezone)})</p>`,
+      extras.length ? `<p>Also invited: ${escapeHtml(extras.join(', '))}</p>` : '',
+      notes ? `<p><b>Requested topics:</b> ${escapeHtml(notes)}</p>` : '',
+      eventId ? '<p>The Teams invite has gone out to everyone.</p>' : '<p>Calendar not connected — send the invite by hand.</p>',
+    ].join('');
+    await sendOrganizerMail(graph, settings.organizerEmail, {
+      subject: `QBR booked: ${client?.name ?? booking.clientId} — ${periodLabel}`,
+      html: mailHtml,
+      to: [settings.organizerEmail],
+    }).catch(() => undefined);
+  }
   return ok({ ok: true, start: updated.start, end: updated.end, timezone: settings.timezone, inviteSent: Boolean(eventId) });
 }
 

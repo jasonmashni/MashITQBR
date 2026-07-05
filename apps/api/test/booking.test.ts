@@ -166,8 +166,15 @@ describe('booking flow end-to-end (JSON store + fake Graph)', () => {
     expect(afterCancel?.status).toBe('data_synced'); // stepped back from scheduled
     expect((await getDataStore().getBooking(booking.token))?.status).toBe('cancelled');
 
+    // getBookingState no longer advertises the dead (cancelled) link as active.
+    const stateAfter = await h.getBookingState('anp', '2026-Q3');
+    expect((stateAfter.json as { path: string | null }).path).toBeNull();
+
     const relink = await h.ensureBookingLink('anp', '2026-Q3');
-    expect((relink.json as { booking: { token: string } }).booking.token).not.toBe(booking.token); // a NEW open link
+    const newToken = (relink.json as { booking: { token: string } }).booking.token;
+    expect(newToken).not.toBe(booking.token); // a NEW open link
+    const stateRelinked = await h.getBookingState('anp', '2026-Q3');
+    expect((stateRelinked.json as { path: string | null }).path).toBe(`/book/${newToken}`); // active again
   });
 
   it('rejects junk tokens and out-of-window slots', async () => {

@@ -120,11 +120,20 @@ function exportDetailsCsv(m: MetricRow) {
  */
 export function Workspace() {
   const { clientId = '' } = useParams();
-  // A ?period= query (from a notification deep link) re-runs the targeting
-  // effect even when we're already on this client — with useParams alone the
-  // component doesn't remount and the quarter would never switch.
-  const [searchParams] = useSearchParams();
+  // The selected quarter lives in the URL (?period=) so a browser refresh
+  // stays on the quarter you were viewing instead of jumping to the current
+  // one — and a notification deep link re-runs the targeting effect even when
+  // we're already on this client (useParams alone wouldn't remount).
+  const [searchParams, setSearchParams] = useSearchParams();
   const wantedPeriod = searchParams.get('period');
+  const selectPeriod = (p: string) =>
+    setSearchParams(
+      (prev) => {
+        prev.set('period', p);
+        return prev;
+      },
+      { replace: true },
+    );
   const [periods, setPeriods] = useState<Array<{ value: string; label: string }>>([]);
   const [period, setPeriod] = useState('');
   const [qbr, setQbr] = useState<QbrResponse | null>(null);
@@ -175,21 +184,29 @@ export function Workspace() {
       .then(({ periods: list }) => {
         if (!live) return;
         setPeriods(list.map((p) => ({ value: p.period, label: p.hasSnapshot ? p.period : `${p.period} — no data` })));
+        // The URL's ?period= wins (refresh persistence + notification deep links).
         if (wanted && list.some((p) => p.period === wanted)) {
           setPeriod(wanted);
           return;
         }
+        let chosen: string | undefined;
         const newestWithData = list.find((p) => p.hasSnapshot);
         const done = newestWithData?.status === 'completed' || newestWithData?.status === 'archived';
         if (newestWithData && done) {
           // list is newest-first; the entry BEFORE the finished quarter is the
           // next one (falls back to the newest available = current quarter).
           const idx = list.findIndex((p) => p.period === newestWithData.period);
-          setPeriod((list[Math.max(0, idx - 1)] ?? newestWithData).period);
+          chosen = (list[Math.max(0, idx - 1)] ?? newestWithData).period;
         } else if (newestWithData) {
-          setPeriod(newestWithData.period);
+          chosen = newestWithData.period;
         } else if (list[0]) {
-          setPeriod(list[0].period);
+          chosen = list[0].period;
+        }
+        if (chosen) {
+          setPeriod(chosen);
+          // Pin it in the URL so the next refresh stays put (one extra effect
+          // run: wanted becomes chosen, then the branch above short-circuits).
+          if (chosen !== wanted) selectPeriod(chosen);
         }
       })
       .catch(() => {
@@ -268,7 +285,11 @@ export function Workspace() {
             w={180}
             data={periods}
             value={period || null}
-            onChange={(v) => v && setPeriod(v)}
+            onChange={(v) => {
+              if (!v) return;
+              setPeriod(v);
+              selectPeriod(v); // remember it across refreshes
+            }}
             allowDeselect={false}
             placeholder="Quarter"
             aria-label="Quarter"
@@ -2071,7 +2092,7 @@ function BookingLinkCard({
         </div>
         {booking?.status === 'booked' ? (
           <Badge color="teal">booked</Badge>
-        ) : booking ? (
+        ) : booking?.status === 'open' ? (
           <Badge color="blue" variant="light">link active</Badge>
         ) : null}
       </Group>
