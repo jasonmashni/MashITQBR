@@ -54,7 +54,7 @@ import {
   resolveBookingSettings,
   slotEnd,
 } from './booking.js';
-import { createOrganizerEvent, getAvailabilityView, graphAppConfigFromEnv } from './graphApp.js';
+import { createOrganizerEvent, deleteOrganizerEvent, getAvailabilityView, graphAppConfigFromEnv } from './graphApp.js';
 import { renderBookingPage } from './bookingPage.js';
 import { appendPdfAttachments, loadPdfAttachments, pdfFirstPages } from './pdfMerge.js';
 import { createClaudeDocMatcher, type DocMatchModel } from './docMatch.js';
@@ -1089,8 +1089,10 @@ export async function putSchedule(clientId: string, period: string, body: { sche
   const store = getDataStore();
   const existing = await store.getQbr(clientId, period);
   const meeting = { ...existing?.meeting, scheduledAt: body.scheduledAt, joinUrl: body.joinUrl };
-  // Booking a meeting advances data_synced/draft to scheduled without demoting later stages.
-  const saved = await patchQbr(clientId, period, { status: advanceStatus(existing?.status, 'scheduled'), meeting });
+  // Only a real date advances to scheduled; clearing the date leaves status be
+  // (use Cancel / reschedule to step back). Set dates never demote later stages.
+  const status = body.scheduledAt ? advanceStatus(existing?.status, 'scheduled') : (existing?.status ?? 'draft');
+  const saved = await patchQbr(clientId, period, { status, meeting });
   audit('qbr.schedule', `qbr:${clientId}/${period}`, body.scheduledAt);
   return ok(saved);
 }
@@ -1455,6 +1457,42 @@ export async function publicBook(token: string, body: Record<string, unknown>): 
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * Cancel a scheduled QBR meeting: delete the Teams calendar event (best-effort),
+ * cancel any active booking link so a fresh one can be issued, clear the meeting
+ * off the QBR record, and step the workflow back from 'scheduled'. This is the
+ * portal's reschedule/cancel path — after it, "Create booking link" re-enables
+ * or the author can set a new time by hand.
+ */
+export async function cancelQbrMeeting(clientId: string, period: string): Promise<ApiResult> {
+  const store = getDataStore();
+  const existing = await store.getQbr(clientId, period);
+  if (!existing?.meeting?.scheduledAt && !existing?.meeting?.eventId) {
+    // Nothing booked — still cancel a dangling booking link if one is open.
+    const b = await store.findBooking(clientId, period);
+    if (b && b.status !== 'cancelled') await store.putBooking({ ...b, status: 'cancelled' });
+    return ok({ cancelled: false, note: 'No meeting was scheduled.' });
+  }
+
+  // Remove the calendar event if we created one via app-only Graph.
+  const graph = graphAppConfigFromEnv();
+  const { settings } = await orgBookingContext();
+  if (existing.meeting.eventId && graph && settings.organizerEmail) {
+    await deleteOrganizerEvent(graph, settings.organizerEmail, existing.meeting.eventId).catch(() => undefined);
+  }
+
+  // Cancel the booking record so ensureBookingLink issues a fresh link.
+  const booking = await store.findBooking(clientId, period);
+  if (booking && booking.status !== 'cancelled') await store.putBooking({ ...booking, status: 'cancelled' });
+
+  // Clear the meeting and step back to data_synced (forward-only advance won't
+  // demote, so set it explicitly — the meeting is gone, 'scheduled' is wrong).
+  const status = existing.status === 'scheduled' ? 'data_synced' : existing.status;
+  await patchQbr(clientId, period, { status, meeting: undefined });
+  audit('qbr.meeting_cancel', `qbr:${clientId}/${period}`, existing.meeting.scheduledAt ?? existing.meeting.eventId ?? '');
+  return ok({ cancelled: true });
 }
 
 // ── In-portal notifications ──────────────────────────────────────────────────

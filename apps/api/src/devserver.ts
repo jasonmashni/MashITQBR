@@ -106,6 +106,7 @@ const routes: Route[] = [
   // Client self-scheduling (public page + its API) and its portal management
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/booking$/, run: (m) => h.getBookingState(m[1]!, m[2]!) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/booking$/, run: (m) => h.ensureBookingLink(m[1]!, m[2]!) },
+  { method: 'DELETE', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/meeting$/, run: (m) => h.cancelQbrMeeting(m[1]!, m[2]!) },
   { method: 'GET', re: /^\/book\/([^/]+)$/, run: (m) => h.getBookingPage(m[1]!) },
   { method: 'GET', re: /^\/api\/book\/([^/]+)$/, run: (m) => h.publicBookingInfo(m[1]!) },
   { method: 'GET', re: /^\/api\/book\/([^/]+)\/slots$/, run: (m, _b, url) => h.publicBookingSlots(m[1]!, url.searchParams.get('from'), url.searchParams.get('to')) },

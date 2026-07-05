@@ -155,6 +155,19 @@ describe('booking flow end-to-end (JSON store + fake Graph)', () => {
     // A booking notification landed on the bell.
     const notifs = await getDataStore().listNotifications(10);
     expect(notifs.some((n) => n.kind === 'booking')).toBe(true);
+
+    // Cancel the meeting: booking goes cancelled, QBR meeting cleared, and a
+    // fresh link can be issued (the previously-booked link no longer blocks it).
+    const cancelled = await h.cancelQbrMeeting('anp', '2026-Q3');
+    expect(cancelled.status).toBe(200);
+    expect((cancelled.json as { cancelled: boolean }).cancelled).toBe(true);
+    const afterCancel = await getDataStore().getQbr('anp', '2026-Q3');
+    expect(afterCancel?.meeting?.scheduledAt).toBeUndefined();
+    expect(afterCancel?.status).toBe('data_synced'); // stepped back from scheduled
+    expect((await getDataStore().getBooking(booking.token))?.status).toBe('cancelled');
+
+    const relink = await h.ensureBookingLink('anp', '2026-Q3');
+    expect((relink.json as { booking: { token: string } }).booking.token).not.toBe(booking.token); // a NEW open link
   });
 
   it('rejects junk tokens and out-of-window slots', async () => {

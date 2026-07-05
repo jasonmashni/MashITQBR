@@ -114,6 +114,7 @@ route('putOrgSettings', 'PUT', 'api/settings/org', async (req) => h.putOrgSettin
 // Easy Auth via the portal's "Excluded paths" setting.
 route('bookingState', 'GET', 'api/clients/{clientId}/qbr/{period}/booking', (req) => h.getBookingState(req.params['clientId']!, req.params['period']!));
 route('bookingCreate', 'POST', 'api/clients/{clientId}/qbr/{period}/booking', (req) => h.ensureBookingLink(req.params['clientId']!, req.params['period']!));
+route('cancelMeeting', 'DELETE', 'api/clients/{clientId}/qbr/{period}/meeting', (req) => h.cancelQbrMeeting(req.params['clientId']!, req.params['period']!));
 route('bookingPage', 'GET', 'book/{token}', (req) => h.getBookingPage(req.params['token']!));
 route('bookingInfo', 'GET', 'api/book/{token}', (req) => h.publicBookingInfo(req.params['token']!));
 route('bookingSlots', 'GET', 'api/book/{token}/slots', (req) => h.publicBookingSlots(req.params['token']!, req.query.get('from'), req.query.get('to')));

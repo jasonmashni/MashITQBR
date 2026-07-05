@@ -216,6 +216,9 @@ export const api = {
     ),
   createBookingLink: (clientId: string, period: string) =>
     send('POST', `/api/clients/${clientId}/qbr/${period}/booking`).then(json<{ booking: BookingInfo; path: string }>),
+  /** Cancel the scheduled meeting: deletes the Teams event, reopens booking. */
+  cancelMeeting: (clientId: string, period: string) =>
+    send('DELETE', `/api/clients/${clientId}/qbr/${period}/meeting`).then(json<{ cancelled: boolean }>),
 
   // In-portal notifications (bell)
   notifications: (limit = 30) =>

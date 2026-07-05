@@ -146,3 +146,13 @@ export async function createOrganizerEvent(
     joinUrl: typeof online?.['joinUrl'] === 'string' ? (online['joinUrl'] as string) : undefined,
   };
 }
+
+/** Cancel/delete a previously-created calendar event (best-effort). */
+export async function deleteOrganizerEvent(
+  cfg: GraphAppConfig,
+  organizer: string,
+  eventId: string,
+  fetchFn: FetchLike = fetch,
+): Promise<void> {
+  await graphJson(cfg, fetchFn, 'DELETE', `/users/${encodeURIComponent(organizer)}/events/${encodeURIComponent(eventId)}`);
+}

@@ -1996,7 +1996,7 @@ function MeetingTab({
         <Text size="xs" c="dimmed" mt={4}>Notes land on the final report with the discussion. “Save agenda” saves these too.</Text>
       </Card>
 
-      <BookingLinkCard clientId={clientId} period={period} meta={meta} />
+      <BookingLinkCard clientId={clientId} period={period} meta={meta} onChanged={onChanged} />
 
       <ScheduleCard clientId={clientId} period={period} meta={meta} onChanged={onChanged} />
     </Stack>
@@ -2004,9 +2004,20 @@ function MeetingTab({
 }
 
 // ── Booking link (client self-scheduling, Microsoft Bookings-style) ──────────
-function BookingLinkCard({ clientId, period, meta }: { clientId: string; period: string; meta: QbrResponse['meta'] | undefined }) {
+function BookingLinkCard({
+  clientId,
+  period,
+  meta,
+  onChanged,
+}: {
+  clientId: string;
+  period: string;
+  meta: QbrResponse['meta'] | undefined;
+  onChanged: () => void;
+}) {
   const [state, setState] = useState<Awaited<ReturnType<typeof api.getBooking>> | null>(null);
   const [creating, setCreating] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -2014,7 +2025,7 @@ function BookingLinkCard({ clientId, period, meta }: { clientId: string; period:
     return () => {
       live = false;
     };
-  }, [clientId, period]);
+  }, [clientId, period, meta]);
 
   async function createLink() {
     setCreating(true);
@@ -2029,8 +2040,24 @@ function BookingLinkCard({ clientId, period, meta }: { clientId: string; period:
     }
   }
 
+  async function cancelMeeting() {
+    if (!window.confirm('Cancel this scheduled meeting? The Teams calendar event is removed and the booking link reopens so a new time can be picked.')) return;
+    setCancelling(true);
+    try {
+      await api.cancelMeeting(clientId, period);
+      setState(await api.getBooking(clientId, period));
+      notifications.show({ color: 'teal', message: 'Meeting cancelled — create a fresh booking link or set a new time below.' });
+      onChanged();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Could not cancel', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   const booking = state?.booking;
   const url = state?.path ? `${window.location.origin}${state.path}` : null;
+  const scheduled = Boolean(meta?.meeting?.scheduledAt);
 
   return (
     <Card withBorder radius="md" padding="lg">
@@ -2068,11 +2095,16 @@ function BookingLinkCard({ clientId, period, meta }: { clientId: string; period:
       )}
 
       {booking?.status === 'booked' ? (
-        <Text size="sm">
-          <b>{booking.attendeeName}</b> ({booking.attendeeEmail}) booked{' '}
-          <b>{booking.start?.replace('T', ' at ')}</b> ({booking.timezone})
-          {booking.eventId ? ' — Teams invite sent to everyone.' : ' — calendar not connected, send the invite manually.'}
-        </Text>
+        <Group justify="space-between" align="flex-start" wrap="nowrap">
+          <Text size="sm">
+            <b>{booking.attendeeName}</b> ({booking.attendeeEmail}) booked{' '}
+            <b>{booking.start?.replace('T', ' at ')}</b> ({booking.timezone})
+            {booking.eventId ? ' — Teams invite sent to everyone.' : ' — calendar not connected, send the invite manually.'}
+          </Text>
+          <Button size="compact-sm" variant="light" color="red" loading={cancelling} onClick={cancelMeeting}>
+            Cancel / reschedule
+          </Button>
+        </Group>
       ) : url ? (
         <Group gap="xs">
           <TextInput readOnly value={url} style={{ flex: 1 }} onFocus={(e) => e.currentTarget.select()} aria-label="Booking link" />
@@ -2084,13 +2116,19 @@ function BookingLinkCard({ clientId, period, meta }: { clientId: string; period:
             )}
           </CopyButton>
         </Group>
+      ) : scheduled ? (
+        <Group justify="space-between" align="center" wrap="nowrap">
+          <Text size="sm" c="dimmed">
+            A meeting is on the calendar for {new Date(meta!.meeting!.scheduledAt!).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}.
+          </Text>
+          <Button size="compact-sm" variant="light" color="red" loading={cancelling} onClick={cancelMeeting}>
+            Cancel / reschedule
+          </Button>
+        </Group>
       ) : (
-        <Button variant="light" loading={creating} onClick={createLink} disabled={Boolean(meta?.meeting?.scheduledAt)}>
+        <Button variant="light" loading={creating} onClick={createLink}>
           Create booking link
         </Button>
-      )}
-      {!booking && meta?.meeting?.scheduledAt && (
-        <Text size="xs" c="dimmed" mt={4}>A meeting is already scheduled for this quarter.</Text>
       )}
     </Card>
   );
