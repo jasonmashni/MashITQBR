@@ -244,12 +244,23 @@ export class TableDataStore implements DataStore {
     const table = this.table(TABLES.notifications);
     await ensureTable(table);
     const want = ids === 'all' ? null : new Set(ids);
-    for await (const row of table.listEntities<Row>({ queryOptions: { filter: odata`PartitionKey eq ${'notif'}` } })) {
-      const json = joinEntityJson(row as unknown as Record<string, unknown>);
-      if (!json) continue;
-      const n = JSON.parse(json) as NotificationRecord;
-      if (n.read || (want !== null && !want.has(n.id))) continue;
-      await this.put(TABLES.notifications, 'notif', row.rowKey as string, { ...n, read: true });
+    // Bell items are always drawn from the newest window (list caps at ~30–100),
+    // so only the newest page can be marked — bound the scan to it instead of
+    // walking the entire never-pruned partition on every click. Newest-first
+    // rowKeys mean the first page is the most recent MARK_SCAN_CAP rows.
+    const MARK_SCAN_CAP = 500;
+    const pages = table
+      .listEntities<Row>({ queryOptions: { filter: odata`PartitionKey eq ${'notif'}` } })
+      .byPage({ maxPageSize: MARK_SCAN_CAP });
+    for await (const page of pages) {
+      for (const row of page) {
+        const json = joinEntityJson(row as unknown as Record<string, unknown>);
+        if (!json) continue;
+        const n = JSON.parse(json) as NotificationRecord;
+        if (n.read || (want !== null && !want.has(n.id))) continue;
+        await this.put(TABLES.notifications, 'notif', row.rowKey as string, { ...n, read: true });
+      }
+      break; // one page covers every item the bell could have shown
     }
   }
 }

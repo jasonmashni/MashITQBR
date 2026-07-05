@@ -167,4 +167,71 @@ describe('booking flow end-to-end (JSON store + fake Graph)', () => {
     const bad = await h.publicBook(token, { start: '2026-08-02T10:00', name: 'A', email: 'a@b.co' });
     expect(bad.status).toBe(409);
   });
+
+  it('CSPRNG tokens are unique and well-formed', () => {
+    const tokens = new Set(Array.from({ length: 200 }, () => newBookingToken()));
+    expect(tokens.size).toBe(200);
+    for (const t of tokens) expect(t).toMatch(/^[a-z0-9]{24}$/);
+  });
+});
+
+describe('QbrRecord field durability (pipeline stepper regression)', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'qbr-durability-'));
+    process.env['QBR_DATA_DIR'] = dir;
+    delete process.env['AzureWebJobsStorage'];
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env['QBR_DATA_DIR'];
+  });
+
+  it('packageSentAt survives a later booking + status change (patchQbr merge)', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    await store.upsertClient({ id: 'anp', name: 'ANP Enertech' });
+    await store.putSnapshot({
+      clientId: 'anp',
+      period: '2026-Q4',
+      capturedAt: '2026-12-31T00:00:00.000Z',
+      metrics: [{ key: 'tickets.opened', label: 'Tickets opened', value: 40, source: 'halo', category: 'operations' }],
+    });
+
+    // Generating the email draft stamps packageSentAt.
+    await h.getEmailDraft('anp', '2026-Q4', null); // no origin header → no link, still stamps
+    expect((await store.getQbr('anp', '2026-Q4'))?.packageSentAt).toBeTruthy();
+
+    // A later status change (any other QBR writer) must NOT wipe the stamp.
+    await h.putStatus('anp', '2026-Q4', 'narrative_approved');
+    const after = await store.getQbr('anp', '2026-Q4');
+    expect(after?.packageSentAt).toBeTruthy();
+    expect(after?.status).toBe('narrative_approved');
+  });
+
+  it('qbr_due reminder fires once even after 300 later notifications', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    await store.upsertClient({ id: 'dueco', name: 'Due Co', qbrEnabled: true });
+    // Data present in the current quarter, nothing scheduled.
+    const now = new Date();
+    const { periodFor } = await import('@mashit/core');
+    const period = periodFor(now).id;
+    await store.putSnapshot({ clientId: 'dueco', period, capturedAt: now.toISOString(), metrics: [] });
+    // Force the check into the final-month window by pinning "now" to quarter end.
+    const qEnd = new Date(Date.parse(`${periodFor(now).end}T12:00:00Z`));
+
+    h._resetDueCheck();
+    await h.checkQbrDue(qEnd);
+    let due = (await store.listNotifications(400)).filter((n) => n.dedupeKey === `qbr_due:dueco:${period}`);
+    expect(due).toHaveLength(1);
+
+    // Flood the bell with 300 unrelated notifications, then re-check.
+    for (let i = 0; i < 300; i++) h.notify('report', `noise ${i}`);
+    await new Promise((r) => setTimeout(r, 50));
+    h._resetDueCheck();
+    await h.checkQbrDue(qEnd);
+    due = (await store.listNotifications(400)).filter((n) => n.dedupeKey === `qbr_due:dueco:${period}`);
+    expect(due).toHaveLength(1); // still one — deduped on the QBR record, not a notification scan
+  });
 });

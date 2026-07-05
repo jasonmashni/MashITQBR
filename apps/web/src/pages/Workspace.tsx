@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { Link as RouterLink, useParams } from 'react-router-dom';
+import { Link as RouterLink, useParams, useSearchParams } from 'react-router-dom';
 import {
   Title,
   Group,
@@ -120,6 +120,11 @@ function exportDetailsCsv(m: MetricRow) {
  */
 export function Workspace() {
   const { clientId = '' } = useParams();
+  // A ?period= query (from a notification deep link) re-runs the targeting
+  // effect even when we're already on this client — with useParams alone the
+  // component doesn't remount and the quarter would never switch.
+  const [searchParams] = useSearchParams();
+  const wantedPeriod = searchParams.get('period');
   const [periods, setPeriods] = useState<Array<{ value: string; label: string }>>([]);
   const [period, setPeriod] = useState('');
   const [qbr, setQbr] = useState<QbrResponse | null>(null);
@@ -164,7 +169,7 @@ export function Workspace() {
   // (notification bell) always wins.
   useEffect(() => {
     let live = true;
-    const wanted = new URLSearchParams(window.location.search).get('period');
+    const wanted = wantedPeriod;
     api
       .periods(clientId)
       .then(({ periods: list }) => {
@@ -196,7 +201,7 @@ export function Workspace() {
     return () => {
       live = false;
     };
-  }, [clientId]);
+  }, [clientId, wantedPeriod]);
 
   useEffect(() => {
     if (!clientId || !period) return;

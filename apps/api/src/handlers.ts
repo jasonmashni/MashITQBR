@@ -34,6 +34,7 @@ import {
   type DocumentRecord,
   type OpportunityRecord,
   type OpportunityStatus,
+  type QbrRecord,
 } from './store/index.js';
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
 import { currentActor } from './requestContext.js';
@@ -92,6 +93,30 @@ function audit(action: string, target: string, detail?: string): void {
       detail,
     })
     .catch(() => undefined);
+}
+
+/**
+ * Merge-update a QBR record: read the existing row, spread it, apply the patch.
+ * upsertQbr is a whole-record REPLACE in both stores, so any writer that builds
+ * a fresh `{clientId, period, status, meeting, updatedAt}` literal silently
+ * drops fields it doesn't mention (packageSentAt, future additions). Every
+ * mutating call goes through here so nothing is lost.
+ */
+async function patchQbr(
+  clientId: string,
+  period: string,
+  patch: Partial<Omit<QbrRecord, 'clientId' | 'period' | 'updatedAt'>>,
+): Promise<QbrRecord> {
+  const store = getDataStore();
+  const existing = await store.getQbr(clientId, period);
+  return store.upsertQbr({
+    status: 'draft',
+    ...existing,
+    ...patch,
+    clientId,
+    period,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 /** Fire-and-forget in-portal notification (bell menu). */
@@ -293,9 +318,7 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   if (dispositioned) {
     const existing = await store.getQbr(clientId, period);
     const status = advanceStatus(existing?.status, 'dispositioned');
-    if (status !== existing?.status) {
-      await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() });
-    }
+    if (status !== existing?.status) await patchQbr(clientId, period, { status });
   }
   return ok(saved);
 }
@@ -839,21 +862,20 @@ export async function checkQbrDue(now: Date = new Date()): Promise<void> {
   const daysLeft = (Date.parse(`${period.end}T23:59:59Z`) - now.getTime()) / (24 * 3_600_000);
   if (daysLeft > 31) return; // nudging earlier than the last month is noise
   const store = getDataStore();
-  const recent = await store.listNotifications(200).catch(() => []);
-  const seen = new Set(recent.map((n) => n.dedupeKey).filter(Boolean));
   for (const client of await store.listClients()) {
     if (client.qbrEnabled === false) continue;
-    const dedupeKey = `qbr_due:${client.id}:${period.id}`;
-    if (seen.has(dedupeKey)) continue;
     const qbr = await store.getQbr(client.id, period.id).catch(() => undefined);
-    if (qbr?.meeting?.scheduledAt || qbr?.status === 'completed' || qbr?.status === 'archived') continue;
+    // Dedupe on the QBR record itself, not a notification scan (which only sees
+    // the newest page and misses old keys once the bell fills up).
+    if (qbr?.dueRemindedAt || qbr?.meeting?.scheduledAt || qbr?.status === 'completed' || qbr?.status === 'archived') continue;
     const snapshot = await store.getSnapshot(client.id, period.id).catch(() => undefined);
     if (!snapshot) continue; // no data yet — sync first, then we nudge
+    await patchQbr(client.id, period.id, { dueRemindedAt: new Date().toISOString() }).catch(() => undefined);
     notify('qbr_due', `Time to schedule ${client.name}'s ${period.label} QBR`, {
       body: 'Data is in but nothing is on the calendar — send the booking link or schedule it from the Meeting tab.',
       clientId: client.id,
       period: period.id,
-      dedupeKey,
+      dedupeKey: `qbr_due:${client.id}:${period.id}`,
     });
   }
 }
@@ -1047,8 +1069,7 @@ export async function syncQbr(clientId: string, period: string): Promise<ApiResu
     const store = getDataStore();
     const existing = await store.getQbr(clientId, period);
     // Forward-only: a re-sync must not demote a scheduled/completed QBR.
-    const status = advanceStatus(existing?.status, 'data_synced');
-    await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() });
+    await patchQbr(clientId, period, { status: advanceStatus(existing?.status, 'data_synced') });
     audit('qbr.sync', `qbr:${clientId}/${period}`, `${snapshot.metrics.length} metric(s)`);
     return ok({ metrics: snapshot.metrics.length, warnings, documents: documents.length });
   } catch (e) {
@@ -1059,9 +1080,7 @@ export async function syncQbr(clientId: string, period: string): Promise<ApiResu
 export async function putStatus(clientId: string, period: string, status: unknown): Promise<ApiResult> {
   // Manual status set is the explicit user override (incl. un-archiving) — validated, not advanced.
   if (!isQbrStatus(status)) return err(400, `Invalid status: ${String(status)}`);
-  const store = getDataStore();
-  const existing = await store.getQbr(clientId, period);
-  const saved = await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() });
+  const saved = await patchQbr(clientId, period, { status });
   audit('qbr.status', `qbr:${clientId}/${period}`, status);
   return ok(saved);
 }
@@ -1071,8 +1090,7 @@ export async function putSchedule(clientId: string, period: string, body: { sche
   const existing = await store.getQbr(clientId, period);
   const meeting = { ...existing?.meeting, scheduledAt: body.scheduledAt, joinUrl: body.joinUrl };
   // Booking a meeting advances data_synced/draft to scheduled without demoting later stages.
-  const status = advanceStatus(existing?.status, 'scheduled');
-  const saved = await store.upsertQbr({ clientId, period, status, meeting, updatedAt: new Date().toISOString() });
+  const saved = await patchQbr(clientId, period, { status: advanceStatus(existing?.status, 'scheduled'), meeting });
   audit('qbr.schedule', `qbr:${clientId}/${period}`, body.scheduledAt);
   return ok(saved);
 }
@@ -1120,9 +1138,7 @@ export async function pushQbrAction(
     // A successful push is the workflow's last mile — advance the QBR.
     const existing = await store.getQbr(clientId, period);
     const status = advanceStatus(existing?.status, 'actions_pushed');
-    if (status !== existing?.status) {
-      await store.upsertQbr({ clientId, period, status, meeting: existing?.meeting, updatedAt: new Date().toISOString() });
-    }
+    if (status !== existing?.status) await patchQbr(clientId, period, { status });
     return ok(result);
   } catch (e) {
     return err(400, e instanceof Error ? e.message : 'Push failed');
@@ -1207,15 +1223,7 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
   audit('qbr.email_draft', `qbr:${clientId}/${period}`, `${client?.primaryContact?.email ?? 'no recipient'} · ${attachments.length} attachment(s)`);
   // Stamp the pipeline: generating the package marks the "send" step done.
   try {
-    const existing = await store.getQbr(clientId, period);
-    await store.upsertQbr({
-      clientId,
-      period,
-      status: existing?.status ?? 'draft',
-      meeting: existing?.meeting,
-      packageSentAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
+    await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() });
   } catch {
     // Stamp is best-effort.
   }
@@ -1377,6 +1385,26 @@ export async function publicBook(token: string, body: Record<string, unknown>): 
   const periodLabel = parsePeriod(booking.period).label;
   const orgName = brand.name || 'Mash IT';
 
+  // Claim the slot BEFORE creating the calendar event, so a double-submit (two
+  // tabs/devices) can't mint two Teams invites: re-read and flip to 'booked'
+  // first; if someone else already claimed it, bail. Not DB-level CAS — the
+  // stores don't offer conditional writes — but it closes the practical window
+  // (and the booking page disables its button on submit).
+  const fresh = await store.getBooking(token);
+  if (!fresh || fresh.status !== 'open') return err(409, 'That time was just taken — please pick another.');
+  const claimed = await store.putBooking({
+    ...fresh,
+    status: 'booked',
+    start,
+    end,
+    timezone: settings.timezone,
+    attendeeName: name,
+    attendeeEmail: email,
+    extraAttendees: extras.length ? extras : undefined,
+    notes: notes || undefined,
+    bookedAt: new Date().toISOString(),
+  });
+
   let eventId: string | undefined;
   let joinUrl: string | undefined;
   if (graph && settings.organizerEmail) {
@@ -1402,31 +1430,15 @@ export async function publicBook(token: string, body: Record<string, unknown>): 
     }
   }
 
-  const updated = await store.putBooking({
-    ...booking,
-    status: 'booked',
-    start,
-    end,
-    timezone: settings.timezone,
-    attendeeName: name,
-    attendeeEmail: email,
-    extraAttendees: extras.length ? extras : undefined,
-    notes: notes || undefined,
-    eventId,
-    joinUrl,
-    bookedAt: new Date().toISOString(),
-  });
+  const updated = eventId || joinUrl ? await store.putBooking({ ...claimed, eventId, joinUrl }) : claimed;
 
   // Reflect it on the QBR record so the workspace shows the meeting.
   try {
     const existing = await store.getQbr(booking.clientId, booking.period);
     const scheduledAt = localToUtc(start, settings.timezone).toISOString();
-    await store.upsertQbr({
-      clientId: booking.clientId,
-      period: booking.period,
+    await patchQbr(booking.clientId, booking.period, {
       status: advanceStatus(existing?.status, 'scheduled'),
       meeting: { ...existing?.meeting, scheduledAt, joinUrl, eventId, attendees: [email, ...extras] },
-      updatedAt: new Date().toISOString(),
     });
   } catch {
     // Booking record is the source of truth; workspace sync is best-effort.
@@ -1579,8 +1591,7 @@ export async function createMeeting(
     eventId: created.id,
     attendees,
   };
-  const status = advanceStatus(existing?.status, 'scheduled');
-  await store.upsertQbr({ clientId, period, status, meeting, updatedAt: new Date().toISOString() });
+  await patchQbr(clientId, period, { status: advanceStatus(existing?.status, 'scheduled'), meeting });
   audit('qbr.meeting', `qbr:${clientId}/${period}`, `${start} · ${attendees.join(', ') || 'no attendees'}`);
   return ok({ scheduledAt: start, joinUrl: meeting.joinUrl, eventId: created.id });
 }

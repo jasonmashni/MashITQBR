@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import type { BookingSettings } from '@mashit/core';
 
 /**
@@ -175,10 +176,15 @@ export function slotEnd(slot: string, s: ResolvedBookingSettings): string {
   return `${day}T${hhmm(endMin)}`;
 }
 
-/** Unguessable URL token for a booking link. */
+/**
+ * Unguessable URL token for a booking link. This token is the SOLE
+ * authorization for the public /book endpoints, so it must be drawn from a
+ * CSPRNG — Math.random (V8 xorshift128+) leaks its state and would let one
+ * client's link predict another's. randomInt is unbiased over [0,36).
+ */
 export function newBookingToken(): string {
   const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
   let out = '';
-  for (let i = 0; i < 24; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  for (let i = 0; i < 24; i++) out += alphabet[randomInt(alphabet.length)];
   return out;
 }
