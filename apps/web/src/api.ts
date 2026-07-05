@@ -155,6 +155,11 @@ export const api = {
   /** Import reviewed document metrics into the quarter's snapshot. */
   importDocMetrics: (clientId: string, period: string, body: { source: string; metrics: DocExtraction['metrics'] }) =>
     send('POST', `/api/clients/${clientId}/qbr/${period}/metrics/import`, body).then(json<{ imported: number; source: string; period: string }>),
+  /** Undo a document import: drop every metric that source added to the quarter. */
+  removeImportedMetrics: (clientId: string, period: string, source: string) =>
+    send('DELETE', `/api/clients/${clientId}/qbr/${period}/metrics/import?source=${encodeURIComponent(source)}`).then(
+      json<{ removed: number; source: string; period: string }>,
+    ),
 
   // Opportunity board
   listOpportunities: (clientId: string) => send('GET', `/api/clients/${clientId}/opportunities`).then(json<{ opportunities: Opportunity[] }>),

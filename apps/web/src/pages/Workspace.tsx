@@ -91,6 +91,8 @@ const SECTIONS: Array<[string, string]> = [
 const DISPOSITIONS = ['pending', 'create_opportunity', 'create_ticket', 'accept_risk', 'no_action'];
 const STATUSES = ['draft', 'data_synced', 'narrative_approved', 'scheduled', 'completed', 'dispositioned', 'actions_pushed', 'archived'];
 const DOC_CATEGORIES = ['Security', 'Backup', 'Endpoint', 'Email', 'Network', 'Compliance', 'Billing', 'Other'];
+/** Metric categories = report sections; labels come from SECTIONS above. */
+const METRIC_CATEGORY_OPTIONS = SECTIONS.map(([value, label]) => ({ value, label }));
 const RING_COLOR: Record<string, string> = { green: 'teal', amber: 'yellow', red: 'red', unknown: 'gray' };
 
 /** Download a metric's drill-down rows as a CSV (client-side, no round trip). */
@@ -964,8 +966,28 @@ function DataTab({
       {sources.map((source) => (
         <Card key={source} withBorder radius="md" padding="lg">
           <Group mb="sm" gap="xs">
-            <Badge variant="light" color="navy">{source}</Badge>
+            <Badge variant="light" color={source.startsWith('pdf:') ? 'grape' : 'navy'}>{source}</Badge>
             <Text size="xs" c="dimmed">{collected.filter((m) => m.source === source).length} metric(s)</Text>
+            {source.startsWith('pdf:') && (
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                color="red"
+                ml="auto"
+                onClick={async () => {
+                  if (!window.confirm(`Remove every metric imported from ${source} out of ${period}? The PDF itself stays in Reports.`)) return;
+                  try {
+                    const r = await api.removeImportedMetrics(clientId, period, source);
+                    notifications.show({ color: 'teal', message: `${r.removed} imported metric(s) removed from ${period}.` });
+                    onSaved();
+                  } catch (e) {
+                    notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Remove failed' });
+                  }
+                }}
+              >
+                Remove import
+              </Button>
+            )}
           </Group>
           <Table verticalSpacing={6}>
             <Table.Thead>
@@ -1135,7 +1157,7 @@ function ReportsTab({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [extracting, setExtracting] = useState<string | null>(null);
-  const [review, setReview] = useState<{ doc: DocumentInfo; extraction: DocExtraction; source: string; checked: Set<number> } | null>(null);
+  const [review, setReview] = useState<{ doc: DocumentInfo; extraction: DocExtraction; source: string; checked: Set<number>; target: string } | null>(null);
   const [importing, setImporting] = useState(false);
 
   useEffect(() => {
@@ -1251,7 +1273,10 @@ function ReportsTab({
       if (extraction.metrics.length === 0) {
         notifications.show({ color: 'yellow', message: `No importable metrics found in ${d.name}.` });
       } else {
-        setReview({ doc: d, extraction, source, checked: new Set(extraction.metrics.map((_, i) => i)) });
+        // Default the target quarter to what the CONTENT covers (a previous
+        // QBR filed under this quarter should trend, not pollute it).
+        const hint = /^20\d{2}-Q[1-4]$/.test(extraction.periodHint) ? extraction.periodHint : null;
+        setReview({ doc: d, extraction, source, checked: new Set(extraction.metrics.map((_, i) => i)), target: hint ?? d.period });
       }
     } catch (e) {
       notifications.show({ color: 'red', title: `Extraction failed for ${d.name}`, message: e instanceof Error ? e.message : 'Unknown error' });
@@ -1265,8 +1290,8 @@ function ReportsTab({
     setImporting(true);
     try {
       const metrics = review.extraction.metrics.filter((_, i) => review.checked.has(i));
-      const r = await api.importDocMetrics(clientId, review.doc.period, { source: review.source, metrics });
-      notifications.show({ color: 'teal', message: `${r.imported} metric(s) added to ${review.doc.period} — review them on the Data tab.` });
+      const r = await api.importDocMetrics(clientId, review.target, { source: review.source, metrics });
+      notifications.show({ color: 'teal', message: `${r.imported} metric(s) added to ${review.target} — review them on the Data tab.` });
       setReview(null);
       onChanged();
     } catch (e) {
@@ -1542,14 +1567,20 @@ function ReportsTab({
         {review && (
           <Stack gap="sm">
             {review.extraction.note && <Text size="sm" c="dimmed">{review.extraction.note}</Text>}
-            {review.extraction.periodHint && review.extraction.periodHint !== review.doc.period && (
-              <Alert color="yellow" p="xs">
-                <Text size="xs">
-                  This document's content covers <b>{review.extraction.periodHint}</b> but it's filed under <b>{review.doc.period}</b> —
-                  metrics import into the quarter the file is FILED under. Cancel and move the file first (AI match does this) if that's wrong.
-                </Text>
-              </Alert>
-            )}
+            <Group gap="sm" align="flex-end">
+              <Select
+                label="Import into quarter"
+                description="Where these numbers belong — a previous QBR should land in ITS quarter so trends compare against it."
+                data={[...new Set([review.target, review.doc.period, ...periods.map((p) => p.value)])].sort().reverse()}
+                value={review.target}
+                onChange={(v) => v && setReview({ ...review, target: v })}
+                w={230}
+                allowDeselect={false}
+              />
+              {review.extraction.periodHint && review.extraction.periodHint === review.target && review.target !== review.doc.period && (
+                <Badge color="teal" variant="light" mb={6}>AI: content covers {review.extraction.periodHint}</Badge>
+              )}
+            </Group>
             <Table.ScrollContainer minWidth={560}>
               <Table verticalSpacing={4}>
                 <Table.Thead>
@@ -1594,7 +1625,21 @@ function ReportsTab({
                           {m.unit && m.unit !== 'count' ? ` ${m.unit}` : ''}
                         </Text>
                       </Table.Td>
-                      <Table.Td><Badge size="sm" variant="light" color="gray">{m.category}</Badge></Table.Td>
+                      <Table.Td>
+                        <Select
+                          size="xs"
+                          w={140}
+                          aria-label={`Report section for ${m.label}`}
+                          data={METRIC_CATEGORY_OPTIONS}
+                          value={m.category}
+                          allowDeselect={false}
+                          onChange={(v) => {
+                            if (!v) return;
+                            const metrics = review.extraction.metrics.map((row, j) => (j === i ? { ...row, category: v as typeof row.category } : row));
+                            setReview({ ...review, extraction: { ...review.extraction, metrics } });
+                          }}
+                        />
+                      </Table.Td>
                       <Table.Td><Text size="xs" c="dimmed" ff="monospace">{m.key}</Text></Table.Td>
                     </Table.Tr>
                   ))}
@@ -1603,12 +1648,12 @@ function ReportsTab({
             </Table.ScrollContainer>
             <Text size="xs" c="dimmed">
               Imported metrics appear on the Data tab under source “{review.source}” — include/exclude them there like any synced
-              metric. Extracting this document again replaces its previous import.
+              metric. The Category picks which report section each lands in. Re-importing the same document replaces its previous import.
             </Text>
             <Group justify="flex-end">
               <Button variant="default" onClick={() => setReview(null)}>Cancel</Button>
               <Button color="teal" loading={importing} disabled={review.checked.size === 0} onClick={importReviewed}>
-                Import {review.checked.size} into {review.doc.period}
+                Import {review.checked.size} into {review.target}
               </Button>
             </Group>
           </Stack>

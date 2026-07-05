@@ -106,6 +106,12 @@ export interface DocumentRecord {
   name: string;
   /** Where it came from: 'upload', 'email', or the vendor integration id. */
   source: string;
+  /**
+   * Stable identity for sync-attached vendor reports (e.g. `summary:2026-Q2`).
+   * Re-syncs match on source+sourceKey so the same report is updated in place
+   * even after the user renames it — renames used to cause duplicates.
+   */
+  sourceKey?: string;
   /** User-assigned bucket on the Reports tab (Security, Backup, Endpoint…). */
   category?: string;
   contentType: string;

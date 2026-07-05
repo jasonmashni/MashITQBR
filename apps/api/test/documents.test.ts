@@ -79,6 +79,84 @@ describe('sync surfaces vendor documents', () => {
       },
     };
     const { documents } = await syncClientMetrics({ store, secrets, http }, 'c9', '2026-Q1', '2026-03-31T00:00:00.000Z');
-    expect(documents).toEqual([{ source: 'huntress', name: 'Huntress quarterly_summary 2026-Q1.pdf', url: 'https://huntress.example/report.pdf' }]);
+    expect(documents).toEqual([
+      {
+        source: 'huntress',
+        name: 'Huntress quarterly_summary 2026-Q1.pdf',
+        url: 'https://huntress.example/report.pdf',
+        key: 'summary:2026-Q1',
+      },
+    ]);
+  });
+});
+
+describe('sync re-attach after a portal rename (the duplicate-report bug)', () => {
+  it('updates the renamed document in place instead of adding a copy', async () => {
+    process.env['QBR_DATA_DIR'] = dir;
+    delete process.env['AzureWebJobsStorage'];
+    const h = await import('../src/handlers.js');
+
+    const first = await h.storeDocument({
+      clientId: 'anp',
+      period: '2026-Q2',
+      name: 'Huntress quarterly_summary 2026-Q2.pdf',
+      contentType: 'application/pdf',
+      bytes: Buffer.from('v1'),
+      source: 'huntress',
+      sourceKey: 'summary:2026-Q2',
+    });
+
+    // The user renames + categorizes it (AI match does exactly this).
+    await h.updateQbrDocument('anp', '2026-Q2', first.id, {
+      name: 'Huntress Threat Report 2026-Q2.pdf',
+      category: 'Security',
+    });
+
+    // Next sync re-attaches under the original generated name.
+    const again = await h.storeDocument({
+      clientId: 'anp',
+      period: '2026-Q2',
+      name: 'Huntress quarterly_summary 2026-Q2.pdf',
+      contentType: 'application/pdf',
+      bytes: Buffer.from('v2-bigger'),
+      source: 'huntress',
+      sourceKey: 'summary:2026-Q2',
+    });
+
+    expect(again.id).toBe(first.id); // matched by sourceKey, not name
+    expect(again.name).toBe('Huntress Threat Report 2026-Q2.pdf'); // rename survives
+    expect(again.category).toBe('Security'); // curation survives
+    expect(again.size).toBe(Buffer.from('v2-bigger').length); // bytes refreshed
+
+    const listed = (await import('../src/store/index.js')).getDataStore();
+    expect((await listed.listDocuments('anp', '2026-Q2')).filter((d) => d.source === 'huntress')).toHaveLength(1);
+  });
+});
+
+describe('imported-metric cleanup (undo a bad PDF import)', () => {
+  it('removes exactly the pdf:* source rows and refuses other sources', async () => {
+    process.env['QBR_DATA_DIR'] = dir;
+    delete process.env['AzureWebJobsStorage'];
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+
+    await store.putSnapshot({
+      clientId: 'anp',
+      period: '2025-Q3',
+      capturedAt: '2025-09-30T00:00:00.000Z',
+      metrics: [
+        { key: 'tickets.opened', label: 'Tickets opened', value: 40, source: 'halo', category: 'operations' },
+        { key: 'tickets.opened', label: 'Tickets opened', value: 3, source: 'pdf:mash-it', category: 'operations' },
+        { key: 'doc.backup_jobs', label: 'Backup jobs', value: 12, source: 'pdf:mash-it', category: 'backup' },
+      ],
+    });
+
+    expect((await h.removeImportedMetrics('anp', '2025-Q3', 'halo')).status).toBe(400); // synced rows are protected
+    const res = await h.removeImportedMetrics('anp', '2025-Q3', 'pdf:mash-it');
+    expect(res.status).toBe(200);
+    expect((res.json as { removed: number }).removed).toBe(2);
+    const snap = await store.getSnapshot('anp', '2025-Q3');
+    expect(snap!.metrics).toHaveLength(1);
+    expect(snap!.metrics[0]!.source).toBe('halo');
   });
 });

@@ -1,6 +1,6 @@
 import type { DiscussionItem, FunctionScore, MetricTrend, Rating } from '@mashit/core';
 import type { BrandTokens } from './brand.js';
-import { formatPercent, formatValue, ratingColor, discussionOutcome } from './format.js';
+import { formatPercent, formatValue, ratingColor, discussionOutcome, trendDeltaText } from './format.js';
 import type { ReportModel, ReportSection } from './model.js';
 
 /**
@@ -77,11 +77,10 @@ function logoNode(dataUri: string | undefined, opts: { width?: number; height?: 
  * Helvetica's WinAnsi set). The sign + color carry the direction.
  */
 function pdfTrend(t: MetricTrend): string {
-  if (t.direction === 'na' || t.previous === null) return '';
-  if (t.deltaPct === null) return '';
-  if (t.direction === 'flat') return 'flat';
-  const pct = Math.round(t.deltaPct * 10) / 10;
-  return `${pct > 0 ? '+' : ''}${pct}%`;
+  // Shared text minus glyphs outside Helvetica's WinAnsi set (▲/▼/→) — the
+  // sign + cell color carry direction, and the extreme-ratio fallback reads
+  // "3 to 62" instead of "3 → 62".
+  return trendDeltaText(t).replace(' → ', ' to ');
 }
 
 /** Light callout block with an accent left bar (section takeaways, notes). */
@@ -383,7 +382,7 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
 
   // Discussion & decisions from the meeting
   if (m.discussion.length || m.notes) {
-    content.push({ text: 'Discussion & Decisions', style: 'h1', color: brand.primary, pageBreak: 'before' });
+    content.push({ text: 'Active & Pending Conversations', style: 'h1', color: brand.primary, pageBreak: 'before' });
     if (m.discussion.length) content.push(discussionTable(m.discussion, brand));
     if (m.notes) {
       content.push({ text: 'Meeting notes', style: 'h2', color: brand.primary, margin: [0, 14, 0, 4] });

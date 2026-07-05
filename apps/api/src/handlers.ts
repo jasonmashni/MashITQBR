@@ -343,32 +343,40 @@ export async function listQbrDocuments(clientId: string, period: string): Promis
 }
 
 /** Store one document (bytes → content store, metadata → data store). */
-async function storeDocument(input: {
+export async function storeDocument(input: {
   clientId: string;
   period: string;
   name: string;
   contentType: string;
   bytes: Buffer;
   source: string;
+  /** Stable identity for sync-attached reports — survives portal renames. */
+  sourceKey?: string;
 }): Promise<DocumentRecord> {
   const store = getDataStore();
-  // Same source+name replaces the previous version (re-syncs stay tidy).
-  const existing = (await store.listDocuments(input.clientId, input.period)).find(
-    (d) => d.source === input.source && d.name === input.name,
-  );
+  const docs = await store.listDocuments(input.clientId, input.period);
+  // Re-syncs update in place: match the stable sourceKey first (the user may
+  // have renamed the report — AI match retitles them), then source+name.
+  const existing =
+    (input.sourceKey ? docs.find((d) => d.source === input.source && d.sourceKey === input.sourceKey) : undefined) ??
+    docs.find((d) => d.source === input.source && d.name === input.name);
+  // Keep the user's curation on refresh: name and category stay, bytes update.
+  const name = existing?.name ?? input.name;
   const id = existing?.id ?? Math.random().toString(36).slice(2, 10);
   const record: DocumentRecord = {
     id,
     clientId: input.clientId,
     period: input.period,
-    name: input.name,
+    name,
     source: input.source,
+    sourceKey: input.sourceKey ?? existing?.sourceKey,
+    category: existing?.category,
     contentType: input.contentType,
     size: input.bytes.length,
     uploadedAt: new Date().toISOString(),
     uploadedBy: currentActor(),
   };
-  await getDocStore().put(docPath(input.clientId, input.period, id, input.name), input.bytes, input.contentType);
+  await getDocStore().put(docPath(input.clientId, input.period, id, name), input.bytes, input.contentType);
   await store.putDocument(record);
   return record;
 }
@@ -555,6 +563,7 @@ export async function extractQbrDocument(
       clientName: client?.name ?? clientId,
       period: record.period,
       knownKeys: [...knownKeys.entries()].map(([key, label]) => ({ key, label })),
+      docCategory: record.category,
     });
     audit('document.extract', `qbr:${clientId}/${record.period}`, `${record.name} → ${extraction.metrics.length} metric(s)`);
     return ok({ extraction, source: pdfSourceSlug(extraction.vendor), document: record });
@@ -609,6 +618,25 @@ export async function importDocumentMetrics(clientId: string, period: string, bo
   await store.putSnapshot({ ...base, clientId, period, metrics: [...kept, ...imported] });
   audit('metrics.import', `qbr:${clientId}/${period}`, `${imported.length} metric(s) from ${source}`);
   return ok({ imported: imported.length, source, period });
+}
+
+/**
+ * Drop every metric a PDF import added to a quarter (`?source=pdf:<vendor>`) —
+ * the undo for an import that landed in the wrong quarter or misread numbers.
+ */
+export async function removeImportedMetrics(clientId: string, period: string, source: string | undefined): Promise<ApiResult> {
+  const src = (source ?? '').trim();
+  if (!/^pdf:[a-z0-9-]{1,40}$/.test(src)) return err(400, 'source must look like pdf:<vendor> — only imported rows can be bulk-removed.');
+  const store = getDataStore();
+  const snapshot = await store.getSnapshot(clientId, period);
+  if (!snapshot) return err(404, `No metric snapshot for ${clientId} ${period}.`);
+  const kept = snapshot.metrics.filter((m) => m.source !== src);
+  const removed = snapshot.metrics.length - kept.length;
+  if (removed > 0) {
+    await store.putSnapshot({ ...snapshot, metrics: kept });
+    audit('metrics.unimport', `qbr:${clientId}/${period}`, `${removed} metric(s) from ${src} removed`);
+  }
+  return ok({ removed, source: src, period });
 }
 
 // ── Opportunity board (per-client Kanban of QBR initiatives) ─────────────────
@@ -725,7 +753,7 @@ export async function pollInbox(): Promise<ApiResult> {
 async function attachSyncDocuments(
   clientId: string,
   period: string,
-  documents: Array<{ source: string; name: string; url: string }>,
+  documents: Array<{ source: string; name: string; url: string; key?: string }>,
   warnings: string[],
 ): Promise<void> {
   for (const doc of documents) {
@@ -741,6 +769,7 @@ async function attachSyncDocuments(
         contentType: res.headers.get('content-type') || 'application/pdf',
         bytes,
         source: doc.source,
+        sourceKey: doc.key,
       });
     } catch (e) {
       warnings.push(`[${doc.source}] Report "${doc.name}" could not be fetched: ${e instanceof Error ? e.message : 'error'}`);

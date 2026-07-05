@@ -47,12 +47,32 @@ export function formatValue(m: Pick<MetricValue, 'value' | 'unit'>): string {
   }
 }
 
+/** Compact plain-number rendering shared by values and trend text. */
+function compactNumber(n: number): string {
+  return Math.abs(n) >= 1e6 ? abbreviate(n) : Number.isInteger(n) ? formatInt(n) : trim(n);
+}
+
+/**
+ * Percent beyond which the ratio stops informing (a tiny prior quarter —
+ * e.g. 3 tickets when tracking began mid-quarter — reads as "+1966.7%").
+ * Past it we show the honest movement instead: "3 → 62".
+ */
+const EXTREME_PCT = 400;
+
+/** The "vs last" cell text for a trend — percent, or `prev → cur` when the percent would scream. */
+export function trendDeltaText(t: MetricTrend): string {
+  if (t.direction === 'na' || t.previous === null || t.current === null || t.deltaPct === null) return '';
+  if (t.direction === 'flat') return 'flat';
+  if (Math.abs(t.deltaPct) > EXTREME_PCT) return `${compactNumber(t.previous)} → ${compactNumber(t.current)}`;
+  return `${t.deltaPct > 0 ? '+' : ''}${trim(t.deltaPct)}%`;
+}
+
 /** Arrow + signed delta for a trend, or empty string when not comparable. */
 export function formatTrend(t: MetricTrend): string {
   if (t.direction === 'na' || t.previous === null) return '';
   const arrow = t.direction === 'up' ? '▲' : t.direction === 'down' ? '▼' : '↔';
-  const pct = t.deltaPct === null ? '' : ` ${t.deltaPct > 0 ? '+' : ''}${trim(t.deltaPct)}%`;
-  return `${arrow}${pct}`.trim();
+  const delta = trendDeltaText(t);
+  return `${arrow}${delta === 'flat' ? '' : ` ${delta}`}`.trim();
 }
 
 /** Brand color for a R/Y/G rating. */

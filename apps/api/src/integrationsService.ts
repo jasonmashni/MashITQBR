@@ -398,6 +398,8 @@ export interface SyncDocument {
   source: string;
   name: string;
   url: string;
+  /** Stable dedupe identity within source (survives portal renames). */
+  key?: string;
 }
 
 export async function syncClientMetrics(
@@ -525,6 +527,8 @@ export async function syncClientMetrics(
     warnings.push('No integrations mapped for this client — configure connections and set the client\'s external ids.');
   }
   await intg.store.putSnapshot(snapshot);
-  const documents = results.flatMap((r) => (r.documents ?? []).map((d) => ({ source: r.source, name: d.name, url: d.url })));
+  const documents = results.flatMap((r) =>
+    (r.documents ?? []).map((d) => ({ source: r.source, name: d.name, url: d.url, key: d.key })),
+  );
   return { snapshot, warnings, documents };
 }

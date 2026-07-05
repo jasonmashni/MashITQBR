@@ -220,3 +220,29 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     expect(html).toContain('OpenVPN removal?');
   });
 });
+
+describe('dedupeByKey (PDF imports must not double-count synced metrics)', () => {
+  it('keeps the integration row when a pdf:* import collides on key', async () => {
+    const { dedupeByKey } = await import('../src/service.js');
+    const metrics = [
+      { key: 'tickets.opened', label: 'Tickets opened', value: 3, source: 'pdf:mash-it', category: 'operations' },
+      { key: 'tickets.opened', label: 'Tickets opened', value: 62, source: 'halo', category: 'operations' },
+      { key: 'doc.graymail', label: 'Graymail', value: 616, source: 'pdf:check-point', category: 'security' },
+    ] as never[];
+    const out = dedupeByKey(metrics);
+    expect(out).toHaveLength(2);
+    const tickets = out.find((m: { key: string }) => m.key === 'tickets.opened') as { value: number; source: string };
+    expect(tickets.source).toBe('halo'); // synced beats imported, regardless of order
+    expect(tickets.value).toBe(62);
+    expect(out.some((m: { key: string }) => m.key === 'doc.graymail')).toBe(true); // unique pdf rows survive
+  });
+
+  it('returns the same array untouched when keys are unique', async () => {
+    const { dedupeByKey } = await import('../src/service.js');
+    const metrics = [
+      { key: 'a', label: 'A', value: 1, source: 'halo', category: 'operations' },
+      { key: 'b', label: 'B', value: 2, source: 'ninja', category: 'security' },
+    ] as never[];
+    expect(dedupeByKey(metrics)).toBe(metrics);
+  });
+});

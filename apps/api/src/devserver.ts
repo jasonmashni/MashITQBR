@@ -72,6 +72,7 @@ const routes: Route[] = [
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)\/match$/, run: (m) => h.matchQbrDocument(m[1]!, m[2]!, m[3]!) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)\/extract$/, run: (m) => h.extractQbrDocument(m[1]!, m[2]!, m[3]!) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/metrics\/import$/, run: (m, b) => h.importDocumentMetrics(m[1]!, m[2]!, b) },
+  { method: 'DELETE', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/metrics\/import$/, run: (m, _b, url) => h.removeImportedMetrics(m[1]!, m[2]!, url.searchParams.get('source') ?? undefined) },
   { method: 'DELETE', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)$/, run: (m) => h.deleteQbrDocument(m[1]!, m[2]!, m[3]!) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m) => h.getDiscussion(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m, b) => h.putDiscussion(m[1]!, m[2]!, b) },
@@ -102,7 +103,6 @@ const routes: Route[] = [
   { method: 'GET', re: /^\/api\/audit$/, run: (_m, _b, url) => h.getAudit(url.searchParams.get('limit')) },
   { method: 'POST', re: /^\/api\/inbox\/poll$/, run: () => h.pollInbox() },
   { method: 'GET', re: /^\/api\/me$/, run: (_m, _b, _url, header) => h.getMe(principalFrom(header)) },
-  { method: 'POST', re: /^\/api\/inbox\/poll$/, run: () => h.pollInbox() },
 ];
 
 const server = createServer(async (req, res) => {

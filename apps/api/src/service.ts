@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { previousPeriod, type Brand, type DiscussionItem, type ReportConfig } from '@mashit/core';
+import { previousPeriod, type Brand, type DiscussionItem, type MetricValue, type ReportConfig } from '@mashit/core';
 import {
   buildAllowedNumbers,
   buildNarrativeInput,
@@ -51,6 +51,29 @@ export interface BuildQbrOptions {
   documents?: Array<{ name: string; source: string }>;
 }
 
+/**
+ * One row per metric key. A PDF import (e.g. a previous QBR re-ingested into
+ * the wrong quarter) can land `tickets.opened` alongside Halo's own row —
+ * duplicate keys double-count tables and confuse trends. Integration-synced
+ * rows win; `pdf:*` rows only fill keys nothing else provides.
+ */
+export function dedupeByKey(metrics: MetricValue[]): MetricValue[] {
+  const byKey = new Map<string, MetricValue>();
+  let dropped = false;
+  for (const m of metrics) {
+    const seen = byKey.get(m.key);
+    if (!seen) {
+      byKey.set(m.key, m);
+      continue;
+    }
+    dropped = true;
+    const seenIsPdf = String(seen.source).startsWith('pdf:');
+    const thisIsPdf = String(m.source).startsWith('pdf:');
+    if (seenIsPdf && !thisIsPdf) byKey.set(m.key, m); // synced row replaces the import
+  }
+  return dropped ? [...byKey.values()] : metrics;
+}
+
 /** Per-input AI failure cooldown (module scope — survives across builds). */
 const aiFailureCooldown = new Map<string, number>();
 
@@ -89,8 +112,11 @@ export async function buildQbrReport(
   // Reviewed-out metrics vanish everywhere (sections, scorecard, trends, AI
   // input) — and since the narrative input changes, the AI cache invalidates.
   const excluded = new Set(opts.config?.excludedMetrics ?? []);
-  const filter = <T extends { metrics: { key: string }[] }>(s: T): T =>
-    excluded.size ? { ...s, metrics: s.metrics.filter((m) => !excluded.has(m.key)) } : s;
+  const filter = <T extends { metrics: MetricValue[] }>(s: T): T => {
+    let metrics = excluded.size ? s.metrics.filter((m) => !excluded.has(m.key)) : s.metrics;
+    metrics = dedupeByKey(metrics);
+    return metrics === s.metrics ? s : { ...s, metrics };
+  };
   const current = filter(currentRaw);
   const previous = previousRaw ? filter(previousRaw) : undefined;
 

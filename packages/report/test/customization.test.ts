@@ -73,7 +73,7 @@ describe('renderReportHtml customization', () => {
   });
 
   it('renders the discussion/responses capture with disposition and owner', () => {
-    expect(html).toContain('Discussion &amp; Responses');
+    expect(html).toContain('Active &amp; Pending Conversations');
     expect(html).toContain('Remove OpenVPN?');
     expect(html).toContain('Anne to remove except AnneNB2');
     expect(html).toContain('No action');

@@ -136,7 +136,7 @@ function renderDiscussion(m: ReportModel): string {
        <tbody>${m.discussion.map(row).join('\n')}</tbody></table>`
     : '';
   const notes = m.notes ? `<div class="note">${esc(m.notes)}</div>` : '';
-  return `<section class="page"><h2>Discussion &amp; Responses</h2>${table}${notes}</section>`;
+  return `<section class="page"><h2>Active &amp; Pending Conversations</h2>${table}${notes}</section>`;
 }
 
 function renderBody(m: ReportModel): string {

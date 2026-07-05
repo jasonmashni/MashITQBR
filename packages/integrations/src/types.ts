@@ -14,8 +14,12 @@ export interface CollectResult {
   metrics: MetricValue[];
   /** Human-readable notes about data that couldn't be collected (gaps, manual entry needed). */
   warnings: string[];
-  /** Vendor-generated report files the sync should fetch and attach to the QBR. */
-  documents?: Array<{ name: string; url: string }>;
+  /**
+   * Vendor-generated report files the sync should fetch and attach to the QBR.
+   * `key` is the stable dedupe identity (e.g. `summary:2026-Q2`) — re-syncs
+   * update the same document even after the user renames it in the portal.
+   */
+  documents?: Array<{ name: string; url: string; key?: string }>;
 }
 
 /**

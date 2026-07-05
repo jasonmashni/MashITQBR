@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { MetricTrend } from '@mashit/core';
-import { abbreviate, formatCurrency, formatPercent, formatTrend, formatValue, ratingColor } from '@mashit/report';
+import { abbreviate, formatCurrency, formatPercent, formatTrend, formatValue, ratingColor, trendDeltaText } from '@mashit/report';
 
 describe('format helpers', () => {
   it('abbreviates large magnitudes', () => {
@@ -35,6 +35,17 @@ describe('format helpers', () => {
     expect(formatTrend(up)).toBe('▲ +200%');
     const na: MetricTrend = { ...up, previous: null, deltaAbs: null, deltaPct: null, direction: 'na', sentiment: 'na' };
     expect(formatTrend(na)).toBe('');
+  });
+
+  it('caps screaming percentages from tiny prior quarters at "prev → cur"', () => {
+    const base: MetricTrend = {
+      key: 'tickets.opened', label: 'Tickets opened', category: 'operations',
+      current: 62, previous: 3, deltaAbs: 59, deltaPct: 1966.67, direction: 'up', sentiment: 'neutral',
+    };
+    expect(trendDeltaText(base)).toBe('3 → 62'); // +1966.7% told the wrong story
+    expect(formatTrend(base)).toBe('▲ 3 → 62');
+    expect(trendDeltaText({ ...base, current: 141, previous: 47, deltaPct: 200 })).toBe('+200%'); // sane ratios keep the percent
+    expect(trendDeltaText({ ...base, current: 3, previous: 3, deltaAbs: 0, deltaPct: 0, direction: 'flat' })).toBe('flat');
   });
 
   it('maps ratings to brand colors', () => {

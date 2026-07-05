@@ -36,6 +36,8 @@ export type DocExtractModel = (input: {
   period: string;
   /** Canonical metric keys already in use — reuse beats minting new ones. */
   knownKeys: Array<{ key: string; label: string }>;
+  /** The Reports-tab bucket the user filed the doc under (Security, Backup…). */
+  docCategory?: string;
 }) => Promise<DocExtraction>;
 
 const EXTRACT_SCHEMA = {
@@ -80,6 +82,7 @@ Values:
 - value must be the plain number (strip thousands separators and units). Percentages: value is the number, unit is "%".
 - unit: "%", "count", "GB", "USD", or "" when countless.
 - direction: whether a bigger number is good (backup coverage), bad (malware found), or neutral (emails scanned).
+- category picks the report section each metric lands in: backup tools (Synology, Dropsuite, Veeam) → backup; email/EDR/SIEM/vulnerability → security; MFA/accounts → identity; tickets/SLA → operations; devices/network/hardware → infrastructure; invoices/costs → spend.
 
 period_hint: the quarter the document's CONTENT covers, formatted YYYY-QN (e.g. 2026-Q2), or "" if the document doesn't say.
 note: ONE sentence describing the document and any caveat the reviewer should know.
@@ -87,7 +90,7 @@ Return only the structured object.`;
 
 /** Build the default Claude-backed extractor (native PDF input, structured output). */
 export function createClaudeDocExtractor(client: Anthropic = new Anthropic(), modelId: string = DOC_MATCH_MODEL_ID): DocExtractModel {
-  return async ({ pdfBase64, clientName, period, knownKeys }) => {
+  return async ({ pdfBase64, clientName, period, knownKeys, docCategory }) => {
     const params = {
       model: modelId,
       max_tokens: 4000,
@@ -102,7 +105,8 @@ export function createClaudeDocExtractor(client: Anthropic = new Anthropic(), mo
               type: 'text',
               text: [
                 `Client: ${clientName}`,
-                `Importing into quarter: ${period}`,
+                `Filed under quarter: ${period}`,
+                ...(docCategory ? [`Filed category: ${docCategory}`] : []),
                 `Known metric keys (reuse when the measure matches):`,
                 ...knownKeys.slice(0, 120).map((k) => `- ${k.key} (${k.label})`),
               ].join('\n'),

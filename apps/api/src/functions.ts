@@ -71,6 +71,7 @@ route('clientDocs', 'GET', 'api/clients/{clientId}/documents', (req) => h.listCl
 route('matchDoc', 'POST', 'api/clients/{clientId}/qbr/{period}/documents/{docId}/match', (req) => h.matchQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
 route('extractDoc', 'POST', 'api/clients/{clientId}/qbr/{period}/documents/{docId}/extract', (req) => h.extractQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
 route('importDocMetrics', 'POST', 'api/clients/{clientId}/qbr/{period}/metrics/import', async (req) => h.importDocumentMetrics(req.params['clientId']!, req.params['period']!, await body(req)));
+route('unimportDocMetrics', 'DELETE', 'api/clients/{clientId}/qbr/{period}/metrics/import', (req) => h.removeImportedMetrics(req.params['clientId']!, req.params['period']!, req.query.get('source') ?? undefined));
 route('deleteDoc', 'DELETE', 'api/clients/{clientId}/qbr/{period}/documents/{docId}', (req) => h.deleteQbrDocument(req.params['clientId']!, req.params['period']!, req.params['docId']!));
 
 // Opportunity board

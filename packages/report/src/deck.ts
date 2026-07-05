@@ -1,5 +1,5 @@
 import type { DiscussionItem, MetricTrend } from '@mashit/core';
-import { discussionOutcome, ratingColor } from './format.js';
+import { discussionOutcome, ratingColor, trendDeltaText } from './format.js';
 import { formatValue } from './format.js';
 import type { ReportModel, ReportSection } from './model.js';
 
@@ -328,7 +328,7 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
   // ── Discussion & decisions ──────────────────────────────────────────────
   if (model.discussion.length || model.notes) {
     const s = pptx.addSlide({ masterName: 'QBR' });
-    heading(s, 'Discussion & Decisions');
+    heading(s, 'Active & Pending Conversations');
     if (model.discussion.length) {
       const rows = [
         ['Discussion / decision', 'Response & notes', 'Outcome'].map((t) => ({
@@ -422,7 +422,7 @@ function addSectionSlides(
       options: { bold: true, color: 'FFFFFF', fill: { color: t.PRIMARY }, fontFace: t.FONT, fontSize: 11 },
     })),
     ...section.rows.map(({ metric, trend }) => {
-      const delta = trend && trend.previous !== null && trend.deltaPct !== null ? `${trend.deltaPct > 0 ? '+' : ''}${trend.deltaPct}%` : '';
+      const delta = trend ? trendDeltaText(trend) : '';
       const deltaColor = trend?.sentiment === 'negative' ? 'C62828' : trend?.sentiment === 'positive' ? '2E7D32' : '5A6B7B';
       return [
         { text: metric.label, options: { fontFace: t.FONT, fontSize: 11 } },

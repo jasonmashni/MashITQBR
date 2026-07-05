@@ -81,7 +81,7 @@ describe('designed PDF (pdfmake)', () => {
     expect(text).toContain('ANP Enertech');
     expect(text).toContain('QUARTERLY BUSINESS REVIEW');
     expect(text).toContain('Security & Risk Maturity');
-    expect(text).toContain('Discussion & Decisions');
+    expect(text).toContain('Active & Pending Conversations');
     expect(text).toContain('Appendix — Attached Reports');
     expect(text).toContain('"svg"'); // score visuals are inline SVG
     // Design round: section summaries, the KPI band, and page backgrounds.

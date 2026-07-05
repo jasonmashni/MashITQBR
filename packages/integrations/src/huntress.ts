@@ -184,7 +184,7 @@ export async function collectHuntress(
   const headers = { Authorization: basicAuthHeader(cfg.apiKey, cfg.apiSecret), Accept: 'application/json' };
   const org = encodeURIComponent(ctx.externalRef);
   const metrics: MetricValue[] = [];
-  const documents: Array<{ name: string; url: string }> = [];
+  const documents: Array<{ name: string; url: string; key?: string }> = [];
 
   // 1) Quarterly summary report for the period (fallback: newest monthly in-period).
   try {
@@ -199,7 +199,13 @@ export async function collectHuntress(
       metrics.push(...normalizeHuntressSummary(report));
       // Huntress publishes the rendered summary PDF at report.url — attach it to the QBR.
       if (typeof report.url === 'string' && report.url) {
-        documents.push({ name: `Huntress ${report.type ?? 'summary'} ${ctx.period.id}.pdf`, url: report.url });
+        documents.push({
+          name: `Huntress ${report.type ?? 'summary'} ${ctx.period.id}.pdf`,
+          url: report.url,
+          // Stable identity independent of the display name, so a portal rename
+          // (AI match retitles reports) doesn't make the next sync re-add a copy.
+          key: `summary:${ctx.period.id}`,
+        });
       }
     } else warnings.push('No Huntress summary report found for this period (they generate after the period closes).');
   } catch (e) {
