@@ -278,23 +278,29 @@ slot marks the QBR **scheduled** and pings the notification bell. Setup:
    `GRAPH_*` equivalents): *API permissions → Microsoft Graph → Application* →
    `Calendars.ReadWrite` → **Grant admin consent**.
 2. Make the booking routes public so clients reach them without a Mash IT
-   login. Easy Auth's **excluded paths** have no portal field (they are NOT the
-   "Allowed token audiences" box on the identity-provider page) — set them from
-   **Cloud Shell** (Bash), using path *prefixes*, not globs:
+   login, via Easy Auth **excluded paths**. Three gotchas, all learned the hard
+   way: (a) there is NO portal field for them — they are NOT the "Allowed token
+   audiences" box on the identity-provider page; (b) `az webapp auth set --body`
+   from `az webapp auth show` WIPES your identity provider, because `show`
+   returns the AAD `registration` blanked out — never use that round-trip; and
+   (c) excluded paths match EXACTLY, so `/book` alone does NOT cover
+   `/book/{token}` — you need the base path AND a `/*` subpath entry. The safe
+   way is a raw ARM GET → edit → PUT (the raw GET returns the real registration,
+   so the round-trip preserves the IdP), in Cloud Shell (Bash):
 
    ```bash
-   az webapp auth update -g <rg> -n <app> --excluded-paths "/book" "/api/book"
+   sub=$(az account show --query id -o tsv)
+   base="https://management.azure.com/subscriptions/$sub/resourceGroups/<rg>/providers/Microsoft.Web/sites/<app>/config/authsettingsV2?api-version=2022-03-01"
+   az rest --method get --uri "$base" > current.json
+   jq '{properties: (.properties | .globalValidation.excludedPaths = ["/book","/book/*","/api/book","/api/book/*"])}' current.json > updated.json
+   az rest --method put --uri "$base" --headers "Content-Type=application/json" --body @updated.json
    ```
 
-   `/book` covers `/book/{token}` and `/api/book` covers `/api/book/{token}`
-   and its `/slots`. Then **verify in an incognito window** that
-   `https://<app>.azurewebsites.net/book/<token>` loads instead of redirecting
-   to login (the `--excluded-paths` flag has been buggy in some CLI versions;
-   if it mangles the value, fall back to `az webapp auth show > auth.json`, add
-   `"excludedPaths": ["/book","/api/book"]` under `globalValidation`, and
-   `az webapp auth set --body @auth.json`). The unguessable 24-char CSPRNG token
-   is the sole authorization; the endpoints expose only display names and open
-   slots.
+   (PATCH is not supported on `authsettingsV2` — it's PUT-only.) Then **verify
+   in a fresh incognito window** that `https://<app>.azurewebsites.net/book/<token>`
+   loads instead of redirecting to login; restart the Function App if it still
+   redirects. The unguessable 24-char CSPRNG token is the sole authorization;
+   the endpoints expose only display names and open slots.
 3. Set the **organizer email** in Settings and save.
 
 Without step 1 the page still works — it offers the configured windows without
