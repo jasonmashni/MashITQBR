@@ -1,6 +1,6 @@
 import type { DiscussionItem, FunctionScore, MetricTrend, Rating } from '@mashit/core';
 import type { BrandTokens } from './brand.js';
-import { formatPercent, formatValue, ratingColor, discussionOutcome, trendDeltaText } from './format.js';
+import { formatPercent, formatValue, ratingColor, discussionOutcome, trendDeltaText, goalStatusLabel, goalStatusColor } from './format.js';
 import type { ReportModel, ReportSection } from './model.js';
 
 /**
@@ -305,6 +305,43 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
     for (const p of m.executive.paragraphs) content.push({ text: p, style: 'body' });
     if (m.executive.highlights.length) {
       content.push({ ul: m.executive.highlights.map((h) => ({ text: h, style: 'body', margin: [0, 1, 0, 1] })), margin: [0, 4, 0, 0] });
+    }
+  }
+
+  // Strategic goals & IT alignment — opens the review by tying our work to the
+  // client's own objectives (qualitative; no figures, so no guardrail concern).
+  if (m.goals.length) {
+    content.push({ text: 'Strategic Goals & IT Alignment', style: 'h1', color: brand.primary });
+    content.push({ text: 'Your business objectives and how our services support them.', style: 'small', margin: [0, 0, 0, 8] });
+    for (const g of m.goals) {
+      content.push({
+        table: {
+          widths: ['*', 'auto'],
+          body: [
+            [
+              {
+                stack: [
+                  { text: g.title, bold: true, color: brand.primary, fontSize: 11 },
+                  ...(g.targetPeriod ? [{ text: `Target: ${g.targetPeriod}`, style: 'small', color: GRAY, margin: [0, 1, 0, 0] as [number, number, number, number] }] : []),
+                  ...(g.alignment ? [{ text: g.alignment, style: 'body', margin: [0, 4, 0, 0] as [number, number, number, number] }] : []),
+                ],
+                margin: [10, 8, 10, 8],
+              },
+              {
+                text: goalStatusLabel(g.status),
+                color: '#ffffff',
+                fillColor: goalStatusColor(g.status),
+                bold: true,
+                fontSize: 8.5,
+                alignment: 'center',
+                margin: [8, 8, 8, 8],
+              },
+            ],
+          ],
+        },
+        layout: { defaultBorder: false, fillColor: (i: number, node: unknown) => (i === 0 ? '#f4f6f8' : null) },
+        margin: [0, 0, 0, 8],
+      });
     }
   }
 

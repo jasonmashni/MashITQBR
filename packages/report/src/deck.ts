@@ -1,5 +1,5 @@
 import type { DiscussionItem, MetricTrend } from '@mashit/core';
-import { discussionOutcome, ratingColor, trendDeltaText } from './format.js';
+import { discussionOutcome, ratingColor, trendDeltaText, goalStatusLabel, goalStatusColor } from './format.js';
 import { formatValue } from './format.js';
 import type { ReportModel, ReportSection } from './model.js';
 
@@ -205,6 +205,35 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
         x: CONTENT_X, y, w: CONTENT_W, h: FOOTER_Y - 0.2 - y, fontFace: FONT, fontSize: 13, valign: 'top', fit: 'shrink', paraSpaceAfter: 8,
       });
     }
+  }
+
+  // ── Strategic goals & IT alignment ──────────────────────────────────────
+  if (model.goals.length) {
+    const s = pptx.addSlide({ masterName: 'QBR' });
+    heading(s, 'Strategic Goals & IT Alignment');
+    const rows = [
+      ['Goal', 'How we support it', 'Status'].map((t) => ({
+        text: t,
+        options: { bold: true, color: 'FFFFFF', fill: { color: PRIMARY }, fontFace: FONT, fontSize: 11 },
+      })),
+      ...model.goals.map((g) => [
+        {
+          text: g.targetPeriod ? `${g.title}\n(target ${g.targetPeriod})` : g.title,
+          options: { fontFace: FONT, fontSize: 11, bold: true },
+        },
+        { text: g.alignment ?? '—', options: { fontFace: FONT, fontSize: 11 } },
+        { text: goalStatusLabel(g.status), options: { fontFace: FONT, fontSize: 11, bold: true, color: 'FFFFFF', fill: { color: hex(goalStatusColor(g.status)) } } },
+      ]),
+    ];
+    s.addTable(rows, {
+      x: CONTENT_X, y: BODY_Y, w: CONTENT_W,
+      colW: [4.4, 5.6, 2.13],
+      border: { type: 'solid', color: 'DDE3EA', pt: 0.5 },
+      valign: 'top',
+      autoPage: true,
+      autoPageRepeatHeader: true,
+      newSlideStartY: BODY_Y,
+    });
   }
 
   // ── Maturity scorecard: doughnut + radar ────────────────────────────────

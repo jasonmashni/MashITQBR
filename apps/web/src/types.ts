@@ -3,6 +3,17 @@
 
 export type Rating = 'green' | 'amber' | 'red' | 'unknown';
 
+export type ClientGoalStatus = 'planned' | 'on_track' | 'at_risk' | 'achieved';
+
+/** A strategic client goal + how IT aligns to it (qualitative). */
+export interface ClientGoal {
+  id: string;
+  title: string;
+  alignment?: string;
+  status: ClientGoalStatus;
+  targetPeriod?: string;
+}
+
 export interface Client {
   id: string;
   name: string;
@@ -13,6 +24,8 @@ export interface Client {
   complianceStandard?: string;
   /** Whether this client gets QBRs (undefined = true). */
   qbrEnabled?: boolean;
+  /** Strategic business goals the QBR aligns IT work to. */
+  goals?: ClientGoal[];
   integrationRefs?: Record<string, string>;
 }
 

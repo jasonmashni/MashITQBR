@@ -286,6 +286,28 @@ export interface QbrDiscussion {
   notes?: string;
 }
 
+/** Where a strategic client goal stands — tracked across QBRs. */
+export const CLIENT_GOAL_STATUSES = ['planned', 'on_track', 'at_risk', 'achieved'] as const;
+export type ClientGoalStatus = (typeof CLIENT_GOAL_STATUSES)[number];
+
+/**
+ * A strategic business goal the client is working toward, and how Mash IT's
+ * work supports it. The QBR opens by aligning IT investment to these goals.
+ * Kept deliberately qualitative — no figures — so it renders straight into the
+ * report and the AI narrative can reference it without tripping the
+ * figure-verification guardrail.
+ */
+export interface ClientGoal {
+  id: string;
+  /** The goal in the client's own words — e.g. "Open two new clinics by year-end". */
+  title: string;
+  /** How our services support it (qualitative — never cite numbers here). */
+  alignment?: string;
+  status: ClientGoalStatus;
+  /** Target quarter, when the client has set one (e.g. "2026-Q4"). */
+  targetPeriod?: string;
+}
+
 export interface Client {
   id: string;
   name: string;
@@ -297,6 +319,8 @@ export interface Client {
   complianceStandard?: string;
   /** Whether this client gets QBRs (undefined = true; Halo imports default false). */
   qbrEnabled?: boolean;
+  /** Strategic business goals the QBR aligns IT work to (qualitative). */
+  goals?: ClientGoal[];
   /** Map of integration -> per-client external identifier (e.g. Halo client id). */
   integrationRefs?: Partial<Record<IntegrationId, string>>;
 }

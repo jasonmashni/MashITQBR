@@ -5,6 +5,7 @@ import {
   parsePeriod,
   type Brand,
   type Client,
+  type ClientGoal,
   type CustomSection,
   type DiscussionItem,
   type MaturityScorecard,
@@ -42,6 +43,8 @@ export interface ReportModel {
   executive: { headline?: string; paragraphs: string[]; highlights: string[] };
   scorecard: MaturityScorecard;
   trends: MetricTrend[];
+  /** Strategic client goals + how IT aligns to them (qualitative; opens the report). */
+  goals: ClientGoal[];
   sections: ReportSection[];
   /** Client-authored free-text sections. */
   customSections: CustomSection[];
@@ -125,6 +128,9 @@ export function buildReportModel(args: {
     },
     scorecard,
     trends,
+    // Only goals with a real title; ordered planned/on-track before at-risk/achieved
+    // so the "what we're working toward" story leads.
+    goals: (client.goals ?? []).filter((g) => g.title.trim()),
     sections,
     customSections: config?.customSections ?? [],
     // Only items marked for the report, in agenda order.

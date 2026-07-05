@@ -67,6 +67,8 @@ import { api, documentUrl, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
 import type {
   Client,
+  ClientGoal,
+  ClientGoalStatus,
   Discussion,
   DiscussionItem,
   DocExtraction,
@@ -2554,6 +2556,124 @@ function HaloTicketModal({
 }
 
 // ── Studio tab: shape the report (branding + sections) ────────────────────────
+const GOAL_STATUS_OPTIONS: Array<{ value: ClientGoalStatus; label: string; color: string }> = [
+  { value: 'planned', label: 'Planned', color: 'gray' },
+  { value: 'on_track', label: 'On track', color: 'teal' },
+  { value: 'at_risk', label: 'At risk', color: 'yellow' },
+  { value: 'achieved', label: 'Achieved', color: 'cyan' },
+];
+
+/**
+ * Strategic goals editor (Studio tab). Records the client's business objectives
+ * and how IT supports them — these open the report and steer the AI narrative.
+ * Loads/saves the whole list on the client record via a dedicated endpoint.
+ */
+function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => void }) {
+  const [goals, setGoals] = useState<ClientGoal[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    api
+      .getClient(clientId)
+      .then((d) => live && setGoals(d.client.goals ?? []))
+      .catch(() => {})
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [clientId]);
+
+  const rid = () => Math.random().toString(36).slice(2, 10);
+  const add = () => setGoals((g) => [...g, { id: rid(), title: '', status: 'planned' }]);
+  const patch = (id: string, p: Partial<ClientGoal>) => setGoals((g) => g.map((x) => (x.id === id ? { ...x, ...p } : x)));
+  const remove = (id: string) => setGoals((g) => g.filter((x) => x.id !== id));
+
+  async function save() {
+    setSaving(true);
+    try {
+      // Drop blank rows; the endpoint validates too.
+      const cleaned = goals.filter((g) => g.title.trim());
+      const res = await api.putClientGoals(clientId, cleaned);
+      setGoals(res.client.goals ?? []);
+      notifications.show({ color: 'teal', message: 'Goals saved — they open the report and steer the narrative.' });
+      onSaved();
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card withBorder radius="md" padding="lg">
+      <Group justify="space-between" mb={4}>
+        <Title order={5}>Strategic goals &amp; alignment</Title>
+        <Button size="compact-sm" variant="light" leftSection={<IconPlus size={14} />} onClick={add}>
+          Add goal
+        </Button>
+      </Group>
+      <Text size="xs" c="dimmed" mb="md">
+        The client's business objectives and how Mash IT supports them. These open the QBR (a "Strategic Goals &amp; IT
+        Alignment" section) and give the AI narrative context to frame the quarter around what the client is working toward.
+        Keep them qualitative — no figures.
+      </Text>
+      {loading ? (
+        <Center h={80}><Loader size="sm" /></Center>
+      ) : goals.length === 0 ? (
+        <Text size="sm" c="dimmed">No goals yet. Add the client's top 2–4 objectives for the year.</Text>
+      ) : (
+        <Stack gap="md">
+          {goals.map((g) => (
+            <Card key={g.id} withBorder radius="sm" padding="sm" bg="var(--mantine-color-gray-0)">
+              <Stack gap="xs">
+                <Group align="flex-start" wrap="nowrap">
+                  <TextInput
+                    style={{ flex: 1 }}
+                    placeholder="Goal — e.g. Open two new clinics by year-end"
+                    value={g.title}
+                    onChange={(e) => patch(g.id, { title: e.currentTarget.value })}
+                  />
+                  <ActionIcon color="red" variant="subtle" aria-label="Remove goal" onClick={() => remove(g.id)} mt={4}>
+                    <IconTrash size={16} />
+                  </ActionIcon>
+                </Group>
+                <Textarea
+                  placeholder="How our services support it (qualitative)"
+                  autosize
+                  minRows={1}
+                  value={g.alignment ?? ''}
+                  onChange={(e) => patch(g.id, { alignment: e.currentTarget.value })}
+                />
+                <Group gap="sm">
+                  <Select
+                    w={150}
+                    data={GOAL_STATUS_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                    value={g.status}
+                    onChange={(v) => v && patch(g.id, { status: v as ClientGoalStatus })}
+                    allowDeselect={false}
+                  />
+                  <TextInput
+                    w={140}
+                    placeholder="Target e.g. 2026-Q4"
+                    value={g.targetPeriod ?? ''}
+                    onChange={(e) => patch(g.id, { targetPeriod: e.currentTarget.value || undefined })}
+                  />
+                </Group>
+              </Stack>
+            </Card>
+          ))}
+        </Stack>
+      )}
+      <Group justify="flex-end" mt="md">
+        <Button loading={saving} onClick={save} disabled={loading}>Save goals</Button>
+      </Group>
+    </Card>
+  );
+}
+
 function StudioTab({
   config,
   setConfig,
@@ -2590,6 +2710,8 @@ function StudioTab({
 
   return (
     <Stack gap="lg" maw={760}>
+      <GoalsEditor clientId={clientId} onSaved={onSaved} />
+
       <Card withBorder radius="md" padding="lg">
         <Title order={5} mb={4}>Client branding</Title>
         <Text size="xs" c="dimmed" mb="md">

@@ -151,10 +151,11 @@ export async function buildQbrReport(
     // on. Cache failures must never fail a build; concurrent misses may both
     // call the model (last write wins) — acceptable for this traffic.
     // Bump `v` whenever the narrative output contract changes shape (v2:
-    // section summaries) so pre-upgrade cached prose regenerates instead of
-    // missing the new fields forever.
+    // section summaries; v3: strategic-goals alignment in the input) so
+    // pre-upgrade cached prose regenerates instead of missing the new fields
+    // forever.
     const hash = createHash('sha256')
-      .update(JSON.stringify({ v: 2, model: NARRATIVE_MODEL_ID, input }))
+      .update(JSON.stringify({ v: 3, model: NARRATIVE_MODEL_ID, input }))
       .digest('hex');
     const cached = await opts.narrativeCache?.get(hash).catch(() => undefined);
     if (cached) {

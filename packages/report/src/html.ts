@@ -1,6 +1,6 @@
 import type { CustomSection, DiscussionItem, FunctionScore, SafeguardResult } from '@mashit/core';
 import { MASH_IT_BRAND, type BrandTokens } from './brand.js';
-import { formatPercent, formatTrend, formatValue, ratingClass, discussionOutcome } from './format.js';
+import { formatPercent, formatTrend, formatValue, ratingClass, discussionOutcome, goalStatusLabel, goalStatusColor } from './format.js';
 import type { ReportModel, ReportSection } from './model.js';
 
 function esc(s: string): string {
@@ -48,6 +48,11 @@ th{color:#555;font-weight:600;font-size:11px;text-transform:uppercase;letter-spa
 .headline{font-size:16px;font-weight:600;color:var(--primary);margin:0 0 8px}
 .note{background:#f6f8fa;border-left:3px solid var(--accent);padding:8px 12px;margin:8px 0;white-space:pre-wrap}
 .section-summary{background:#f6f8fa;border-left:3px solid var(--accent);padding:8px 12px;margin:4px 0 10px;color:#333}
+.goal{border:1px solid #e3e3e3;border-left:3px solid var(--accent);border-radius:8px;padding:10px 12px;margin:8px 0}
+.goal .g-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.goal .g-title{font-weight:600;color:var(--primary)}
+.goal .g-align{color:#333;margin:6px 0 0}
+.goal .g-target{color:#555;font-size:11px}
 ul{margin:6px 0;padding-left:20px}
 @page{size:Letter;margin:14mm}
 @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
@@ -80,6 +85,25 @@ function renderExecutive(m: ReportModel): string {
   ${m.executive.headline ? `<p class="headline">${esc(m.executive.headline)}</p>` : ''}
   ${m.executive.paragraphs.map((p) => `<p>${esc(p)}</p>`).join('\n')}
   ${m.executive.highlights.length ? `<ul>${m.executive.highlights.map((h) => `<li>${esc(h)}</li>`).join('')}</ul>` : ''}
+</section>`;
+}
+
+function renderGoals(m: ReportModel): string {
+  if (m.goals.length === 0) return '';
+  const goal = (g: (typeof m.goals)[number]) => `<div class="goal">
+    <div class="g-head">
+      <div>
+        <div class="g-title">${esc(g.title)}</div>
+        ${g.targetPeriod ? `<div class="g-target">Target: ${esc(g.targetPeriod)}</div>` : ''}
+      </div>
+      <span class="chip" style="background:${goalStatusColor(g.status)}">${esc(goalStatusLabel(g.status))}</span>
+    </div>
+    ${g.alignment ? `<p class="g-align">${esc(g.alignment)}</p>` : ''}
+  </div>`;
+  return `<section class="page">
+  <h2>Strategic Goals &amp; IT Alignment</h2>
+  <p class="meta">Your business objectives and how our services support them.</p>
+  ${m.goals.map(goal).join('\n')}
 </section>`;
 }
 
@@ -169,6 +193,7 @@ export function renderReportHtml(model: ReportModel): string {
 <body>
 ${renderCover(model)}
 ${renderExecutive(model)}
+${renderGoals(model)}
 ${afterSummary.length ? `<section class="page">${afterSummary.map(renderCustomSection).join('\n')}</section>` : ''}
 ${renderScorecard(model)}
 ${renderBody(model)}

@@ -1,5 +1,6 @@
 import {
   advanceStatus,
+  CLIENT_GOAL_STATUSES,
   computeAccountHealth,
   computeFlags,
   computeScorecard,
@@ -11,6 +12,7 @@ import {
   periodFor,
   previousPeriod,
   roadmapValue,
+  type ClientGoal,
   type MetricCategory,
   type MetricValue,
   type QbrStatus,
@@ -192,6 +194,44 @@ export async function updateClient(id: string, patch: Record<string, unknown>): 
   await store.upsertClient(merged as typeof existing);
   audit('client.update', `client:${id}`, Object.keys(allowed).join(','));
   return ok(merged);
+}
+
+/** Read a single client record (used by the Studio goals editor). */
+export async function getClientRecord(id: string): Promise<ApiResult> {
+  const client = await getDataStore().getClient(id);
+  if (!client) return err(404, 'Unknown client');
+  return ok({ client });
+}
+
+/**
+ * Replace a client's strategic goals wholesale (the Studio editor sends the full
+ * list). Each goal is validated + normalized: a title is required, status must
+ * be one of CLIENT_GOAL_STATUSES (defaults to 'planned'), ids are preserved or
+ * minted. Kept qualitative — no figures.
+ */
+export async function putClientGoals(id: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const store = getDataStore();
+  const existing = await store.getClient(id);
+  if (!existing) return err(404, 'Unknown client');
+  const raw = Array.isArray(body['goals']) ? (body['goals'] as Array<Record<string, unknown>>) : [];
+  const goals: ClientGoal[] = [];
+  for (const g of raw) {
+    const title = typeof g['title'] === 'string' ? g['title'].trim() : '';
+    if (!title) continue; // drop blank rows silently — the editor allows empty scratch rows
+    const status =
+      typeof g['status'] === 'string' && (CLIENT_GOAL_STATUSES as readonly string[]).includes(g['status'])
+        ? (g['status'] as ClientGoal['status'])
+        : 'planned';
+    const alignment = typeof g['alignment'] === 'string' && g['alignment'].trim() ? g['alignment'].trim() : undefined;
+    const targetPeriod =
+      typeof g['targetPeriod'] === 'string' && /^\d{4}-Q[1-4]$/.test(g['targetPeriod']) ? g['targetPeriod'] : undefined;
+    const gid = typeof g['id'] === 'string' && g['id'] ? g['id'] : Math.random().toString(36).slice(2, 10);
+    goals.push({ id: gid, title, status, alignment, targetPeriod });
+  }
+  const merged = { ...existing, goals };
+  await store.upsertClient(merged);
+  audit('client.goals', `client:${id}`, `${goals.length} goal(s)`);
+  return ok({ client: merged });
 }
 
 export async function getQbr(clientId: string, period: string, ai: string | null): Promise<ApiResult> {

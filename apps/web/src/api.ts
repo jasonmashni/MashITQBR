@@ -5,6 +5,7 @@ import type {
   BookingInfo,
   BookingSettings,
   Client,
+  ClientGoal,
   ConnectionView,
   Discussion,
   DocExtraction,
@@ -88,7 +89,10 @@ export const api = {
 
   // Clients
   listClients: () => send('GET', '/api/clients').then(json<{ clients: Client[] }>),
+  getClient: (id: string) => send('GET', `/api/clients/${id}`).then(json<{ client: Client }>),
   updateClient: (id: string, patch: Partial<Client>) => send('PUT', `/api/clients/${id}`, patch).then(json<Client>),
+  putClientGoals: (id: string, goals: ClientGoal[]) =>
+    send('PUT', `/api/clients/${id}/goals`, { goals }).then(json<{ client: Client }>),
   importHalo: () => send('POST', '/api/clients/import/halo').then(json<{ imported: number; clients: Client[] }>),
 
   // QBR + report

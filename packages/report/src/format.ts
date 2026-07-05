@@ -110,3 +110,24 @@ export function discussionOutcome(d: { disposition?: string; status?: string }):
   if (d.disposition && d.disposition !== 'pending') return DISPOSITION_LABEL[d.disposition] ?? d.disposition;
   return d.status === 'discussed' ? 'Discussed' : 'To discuss';
 }
+
+const GOAL_STATUS_LABEL: Record<string, string> = {
+  planned: 'Planned',
+  on_track: 'On track',
+  at_risk: 'At risk',
+  achieved: 'Achieved',
+};
+/** Human label for a client-goal status. */
+export function goalStatusLabel(status: string): string {
+  return GOAL_STATUS_LABEL[status] ?? status;
+}
+/** Hex fill for a goal status chip (shared by HTML/PDF/deck). */
+export function goalStatusColor(status: string): string {
+  return status === 'on_track'
+    ? '#2e7d32'
+    : status === 'at_risk'
+      ? '#ed9c28'
+      : status === 'achieved'
+        ? '#0b7285'
+        : '#6b7280';
+}

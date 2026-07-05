@@ -55,11 +55,15 @@ The header shows **who's signed in** (Easy Auth / Entra) with sign-out; every
 mutation is written to the **Audit log** page (who / what / when) for compliance.
 
 - **Dashboard** — the admin cockpit: one row per QBR client with the **last
-  QBR** (quarter + workflow state + meeting date), **maturity rating**, **MRR**
-  (from Halo contracts), **spend movement QoQ**, and **attention flags**
-  (patch/MFA/AV gaps, failing backups, out-of-warranty devices, critical
-  vulnerabilities, security incidents, maturity drops, spend spikes). Rows
-  click straight into the workspace; report/PDF are one click from here.
+  QBR** (quarter + workflow state + meeting date), **maturity rating**,
+  **account health** (a holistic 0–100 blending posture, open flags, review
+  engagement and a churn signal — hover for the drivers), **MRR** (from Halo
+  contracts), **roadmap $** (the annualized open-opportunity pipeline), **spend
+  movement QoQ**, and **attention flags** (patch/MFA/AV gaps, failing backups,
+  out-of-warranty devices, critical vulnerabilities, security incidents,
+  maturity drops, spend spikes). Rows click straight into the workspace;
+  report/PDF are one click from here. Account health and roadmap $ are
+  **internal only** — neither reaches the client-facing report.
 - **Clients** — all clients with a **QBR toggle** (you don't review everyone —
   imports from Halo arrive with QBR off; enable just the ones you do). Each
   client can carry a **compliance standard** (HIPAA, TISAX, SOC 2…) — the AI
@@ -138,11 +142,17 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
     **previous QBR** to a past quarter and extract it the same way — instant
     quarter-over-quarter history for a new client.
   - *Opportunities* — the cross-quarter initiative board (idea → discussing →
-    approved → pushed → closed) with drag-and-drop and push-to-Halo.
-  - *Studio* — per-client branding overrides (client logo shows alongside the
-    Mash IT logo), section show/hide, custom sections. Deliverables always
-    wear the Mash IT theme from Settings — per-client config contributes only
-    the display name and logo.
+    approved → pushed → closed) with drag-and-drop and push-to-Halo. Each card
+    can carry an **estimated value** (one-time or monthly MRR); the board shows
+    per-column and total **annualized pipeline**, and the sum rolls up to the
+    dashboard's roadmap-$ column. Values are internal only.
+  - *Studio* — **strategic goals & alignment** (the client's business
+    objectives + how IT supports them — these open the report as a *Strategic
+    Goals & IT Alignment* section and give the AI narrative context to frame
+    the quarter around them; qualitative, no figures), per-client branding
+    overrides (client logo shows alongside the Mash IT logo), section
+    show/hide, custom sections. Deliverables always wear the Mash IT theme from
+    Settings — per-client config contributes only the display name and logo.
 
 **Email draft** deserves a note: it downloads a ready-to-send `.eml` that
 opens in Outlook desktop as an **unsent draft** — recipient prefilled from the

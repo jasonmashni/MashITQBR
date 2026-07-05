@@ -31,6 +31,8 @@ export interface NarrativeInput {
     functions: Array<{ function: string; score: number | null; rating: string }>;
     remediations: Array<{ title: string; score: number | null; evidence: string }>;
   };
+  /** The client's strategic goals (qualitative) so the narrative can align to them. */
+  goals?: Array<{ title: string; alignment?: string; status: string; targetPeriod?: string }>;
   /** Present only when the author set direction — changes bust the AI cache. */
   direction?: NarrativeDirection;
 }
@@ -43,6 +45,9 @@ export function buildNarrativeInput(args: {
   direction?: NarrativeDirection;
 }): NarrativeInput {
   const { client, current, previous } = args;
+  const goals = (client.goals ?? [])
+    .filter((g) => g.title.trim())
+    .map((g) => ({ title: g.title, alignment: g.alignment, status: g.status, targetPeriod: g.targetPeriod }));
   const direction =
     args.direction && (args.direction.focus || args.direction.guidance || Object.keys(args.direction.sectionGuidance ?? {}).length > 0)
       ? args.direction
@@ -70,6 +75,7 @@ export function buildNarrativeInput(args: {
       functions: scorecard.functions.map((f) => ({ function: f.function, score: f.score, rating: f.rating })),
       remediations: scorecard.remediations.map((r) => ({ title: r.title, score: r.score, evidence: r.evidence })),
     },
+    goals: goals.length ? goals : undefined,
     direction,
   };
 }

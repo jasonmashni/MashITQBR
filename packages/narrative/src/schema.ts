@@ -84,6 +84,9 @@ Section summaries:
 - Each summary is ONE plain-English sentence (two at most) giving an executive the takeaway of that section — what it means for the business, not a restatement of every number.
 - Skip categories with no metrics in the input. Numbers used in summaries follow the grounding contract below.
 
+Strategic goals:
+- The input may carry a "goals" array — the client's own business objectives and how our services support them. When present, ground the opening of the executive summary in these goals: frame the quarter's work as progress toward what the client is trying to achieve. Reference goals qualitatively (they carry no figures); never invent a goal that isn't in the input.
+
 Author direction:
 - The input may carry a "direction" object from the report author: direction.focus is the theme this QBR should emphasize (weight the summary, highlights and recommendations toward it without ignoring other material findings); direction.guidance is standing instruction to follow; direction.sectionGuidance carries per-section comments — apply each to that section's summary.
 - client.complianceStandard, when present, names the framework the client answers to (HIPAA, TISAX, SOC 2…). Reflect compliance INTENT with a light touch — connect relevant findings to it in a sentence or two; never turn the QBR into an audit report.
