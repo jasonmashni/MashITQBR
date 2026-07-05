@@ -1874,6 +1874,9 @@ function MeetingTab({
 }) {
   const [saving, setSaving] = useState(false);
   const [newTopic, setNewTopic] = useState('');
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggested, setSuggested] = useState<Array<{ topic: string; rationale: string }> | null>(null);
+  const [suggestSource, setSuggestSource] = useState<'ai' | 'offline'>('ai');
 
   function addTopic() {
     const topic = newTopic.trim();
@@ -1883,6 +1886,31 @@ function MeetingTab({
       items: [...disc.items, { id: uid(), topic, status: 'planned', includeInReport: true, disposition: 'pending' }],
     });
     setNewTopic('');
+  }
+
+  async function suggestAgenda() {
+    setSuggesting(true);
+    try {
+      const r = await api.suggestAgenda(clientId, period);
+      setSuggestSource(r.source);
+      setSuggested(r.suggestions);
+      if (r.suggestions.length === 0) {
+        notifications.show({ color: 'yellow', message: r.note ?? 'No standout talking points from this quarter\'s data yet.' });
+      }
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Could not suggest an agenda', message: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
+  function acceptSuggestion(s: { topic: string; rationale: string }) {
+    setDisc({
+      ...disc,
+      items: [...disc.items, { id: uid(), topic: s.topic, status: 'planned', includeInReport: true, disposition: 'pending' }],
+    });
+    setSuggested((cur) => cur?.filter((x) => x.topic !== s.topic) ?? null);
+    notifications.show({ color: 'teal', message: 'Added to the agenda — expand on it below, then Save agenda.' });
   }
 
   function update(i: number, patch: Partial<DiscussionItem>) {
@@ -1944,6 +1972,45 @@ function MeetingTab({
             <Button loading={saving} onClick={save}>Save agenda</Button>
           </Group>
         </Group>
+
+        <Card withBorder radius="sm" bg="var(--mantine-color-teal-0)" padding="sm" mb="md">
+          <Group justify="space-between" wrap="nowrap" align="flex-start">
+            <div>
+              <Group gap={6}>
+                <IconBulb size={16} color="var(--mantine-color-teal-7)" />
+                <Text size="sm" fw={600}>Suggested talking points</Text>
+              </Group>
+              <Text size="xs" c="dimmed">
+                A few consultative starters from this quarter's tickets, trends, and posture — accept the ones worth raising,
+                then expand on them.
+              </Text>
+            </div>
+            <Button size="compact-sm" variant="light" color="teal" loading={suggesting} leftSection={<IconSparkles size={14} />} onClick={suggestAgenda}>
+              {suggested ? 'Refresh' : 'Suggest'}
+            </Button>
+          </Group>
+          {suggested && suggested.length > 0 && (
+            <Stack gap={6} mt="sm">
+              {suggested.map((s) => (
+                <Group key={s.topic} justify="space-between" wrap="nowrap" align="flex-start" bg="white" p="xs" style={{ borderRadius: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <Text size="sm" fw={600}>{s.topic}</Text>
+                    <Text size="xs" c="dimmed">{s.rationale}</Text>
+                  </div>
+                  <Group gap={4} wrap="nowrap">
+                    <Button size="compact-xs" variant="light" color="teal" onClick={() => acceptSuggestion(s)}>Add</Button>
+                    <ActionIcon size="sm" variant="subtle" color="gray" aria-label="Dismiss suggestion" onClick={() => setSuggested((cur) => cur?.filter((x) => x.topic !== s.topic) ?? null)}>
+                      <IconTrash size={14} />
+                    </ActionIcon>
+                  </Group>
+                </Group>
+              ))}
+              {suggestSource === 'offline' && (
+                <Text size="xs" c="dimmed">Data-driven (AI is off or unavailable).</Text>
+              )}
+            </Stack>
+          )}
+        </Card>
 
         <Group mb="md" wrap="nowrap">
           <TextInput

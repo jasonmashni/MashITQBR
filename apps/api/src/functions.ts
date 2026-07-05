@@ -85,6 +85,7 @@ route('getConfig', 'GET', 'api/clients/{clientId}/config', (req) => h.getConfig(
 route('putConfig', 'PUT', 'api/clients/{clientId}/config', async (req) => h.putConfig(req.params['clientId']!, await body(req)));
 route('getDiscussion', 'GET', 'api/clients/{clientId}/qbr/{period}/discussion', (req) => h.getDiscussion(req.params['clientId']!, req.params['period']!));
 route('putDiscussion', 'PUT', 'api/clients/{clientId}/qbr/{period}/discussion', async (req) => h.putDiscussion(req.params['clientId']!, req.params['period']!, await body(req)));
+route('suggestAgenda', 'POST', 'api/clients/{clientId}/qbr/{period}/agenda', (req) => h.suggestQbrAgenda(req.params['clientId']!, req.params['period']!));
 
 // Live pipeline + workflow
 route('syncQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/sync', (req) => h.syncQbr(req.params['clientId']!, req.params['period']!));

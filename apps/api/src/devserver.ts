@@ -76,6 +76,7 @@ const routes: Route[] = [
   { method: 'DELETE', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)$/, run: (m) => h.deleteQbrDocument(m[1]!, m[2]!, m[3]!) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m) => h.getDiscussion(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m, b) => h.putDiscussion(m[1]!, m[2]!, b) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/agenda$/, run: (m) => h.suggestQbrAgenda(m[1]!, m[2]!) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/sync$/, run: (m) => h.syncQbr(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/status$/, run: (m, b) => h.putStatus(m[1]!, m[2]!, b['status']) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/schedule$/, run: (m, b) => h.putSchedule(m[1]!, m[2]!, b as { scheduledAt?: string; joinUrl?: string }) },

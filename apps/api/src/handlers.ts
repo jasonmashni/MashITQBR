@@ -58,6 +58,7 @@ import { createOrganizerEvent, deleteOrganizerEvent, getAvailabilityView, graphA
 import { renderBookingPage } from './bookingPage.js';
 import { appendPdfAttachments, loadPdfAttachments, pdfFirstPages } from './pdfMerge.js';
 import { createClaudeDocMatcher, type DocMatchModel } from './docMatch.js';
+import { buildAgendaContext, createClaudeAgendaSuggester, offlineAgenda, type AgendaModel } from './agenda.js';
 import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 
@@ -321,6 +322,39 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
     if (status !== existing?.status) await patchQbr(clientId, period, { status });
   }
   return ok(saved);
+}
+
+/**
+ * Consultative meeting-agenda suggestions for a QBR — 2-3 data-driven talking
+ * points the author can accept (append to the agenda) or ignore. On-demand
+ * (one cheap call per request), grounded in the quarter's own metrics/trends;
+ * falls back to deterministic data-driven suggestions when AI is off/unavailable.
+ */
+export async function suggestQbrAgenda(clientId: string, period: string, suggester?: AgendaModel): Promise<ApiResult> {
+  let model;
+  try {
+    // ai=null: the context comes from the computed metrics/scorecard, no Opus
+    // narrative call needed — keeps this feature cheap.
+    model = (await buildReportFor(clientId, period, null)).model;
+  } catch (e) {
+    return mapBuildError(e);
+  }
+  const ctx = buildAgendaContext(model);
+  if (ctx.movers.length === 0 && ctx.weakFunctions.length === 0 && ctx.metrics.length === 0) {
+    return ok({ suggestions: [], source: 'offline', note: 'Not enough data yet — run a Sync first.' });
+  }
+  if (!suggester && !process.env['ANTHROPIC_API_KEY']) {
+    return ok({ suggestions: offlineAgenda(ctx), source: 'offline' });
+  }
+  try {
+    const suggest = suggester ?? createClaudeAgendaSuggester();
+    const suggestions = await suggest(ctx);
+    audit('qbr.agenda', `qbr:${clientId}/${period}`, `${suggestions.length} suggestion(s)`);
+    return ok({ suggestions: suggestions.length ? suggestions : offlineAgenda(ctx), source: suggestions.length ? 'ai' : 'offline' });
+  } catch {
+    // Never fail the request — data-driven suggestions still help.
+    return ok({ suggestions: offlineAgenda(ctx), source: 'offline', note: 'AI unavailable — showing data-driven suggestions.' });
+  }
 }
 
 // ── Narrative editor ─────────────────────────────────────────────────────────

@@ -219,6 +219,11 @@ export const api = {
   /** Cancel the scheduled meeting: deletes the Teams event, reopens booking. */
   cancelMeeting: (clientId: string, period: string) =>
     send('DELETE', `/api/clients/${clientId}/qbr/${period}/meeting`).then(json<{ cancelled: boolean }>),
+  /** Consultative agenda suggestions from the quarter's data (2-3 talking points). */
+  suggestAgenda: (clientId: string, period: string) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/agenda`).then(
+      json<{ suggestions: Array<{ topic: string; rationale: string }>; source: 'ai' | 'offline'; note?: string }>,
+    ),
 
   // In-portal notifications (bell)
   notifications: (limit = 30) =>
