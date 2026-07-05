@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { SEED_CLIENTS, findSeedSnapshot, type Client, type ClientGoal } from '@mashit/core';
-import { buildReportModel, renderReportHtml } from '@mashit/report';
+import { buildReportModel, renderReportHtml, buildPdfDefinition, renderDeck } from '@mashit/report';
 
 const baseClient = SEED_CLIENTS.find((c) => c.id === 'anp')!;
 
@@ -39,5 +39,12 @@ describe('client goals in the report', () => {
     const noGoals = buildReportModel({ client: baseClient, current: findSeedSnapshot('anp', '2026-Q1')! });
     expect(noGoals.goals).toEqual([]);
     expect(renderReportHtml(noGoals)).not.toContain('Strategic Goals');
+  });
+
+  it('the PDF definition and deck render without throwing when goals are present', async () => {
+    const def = buildPdfDefinition(model);
+    expect(Array.isArray(def['content'])).toBe(true);
+    const deck = await renderDeck(model);
+    expect(deck.length).toBeGreaterThan(1000); // a non-trivial pptx buffer
   });
 });

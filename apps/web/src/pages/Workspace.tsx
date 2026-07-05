@@ -2846,8 +2846,14 @@ function OpportunitiesTab({ clientId, period }: { clientId: string; period: stri
 
   async function save(o: Opportunity, patch: Omit<Partial<Opportunity>, 'value'> & { value?: number | null }, quiet = false) {
     // Optimistic: a dragged card lands in its column immediately; a failure
-    // reloads the true state. (null clears a value locally too.)
-    setItems((prev) => prev.map((x) => (x.id === o.id ? { ...x, ...patch, value: patch.value ?? undefined } : x)));
+    // reloads the true state. Only touch `value` when the patch actually carries
+    // it (null clears, a number sets) — a status/owner-only patch (e.g. a drag)
+    // must NOT wipe an existing estimate. `value` is pulled out of the spread so
+    // a stray null can't reach the Opportunity type.
+    const { value: patchValue, ...rest } = patch;
+    setItems((prev) =>
+      prev.map((x) => (x.id === o.id ? { ...x, ...rest, ...('value' in patch ? { value: patchValue ?? undefined } : {}) } : x)),
+    );
     try {
       await api.saveOpportunity(clientId, { ...o, ...patch });
       await load();

@@ -1173,7 +1173,19 @@ export async function syncQbr(clientId: string, period: string): Promise<ApiResu
 export async function putStatus(clientId: string, period: string, status: unknown): Promise<ApiResult> {
   // Manual status set is the explicit user override (incl. un-archiving) — validated, not advanced.
   if (!isQbrStatus(status)) return err(400, `Invalid status: ${String(status)}`);
-  const saved = await patchQbr(clientId, period, { status });
+  const patch: { status: QbrStatus; meeting?: QbrRecord['meeting'] } = { status };
+  // Reaching a held stage stamps WHEN the review happened (if not already known)
+  // so account-health's engagement signal has an authoritative date going
+  // forward — use the scheduled time if it's already passed, else now.
+  if (QBR_HELD_STAGES.includes(status)) {
+    const existing = await getDataStore().getQbr(clientId, period);
+    if (!existing?.meeting?.heldAt) {
+      const sched = existing?.meeting?.scheduledAt;
+      const heldAt = sched && Date.parse(sched) <= Date.now() ? sched : new Date().toISOString();
+      patch.meeting = { ...existing?.meeting, heldAt };
+    }
+  }
+  const saved = await patchQbr(clientId, period, patch);
   audit('qbr.status', `qbr:${clientId}/${period}`, status);
   return ok(saved);
 }
@@ -1767,6 +1779,22 @@ function ratingRank(r: string): number {
 }
 
 /**
+ * Best evidence of when a QBR was actually held, for the account-health
+ * engagement signal: an explicit `heldAt`, else a scheduled meeting whose time
+ * has already passed (the review happened). A future or absent meeting means it
+ * hasn't been held yet.
+ */
+function qbrHeldDate(qbr: { meeting?: { heldAt?: string; scheduledAt?: string } } | undefined): string | undefined {
+  const m = qbr?.meeting;
+  if (m?.heldAt) return m.heldAt;
+  if (m?.scheduledAt && Date.parse(m.scheduledAt) <= Date.now()) return m.scheduledAt;
+  return undefined;
+}
+
+// Lifecycle stages that mean the review meeting has taken place.
+const QBR_HELD_STAGES: QbrStatus[] = ['completed', 'dispositioned', 'actions_pushed', 'archived'];
+
+/**
  * Admin dashboard rollup in one call: for each QBR-enabled client, the newest
  * snapshot within the last 4 quarters scored with computeScorecard, plus the
  * numbers an admin actually works from — last QBR + workflow state, rating,
@@ -1819,7 +1847,7 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
       const health = computeAccountHealth({
         securityScore: scorecard?.overall.score ?? null,
         flags,
-        daysSinceQbr: daysSince(qbr?.meeting?.heldAt),
+        daysSinceQbr: daysSince(qbrHeldDate(qbr)),
         ratingDropped,
         spendDeltaPct,
       });

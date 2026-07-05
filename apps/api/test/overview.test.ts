@@ -61,6 +61,28 @@ describe('overview + periods endpoints', () => {
     expect(Array.isArray(anp.health!.drivers)).toBe(true);
   });
 
+  it('reads the review-engagement signal from a past meeting and stamps heldAt on completion', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    const past = new Date(Date.now() - 20 * 86_400_000).toISOString();
+
+    // Before any meeting, health flags "no QBR held yet".
+    let res = await h.getOverview('2026-Q1');
+    let anp = (res.json as { clients: Array<{ clientId: string; health: { drivers: string[] } }> }).clients.find((c) => c.clientId === 'anp')!;
+    expect(anp.health.drivers.join(' ')).toMatch(/no qbr held/i);
+
+    // A meeting whose time has already passed counts as held — the penalty lifts.
+    await h.putSchedule('anp', '2026-Q1', { scheduledAt: past });
+    res = await h.getOverview('2026-Q1');
+    anp = (res.json as { clients: Array<{ clientId: string; health: { drivers: string[] } }> }).clients.find((c) => c.clientId === 'anp')!;
+    expect(anp.health.drivers.join(' ')).not.toMatch(/no qbr held/i);
+
+    // Completing the QBR stamps heldAt from the (past) scheduled time.
+    await h.putStatus('anp', '2026-Q1', 'completed');
+    const rec = await store.getQbr('anp', '2026-Q1');
+    expect(rec?.meeting?.heldAt).toBe(past);
+  });
+
   it('sums open opportunity value into the roadmap figure and clears on empty', async () => {
     const h = await import('../src/handlers.js');
     // A one-time and a recurring open card → annualized roadmap value.
