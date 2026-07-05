@@ -1583,6 +1583,15 @@ function ReportsTab({
             </Text>
           </Alert>
         )}
+        <Alert color="blue" variant="light" p="xs" mt="xs" icon={<IconTableImport size={16} />}>
+          <Text size="xs">
+            <b>Adding a previous QBR (for quarter-over-quarter history)?</b> 1) <b>Upload</b> the old QBR PDF here. 2) Click the
+            <b> table-import</b> icon (<IconTableImport size={12} style={{ verticalAlign: 'middle' }} />) on its row to have the AI
+            read its numbers. 3) In the review that opens, confirm the <b>target quarter</b> (it auto-detects the quarter the PDF
+            covers) and accept — those figures become that quarter's snapshot, so this quarter's report shows real QoQ trends. You
+            don't need to switch the period picker first; the target quarter is chosen in the review.
+          </Text>
+        </Alert>
       </Card>
 
       <Card withBorder radius="md" padding="lg">

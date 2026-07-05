@@ -131,15 +131,68 @@ async function listHaloItemsCached(http: HttpTransport, cfg: HaloCfg): Promise<J
   return rows;
 }
 
-/** Categorize a ticket row by its type name (mirrors the report's operations buckets). */
-function ticketCategory(row: Json): string {
-  const name = (firstStr(row, ['tickettype_name', 'type']) ?? ((row['tickettype'] as Json | undefined)?.['name'] as string | undefined) ?? '').toLowerCase();
-  if (name.includes('incident')) return 'incident';
-  if (name.includes('change')) return 'change';
-  if (name.includes('service') || name.includes('request')) return 'service';
-  if (name.includes('maintenance')) return 'maintenance';
-  if (name.includes('problem')) return 'problem';
+/**
+ * An ITIL-ish class for a Halo ticket type. Automated RMM/security alerts
+ * (Ninja/Huntress/vulnerability/O365/CIPP…) are separated from human
+ * service-desk work so the QBR headline reflects real support volume, not the
+ * noise the MSP quietly absorbs.
+ */
+export type ItilClass = 'incident' | 'service_request' | 'change' | 'problem' | 'alert' | 'maintenance' | 'other';
+
+/** The classes that count as human service-desk work (the QBR ticket headline). */
+export const SERVICE_DESK_CLASSES: ReadonlySet<ItilClass> = new Set(['incident', 'service_request', 'change', 'problem']);
+
+/**
+ * Classify a Halo ticket type by its NAME. Order matters: automated-alert
+ * wording is checked first because several alert types also contain other
+ * keywords (e.g. "Vulnerability Alert"). Verified against the real Mash IT
+ * Halo taxonomy (Ninja Alert, O365 MDR Alert, Security Detection, Incident,
+ * Service Request, Change Request, Problem, Maintenance - Patching…).
+ */
+export function classifyTicketType(typeName: string | undefined): ItilClass {
+  const n = (typeName ?? '').toLowerCase().trim();
+  if (!n) return 'other';
+  if (/\balert\b|detection|vulnerabilit/.test(n)) return 'alert';
+  if (/\bproblem\b/.test(n)) return 'problem';
+  if (/\bchange\b/.test(n)) return 'change';
+  if (/\bincident\b/.test(n)) return 'incident';
+  if (/request|inquir|question/.test(n)) return 'service_request';
+  if (/maintenance|patch/.test(n)) return 'maintenance';
   return 'other';
+}
+
+// Ticket-type id→name map is instance-wide and rarely changes — cache it an
+// hour so a multi-client sync fetches /api/TicketType once.
+const ticketTypeCache = new Map<string, { at: number; map: Map<string, string> }>();
+export async function fetchTicketTypeMap(http: HttpTransport, cfg: HaloCfg): Promise<Map<string, string>> {
+  const hit = ticketTypeCache.get(cfg.baseUrl);
+  if (hit && Date.now() - hit.at < 3600_000) return hit.map;
+  const map = new Map<string, string>();
+  try {
+    const json = await haloGet(http, cfg, 'TicketType', {});
+    for (const t of toArray<Json>(json, ['tickettypes'])) {
+      const id = t['id'];
+      const name = firstStr(t, ['name']);
+      if (id !== undefined && id !== null && name) map.set(String(id), name);
+    }
+  } catch {
+    // Tolerated — a ticket row's own tickettype_name (when present) still classifies it.
+  }
+  ticketTypeCache.set(cfg.baseUrl, { at: Date.now(), map });
+  return map;
+}
+
+/** A ticket row's type name: its own field, else the instance type map by id. */
+function ticketTypeName(row: Json, typeMap: Map<string, string>): string | undefined {
+  const onRow = firstStr(row, ['tickettype_name', 'type']) ?? ((row['tickettype'] as Json | undefined)?.['name'] as string | undefined);
+  if (onRow) return onRow;
+  const id = ticketTypeIdOf(row);
+  return id !== undefined ? typeMap.get(id) : undefined;
+}
+
+/** The ITIL class of a ticket row, resolving its type name first. */
+function ticketClass(row: Json, typeMap: Map<string, string>): ItilClass {
+  return classifyTicketType(ticketTypeName(row, typeMap));
 }
 
 /** Page a Halo list endpoint, returning all rows (capped) plus the true record_count. */
@@ -344,19 +397,79 @@ function ticketTypeIdOf(row: Json): string | undefined {
 }
 
 /**
- * SLA outcome tally from ticket rows. Field names differ across Halo
- * versions, so scan sla-keyed string fields for met/breach wording; rows
- * with no recognizable SLA state are simply not counted. A ticket can carry
- * several SLA fields (response + resolution) — any breach makes the ticket
- * breached. Fields that name the SLA rather than its state (slaname) are
- * skipped so wording like "Respond within 4 hours" can't read as met.
+ * SLA outcome tally from ticket rows. Two strategies, best first:
+ *
+ *  1. DATES — the reliable path: compare each SLA deadline (respond-by / fix-by)
+ *     against the actual (first response / close). A ticket is breached if it
+ *     answered/closed after a deadline; met if it beat every deadline it has.
+ *     This is how Halo itself scores SLAs and doesn't depend on a text field.
+ *  2. TEXT — fallback for instances that surface an explicit state string.
+ *     Fields that NAME the SLA (slaname) are skipped so "Respond within 4
+ *     hours" can't read as met.
+ *
+ * When neither works, `seenKeys` names the SLA/deadline-ish fields the rows DID
+ * carry so the collector can say exactly what to tune for this instance.
  */
+const SLA_RESPOND_DEADLINE = ['respondbydate', 'respond_by_date', 'slaresponsedate', 'targetdate', 'responsetargetdate'];
+const SLA_RESPONDED = ['dateresponded', 'responddate', 'date_responded', 'firstresponsedate'];
+const SLA_FIX_DEADLINE = ['fixbydate', 'fix_by_date', 'slaresolutiondate', 'targetresolutiondate', 'resolutiontargetdate'];
+const SLA_CLOSED = ['dateclosed', 'date_closed', 'closedate'];
+
 const SLA_BREACH_RE = /\b(breach\w*|late|miss\w*|fail\w*|overdue|unmet)\b|\bnot\s+(met|ok|achieved|within)/;
 const SLA_MET_RE = /\b(met|ok|achieved?|within|pass(?:ed)?|on.?target)\b/;
 
-export function tallyHaloSla(rows: Json[]): { met: number; breached: number } {
+/** Parse the first parseable date field to epoch ms, else undefined. */
+function firstDateMs(row: Json, keys: string[]): number | undefined {
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === 'string' && v) {
+      const t = Date.parse(v);
+      if (Number.isFinite(t)) return t;
+    }
+  }
+  return undefined;
+}
+
+export interface SlaTally {
+  met: number;
+  breached: number;
+  /** How the tally was derived — for the diagnostic warning. */
+  source: 'dates' | 'text' | 'none';
+  /** SLA/deadline-ish field keys the rows carried (only when source === 'none'). */
+  seenKeys: string[];
+}
+
+export function tallyHaloSla(rows: Json[]): SlaTally {
+  // 1) Date-based (deadline vs actual).
   let met = 0;
   let breached = 0;
+  let sawDates = false;
+  for (const row of rows) {
+    const respondDeadline = firstDateMs(row, SLA_RESPOND_DEADLINE);
+    const responded = firstDateMs(row, SLA_RESPONDED);
+    const fixDeadline = firstDateMs(row, SLA_FIX_DEADLINE);
+    const closed = firstDateMs(row, SLA_CLOSED);
+    let considered = false;
+    let breach = false;
+    if (respondDeadline !== undefined && responded !== undefined) {
+      considered = true;
+      if (responded > respondDeadline) breach = true;
+    }
+    if (fixDeadline !== undefined && closed !== undefined) {
+      considered = true;
+      if (closed > fixDeadline) breach = true;
+    }
+    if (considered) {
+      sawDates = true;
+      if (breach) breached++;
+      else met++;
+    }
+  }
+  if (sawDates && met + breached > 0) return { met, breached, source: 'dates', seenKeys: [] };
+
+  // 2) Text-state fallback.
+  met = 0;
+  breached = 0;
   for (const row of rows) {
     let sawBreach = false;
     let sawMet = false;
@@ -369,7 +482,16 @@ export function tallyHaloSla(rows: Json[]): { met: number; breached: number } {
     if (sawBreach) breached++;
     else if (sawMet) met++;
   }
-  return { met, breached };
+  if (met + breached > 0) return { met, breached, source: 'text', seenKeys: [] };
+
+  // 3) Nothing recognizable — name the SLA-ish keys we DID see, so it's tunable.
+  const seen = new Set<string>();
+  for (const row of rows) {
+    for (const k of Object.keys(row)) {
+      if (/sla|respond|fixby|resolution|breach|target|dueby/i.test(k)) seen.add(k);
+    }
+  }
+  return { met: 0, breached: 0, source: 'none', seenKeys: [...seen].slice(0, 15) };
 }
 
 export interface HaloFinanceInput {
@@ -613,204 +735,122 @@ function outsidePeriod(row: Json, fields: string[], startMs: number, endMs: numb
   return Number.isFinite(at) && (at < startMs || at >= endMs);
 }
 
-/** Per-Halo-client-id ticket + finance tallies for one period. */
-async function collectHaloForId(
-  ctx: CollectorContext,
-  http: HttpTransport,
-  cfg: HaloCfg,
-  haloId: string,
-  warnings: string[],
-  tag: string,
-): Promise<{
+interface HaloIdTickets {
   ok: boolean;
   openedRows: Json[];
   openedTotal: number;
-  closed: number;
-  open: number;
+  closedRows: Json[];
+  closedTotal: number;
+  openRows: Json[];
+  openTotal: number;
   contracts: Json[];
   contractDetails: Json[];
   invoices: Json[];
-}> {
+}
+
+/**
+ * Per-Halo-client-id ticket ROWS (opened/closed/open in the period) + finance.
+ * Classification (ITIL / alert / allowlist) happens once in the caller across
+ * all mapped ids, so this just gathers the rows via the server date windows —
+ * with a recent-tickets fallback for instances that ignore `datesearch`.
+ */
+async function collectHaloForId(ctx: CollectorContext, http: HttpTransport, cfg: HaloCfg, haloId: string, warnings: string[], tag: string): Promise<HaloIdTickets> {
   const startMs = Date.parse(ctx.period.start);
   const endMs = Date.parse(ctx.period.end) + 24 * 3600 * 1000;
-  const allowedTypes = cfg.ticketTypeIds?.length ? new Set(cfg.ticketTypeIds.map(String)) : undefined;
-  const typeMatch = (r: Json) => {
-    if (!allowedTypes) return true;
-    const t = ticketTypeIdOf(r);
-    return t !== undefined && allowedTypes.has(t);
-  };
   let ok = false;
   let openedRows: Json[] = [];
   let openedTotal = 0;
-  let closed = 0;
+  let closedRows: Json[] = [];
+  let closedTotal = 0;
 
-  // With a ticket-type allowlist, server-side record counts can't be used —
-  // pull the period's rows via the server date window and tally locally
-  // (types, SLA all from rows). A "recent tickets" pull is only the fallback
-  // for instances that ignore datesearch: busy clients have more history
-  // than any sane page cap, so recency alone can miss the quarter entirely.
-  if (allowedTypes) {
-    let filterUsable = true;
-    try {
-      // 40 pages covers busy quarters even when the instance caps pages at
-      // 100 rows (4,000 tickets); the sampling warning still fires beyond it.
-      const openedPull = await haloPageAll(http, cfg, 'Tickets', {
-        client_id: haloId,
-        datesearch: 'dateoccurred',
-        startdate: ctx.period.start,
-        enddate: ctx.period.end,
-      }, 'tickets', 40);
-      // Trust the server window, but drop rows whose parseable date clearly
-      // falls outside it (rows without a recognizable date field stay).
-      let openedAll = openedPull.rows.filter((r) => !outsidePeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
-      let closedAll: Json[] = [];
-      let sampledNote: string | undefined;
-
-      if (openedPull.rows.length === 0) {
-        // Some Halo versions ignore datesearch (returning nothing) — verify
-        // against the unfiltered count and fall back to recent tickets.
-        const probe = await haloGet(http, cfg, 'Tickets', { client_id: haloId, open_only: false, pageinate: true, page_size: 1, page_no: 1 });
-        const totalTickets = recordCount(probe, toArray(probe, ['tickets']));
-        if (totalTickets > 0) {
-          const all = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: false, order: 'dateoccurred', orderdesc: true }, 'tickets', 10);
-          openedAll = all.rows.filter((r) => inPeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
-          closedAll = all.rows.filter((r) => inPeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs));
-          if (all.rows.length < all.total) {
-            sampledNote = `Halo${tag}: the server date filter returned nothing — type-filtered tallies counted from the most recent ${all.rows.length} of ${all.total} tickets.`;
-          }
-        }
-      } else {
-        if (openedPull.rows.length < openedPull.total) {
-          sampledNote = `Halo${tag}: type-filtered tallies counted from the first ${openedPull.rows.length} of ${openedPull.total} in-period tickets.`;
-        }
-        const closedPull = await haloPageAll(http, cfg, 'Tickets', {
-          client_id: haloId,
-          datesearch: 'dateclosed',
-          startdate: ctx.period.start,
-          enddate: ctx.period.end,
-        }, 'tickets', 40);
-        closedAll = closedPull.rows.filter((r) => !outsidePeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs));
-      }
-
-      const sample = [...openedAll, ...closedAll];
-      if (sample.length > 0 && !sample.some((r) => ticketTypeIdOf(r) !== undefined)) {
-        // This instance's list rows don't expose a type id — filtered tallies
-        // would read as a quarter of zeros. Report unavailable instead.
-        filterUsable = false;
-        warnings.push(
-          `Halo${tag}: ticket rows carry no ticket-type id, so the connection's ticket-type filter can't be applied — ticket metrics skipped (clear the filter to report on all tickets).`,
-        );
-      } else {
-        ok = true;
-        openedRows = openedAll.filter(typeMatch);
-        openedTotal = openedRows.length;
-        closed = closedAll.filter(typeMatch).length;
-        if (sampledNote) warnings.push(sampledNote);
-      }
-    } catch (e) {
-      filterUsable = false;
-      warnings.push(`Halo${tag} ticket volume unavailable: ${e instanceof Error ? e.message : 'error'}`);
-    }
-    return withFinance(filterUsable);
-  }
-
-  // Tickets opened in the period via the server-side date window.
+  // Tickets opened/closed in the period via the server date windows. 40 pages
+  // covers a very busy quarter (up to 8,000 tickets even when an instance caps
+  // pages at 200 rows); the sampling warning fires beyond that.
   try {
-    const opened = await haloPageAll(http, cfg, 'Tickets', {
+    const openedPull = await haloPageAll(http, cfg, 'Tickets', {
       client_id: haloId,
       datesearch: 'dateoccurred',
       startdate: ctx.period.start,
       enddate: ctx.period.end,
-    }, 'tickets');
-    ok = true;
-    openedRows = opened.rows;
-    openedTotal = opened.total;
+    }, 'tickets', 40);
 
-    if (opened.total === 0) {
-      // Some Halo versions ignore datesearch — verify against the unfiltered
-      // count and fall back to filtering recent tickets locally.
+    if (openedPull.rows.length === 0 && openedPull.total === 0) {
+      // Some Halo versions ignore datesearch (returning nothing) — verify
+      // against the unfiltered count and fall back to recent tickets.
       const probe = await haloGet(http, cfg, 'Tickets', { client_id: haloId, open_only: false, pageinate: true, page_size: 1, page_no: 1 });
       const totalTickets = recordCount(probe, toArray(probe, ['tickets']));
+      ok = true; // the API answered — a truly ticket-free client is an honest zero, not a failure
       if (totalTickets > 0) {
         const all = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: false, order: 'dateoccurred', orderdesc: true }, 'tickets', 10);
         openedRows = all.rows.filter((r) => inPeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
+        closedRows = all.rows.filter((r) => inPeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs));
         openedTotal = openedRows.length;
-        closed = all.rows.filter((r) => inPeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs)).length;
+        closedTotal = closedRows.length;
         if (all.rows.length < all.total) {
-          warnings.push(`Halo${tag}: the server date filter returned nothing — counted from the most recent ${all.rows.length} of ${all.total} tickets instead.`);
+          warnings.push(`Halo${tag}: the server date filter returned nothing — ticket tallies counted from the most recent ${all.rows.length} of ${all.total} tickets instead.`);
         }
-        return await withFinance();
+      }
+    } else {
+      ok = true;
+      openedRows = openedPull.rows.filter((r) => !outsidePeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
+      openedTotal = openedPull.total;
+      const closedPull = await haloPageAll(http, cfg, 'Tickets', {
+        client_id: haloId,
+        datesearch: 'dateclosed',
+        startdate: ctx.period.start,
+        enddate: ctx.period.end,
+      }, 'tickets', 40);
+      closedRows = closedPull.rows.filter((r) => !outsidePeriod(r, TICKET_CLOSED_FIELDS, startMs, endMs));
+      closedTotal = closedPull.total;
+      if (openedPull.rows.length < openedPull.total || closedPull.rows.length < closedPull.total) {
+        warnings.push(`Halo${tag}: ticket tallies counted from the first ${Math.max(openedPull.rows.length, closedPull.rows.length)} of ${Math.max(openedPull.total, closedPull.total)} in-period tickets.`);
       }
     }
   } catch (e) {
     warnings.push(`Halo${tag} ticket volume unavailable: ${e instanceof Error ? e.message : 'error'}`);
   }
 
-  // Tickets closed in the period.
+  // Open-ticket snapshot as ROWS so it classifies like opened/closed.
+  let openRows: Json[] = [];
+  let openTotal = 0;
   try {
-    const res = await haloGet(http, cfg, 'Tickets', {
-      client_id: haloId,
-      datesearch: 'dateclosed',
-      startdate: ctx.period.start,
-      enddate: ctx.period.end,
-      pageinate: true,
-      page_size: 1,
-      page_no: 1,
-    });
-    closed = recordCount(res, toArray(res, ['tickets']));
+    const openPull = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: true }, 'tickets', 10);
+    openRows = openPull.rows;
+    openTotal = openPull.total;
+    ok = true;
+    if (openPull.rows.length < openPull.total) {
+      warnings.push(`Halo${tag}: open-ticket snapshot read from the first ${openPull.rows.length} of ${openPull.total} open tickets.`);
+    }
   } catch (e) {
-    warnings.push(`Halo${tag} closed-ticket count unavailable: ${e instanceof Error ? e.message : 'error'}`);
+    warnings.push(`Halo${tag} open-ticket snapshot unavailable: ${e instanceof Error ? e.message : 'error'}`);
   }
-  return withFinance();
 
-  async function withFinance(includeOpenSnapshot = true) {
-    let open = 0;
-    if (includeOpenSnapshot) {
+  // Finance — contracts (+ per-contract detail for the recurring breakdown) and invoices.
+  let contracts: Json[] = [];
+  const contractDetails: Json[] = [];
+  let invoices: Json[] = [];
+  try {
+    contracts = (await haloPageAll(http, cfg, 'ClientContract', { client_id: haloId }, 'contracts')).rows;
+    for (const c of contracts.slice(0, 10)) {
+      const cid = c['id'];
+      if (cid === undefined || cid === null) continue;
       try {
-        if (allowedTypes) {
-          // Type filter needs rows, not the server count.
-          const openAll = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: true }, 'tickets', 10);
-          open = openAll.rows.filter(typeMatch).length;
-          if (openAll.rows.length < openAll.total) {
-            warnings.push(`Halo${tag}: open-ticket snapshot filtered from the first ${openAll.rows.length} of ${openAll.total} open tickets.`);
-          }
-        } else {
-          const res = await haloGet(http, cfg, 'Tickets', { client_id: haloId, open_only: true, pageinate: true, page_size: 1, page_no: 1 });
-          open = recordCount(res, toArray(res, ['tickets']));
-        }
-        ok = true;
-      } catch (e) {
-        warnings.push(`Halo${tag} open-ticket snapshot unavailable: ${e instanceof Error ? e.message : 'error'}`);
+        const d = await haloGet(http, cfg, `ClientContract/${String(cid)}`);
+        if (d && typeof d === 'object' && !Array.isArray(d)) contractDetails.push(d as Json);
+      } catch {
+        // Per-contract tolerance — list-level MRR still works without it.
       }
     }
-    let contracts: Json[] = [];
-    const contractDetails: Json[] = [];
-    let invoices: Json[] = [];
-    try {
-      contracts = (await haloPageAll(http, cfg, 'ClientContract', { client_id: haloId }, 'contracts')).rows;
-      // Recurring line items live on the contract DETAIL, not the list row —
-      // fetch each (bounded; a client has a handful of contracts at most).
-      for (const c of contracts.slice(0, 10)) {
-        const cid = c['id'];
-        if (cid === undefined || cid === null) continue;
-        try {
-          const d = await haloGet(http, cfg, `ClientContract/${String(cid)}`);
-          if (d && typeof d === 'object' && !Array.isArray(d)) contractDetails.push(d as Json);
-        } catch {
-          // Per-contract tolerance — list-level MRR still works without it.
-        }
-      }
-    } catch (e) {
-      warnings.push(`Halo${tag} contracts unavailable (MRR skipped): ${e instanceof Error ? e.message : 'error'}`);
-    }
-    try {
-      // includelines feeds the invoice category breakdown.
-      invoices = (await haloPageAll(http, cfg, 'Invoice', { client_id: haloId, includelines: true }, 'invoices')).rows;
-    } catch (e) {
-      warnings.push(`Halo${tag} invoices unavailable (quarterly spend skipped): ${e instanceof Error ? e.message : 'error'}`);
-    }
-    return { ok, openedRows, openedTotal, closed, open, contracts, contractDetails, invoices };
+  } catch (e) {
+    warnings.push(`Halo${tag} contracts unavailable (MRR skipped): ${e instanceof Error ? e.message : 'error'}`);
   }
+  try {
+    invoices = (await haloPageAll(http, cfg, 'Invoice', { client_id: haloId, includelines: true }, 'invoices')).rows;
+  } catch (e) {
+    warnings.push(`Halo${tag} invoices unavailable (quarterly spend skipped): ${e instanceof Error ? e.message : 'error'}`);
+  }
+
+  return { ok, openedRows, openedTotal, closedRows, closedTotal, openRows, openTotal, contracts, contractDetails, invoices };
 }
 
 /**
@@ -834,9 +874,10 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
     metric(k, l, v, { category: 'operations', source: 'halo', unit: 'count', higherIsBetter });
 
   const openedRows: Json[] = [];
+  const closedRows: Json[] = [];
+  const openRows: Json[] = [];
   let openedTotal = 0;
-  let closed = 0;
-  let open = 0;
+  let openTotal = 0;
   let anyTicketData = false;
   const contracts: Json[] = [];
   const contractDetails: Json[] = [];
@@ -846,9 +887,10 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
     const t = await collectHaloForId(ctx, http, cfg, haloId, warnings, tag);
     anyTicketData ||= t.ok;
     openedRows.push(...t.openedRows);
+    closedRows.push(...t.closedRows);
+    openRows.push(...t.openRows);
     openedTotal += t.openedTotal;
-    closed += t.closed;
-    open += t.open;
+    openTotal += t.openTotal;
     contracts.push(...t.contracts);
     contractDetails.push(...t.contractDetails);
     invoices.push(...t.invoices);
@@ -867,46 +909,95 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
   // Emit ticket tallies only when the API actually answered — a hard failure
   // must read as "unavailable" in the warnings, not as a quarter of zeros.
   if (anyTicketData) {
-    // Drill-down: the actual tickets behind the count (capped), each deep-
-    // linked into Halo.
-    const haloBase = cfg.baseUrl.replace(/\/+$/, '');
-    const ticketRows: DetailRow[] = openedRows.slice(0, DETAIL_CAP).map((r) => ({
-      id: String(r['id'] ?? ''),
-      summary: clip(firstStr(r, ['summary', 'subject']) ?? ''),
-      type: firstStr(r, ['tickettype_name', 'type']) ?? (ticketTypeIdOf(r) !== undefined ? `type ${ticketTypeIdOf(r)!}` : ''),
-      opened: (firstStr(r, TICKET_OPENED_FIELDS) ?? '').slice(0, 10),
-      url: `${haloBase}/ticket?id=${String(r['id'] ?? '')}`,
-    }));
-    metrics.push({ ...op('tickets.total', 'Tickets opened', openedTotal, false), details: ticketRows });
-    const counts = new Map<string, number>();
-    for (const row of openedRows) counts.set(ticketCategory(row), (counts.get(ticketCategory(row)) ?? 0) + 1);
-    if (openedRows.length > 0) {
-      metrics.push(
-        op('tickets.incidents', 'Incidents', counts.get('incident') ?? 0, false),
-        op('tickets.changes', 'Change requests', counts.get('change') ?? 0),
-        op('tickets.service', 'Service requests', counts.get('service') ?? 0),
-      );
-      if (openedRows.length < openedTotal) {
-        warnings.push(`Ticket by-type breakdown sampled from the first ${openedRows.length} of ${openedTotal} tickets.`);
-      }
-    }
-    metrics.push(op('tickets.closed', 'Tickets closed', closed, true));
-    metrics.push(op('tickets.open', 'Open tickets', open, false));
+    // Resolve ticket-type names (rows carry only tickettype_id) so tickets can
+    // be classified by ITIL type — the headline is human SERVICE-DESK work, not
+    // the automated RMM/security alerts that dominate the raw count.
+    const typeMap = await fetchTicketTypeMap(http, cfg);
+    const allowed = cfg.ticketTypeIds?.length ? new Set(cfg.ticketTypeIds.map(String)) : undefined;
+    const inAllowlist = (r: Json) => {
+      const t = ticketTypeIdOf(r);
+      return t !== undefined && allowed!.has(t);
+    };
 
-    // SLA outcomes from the period's ticket rows (field names vary — see tallyHaloSla).
-    const sla = tallyHaloSla(openedRows);
-    if (sla.met + sla.breached > 0) {
-      metrics.push(
-        metric('sla.met_pct', 'SLA met', Math.round((1000 * sla.met) / (sla.met + sla.breached)) / 10, {
-          category: 'operations',
-          source: 'halo',
-          unit: '%',
-          higherIsBetter: true,
-        }),
+    // An allowlist restricts on type id — but if the instance's rows carry no
+    // type id at all, it can't be applied (would read as a quarter of zeros).
+    const everyRow = [...openedRows, ...closedRows, ...openRows];
+    if (allowed && everyRow.length > 0 && !everyRow.some((r) => ticketTypeIdOf(r) !== undefined)) {
+      warnings.push(
+        `Halo: ticket rows carry no ticket-type id, so the connection's ticket-type filter can't be applied — ticket metrics skipped (clear the filter to report on all tickets).`,
       );
-      if (sla.breached > 0) metrics.push(op('sla.breaches', 'SLA breaches', sla.breached, false));
-    } else if (openedRows.length > 0) {
-      warnings.push('Halo ticket rows carry no recognizable SLA state field — SLA reporting needs tuning against this instance.');
+    } else {
+      // Classification needs type names — from the type map or the rows. If
+      // neither resolves (e.g. /api/TicketType was blocked and rows carry only
+      // ids), don't silently report zero service-desk tickets: fall back to
+      // counting every ticket and say why.
+      const classifiable = typeMap.size > 0 || everyRow.some((r) => ticketTypeName(r, typeMap) !== undefined);
+      if (!allowed && !classifiable && everyRow.length > 0) {
+        warnings.push(
+          `Halo ticket types couldn't be resolved (check API access to /api/TicketType) — reporting all tickets; automated alerts can't be separated until types resolve, or set a ticket-type allowlist on the connection.`,
+        );
+      }
+      // Service-desk = the allowlisted types when the user picked them, else the
+      // ITIL classes (incident / service request / change / problem). Automated
+      // alerts are always separated out. When classification is impossible, all
+      // tickets count (better a nonzero-with-warning than a misleading zero).
+      const isServiceDesk = (r: Json) => (allowed ? inAllowlist(r) : classifiable ? SERVICE_DESK_CLASSES.has(ticketClass(r, typeMap)) : true);
+      const classOf = (r: Json) => ticketClass(r, typeMap);
+      const openedSvc = openedRows.filter(isServiceDesk);
+      const closedSvc = closedRows.filter(isServiceDesk);
+      // Open snapshot: classify when we have rows, else fall back to the server count.
+      const openCount = openRows.length > 0 ? openRows.filter(isServiceDesk).length : openTotal;
+
+      const haloBase = cfg.baseUrl.replace(/\/+$/, '');
+      const ticketRows: DetailRow[] = openedSvc.slice(0, DETAIL_CAP).map((r) => ({
+        id: String(r['id'] ?? ''),
+        summary: clip(firstStr(r, ['summary', 'subject']) ?? ''),
+        type: ticketTypeName(r, typeMap) ?? (ticketTypeIdOf(r) !== undefined ? `type ${ticketTypeIdOf(r)!}` : ''),
+        opened: (firstStr(r, TICKET_OPENED_FIELDS) ?? '').slice(0, 10),
+        url: `${haloBase}/ticket?id=${String(r['id'] ?? '')}`,
+      }));
+      metrics.push({ ...op('tickets.total', 'Tickets opened', openedSvc.length, false), details: ticketRows });
+
+      // ITIL breakdown of the service-desk tickets.
+      const cnt = (rows: Json[], cls: ItilClass) => rows.filter((r) => classOf(r) === cls).length;
+      metrics.push(
+        op('tickets.incidents', 'Incidents', cnt(openedSvc, 'incident'), false),
+        op('tickets.service', 'Service requests', cnt(openedSvc, 'service_request')),
+        op('tickets.changes', 'Change requests', cnt(openedSvc, 'change')),
+      );
+
+      // Automated alerts across ALL opened tickets — the RMM/security noise the
+      // MSP absorbs, surfaced separately so it never inflates the ticket count.
+      const alerts = openedRows.filter((r) => classOf(r) === 'alert').length;
+      if (alerts > 0) metrics.push(op('tickets.alerts', 'Automated alerts', alerts, false));
+
+      metrics.push(op('tickets.closed', 'Tickets closed', closedSvc.length, true));
+      metrics.push(op('tickets.open', 'Open tickets', openCount, false));
+
+      if (openedRows.length < openedTotal) {
+        warnings.push(`Ticket tallies sampled from the first ${openedRows.length} of ${openedTotal} opened tickets — the ITIL breakdown may be partial.`);
+      }
+
+      // SLA outcomes over the service-desk tickets opened in the period (alerts
+      // auto-resolve and don't carry SLAs).
+      const sla = tallyHaloSla(openedSvc);
+      if (sla.met + sla.breached > 0) {
+        metrics.push(
+          metric('sla.met_pct', 'SLA met', Math.round((1000 * sla.met) / (sla.met + sla.breached)) / 10, {
+            category: 'operations',
+            source: 'halo',
+            unit: '%',
+            higherIsBetter: true,
+          }),
+        );
+        if (sla.breached > 0) metrics.push(op('sla.breaches', 'SLA breaches', sla.breached, false));
+      } else if (openedSvc.length > 0) {
+        warnings.push(
+          `Halo SLA state not recognized on ticket rows — SLA reporting needs tuning against this instance${
+            sla.seenKeys.length ? ` (SLA-ish fields seen: ${sla.seenKeys.join(', ')})` : ' (no SLA/deadline fields present on the rows)'
+          }.`,
+        );
+      }
     }
   }
 

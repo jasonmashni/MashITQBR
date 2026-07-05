@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { makePeriod } from '@mashit/core';
 import {
+  classifyTicketType,
   collectHaloDirect,
   createHaloTicket,
   fetchHaloMeta,
@@ -68,22 +69,39 @@ describe('collectHaloDirect', () => {
         respond: () => ({
           status: 200,
           json: {
+            // record_count exceeds the returned rows → the sampling warning fires,
+            // and tallies count from the (service-desk classified) sample.
             record_count: 141,
             tickets: [
               { id: 1, tickettype_name: 'Incident' },
               { id: 2, tickettype_name: 'Service Request' },
               { id: 3, tickettype_name: 'Change Request' },
+              { id: 4, tickettype_name: 'Ninja Alert' }, // automated — not service-desk
+              { id: 5, tickettype_name: 'Vulnerability Alert' }, // automated
             ],
           },
         }),
       },
       {
         match: (r) => r.url.includes('/api/Tickets') && r.url.includes('datesearch=dateclosed'),
-        respond: () => ({ status: 200, json: { record_count: 135, tickets: [] } }),
+        respond: () => ({
+          status: 200,
+          json: {
+            record_count: 3,
+            tickets: [
+              { id: 1, tickettype_name: 'Incident', dateclosed: '2026-02-01T10:00:00Z' },
+              { id: 2, tickettype_name: 'Service Request', dateclosed: '2026-02-02T10:00:00Z' },
+              { id: 4, tickettype_name: 'Ninja Alert', dateclosed: '2026-02-03T10:00:00Z' }, // excluded
+            ],
+          },
+        }),
       },
       {
         match: (r) => r.url.includes('/api/Tickets') && r.url.includes('open_only=true'),
-        respond: () => ({ status: 200, json: { record_count: 9, tickets: [] } }),
+        respond: () => ({
+          status: 200,
+          json: { record_count: 3, tickets: [{ id: 6, tickettype_name: 'Incident' }, { id: 7, tickettype_name: 'Service Request' }, { id: 8, tickettype_name: 'Ninja Alert' }] },
+        }),
       },
       {
         match: (r) => r.url.includes('/api/ClientContract'),
@@ -111,13 +129,16 @@ describe('collectHaloDirect', () => {
       { baseUrl: 'https://x.halopsa.com', clientId: 'collect-1', clientSecret: 's' },
     );
     const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
-    expect(by['tickets.total']).toBe(141); // record_count, not row count
+    expect(by['tickets.total']).toBe(3); // service-desk only (Incident + Service + Change), NOT the 2 alerts
     expect(by['tickets.incidents']).toBe(1);
-    expect(by['tickets.closed']).toBe(135);
-    expect(by['tickets.open']).toBe(9);
+    expect(by['tickets.service']).toBe(1);
+    expect(by['tickets.changes']).toBe(1);
+    expect(by['tickets.alerts']).toBe(2); // Ninja + Vulnerability alerts surfaced separately
+    expect(by['tickets.closed']).toBe(2); // Incident + Service closed (alert excluded)
+    expect(by['tickets.open']).toBe(2); // Incident + Service open (alert excluded)
     expect(by['finance.mrr']).toBe(5050);
     expect(by['finance.quarter_invoiced']).toBe(10100); // Nov invoice excluded
-    // Sampled breakdown (3 rows of 141) warns
+    // Sampled tallies (5 rows of 141) warns
     expect(out.warnings.some((w) => w.includes('sampled'))).toBe(true);
   });
 
@@ -145,15 +166,14 @@ describe('collectHaloDirect', () => {
 
   it('sums a comma-separated multi-id mapping (service + billing entities)', async () => {
     const period = makePeriod(2026, 2);
+    const incidents = (n: number, base = 0) => Array.from({ length: n }, (_, i) => ({ id: base + i + 1, tickettype_name: 'Incident' }));
     const ticketsFor = (url: string): HttpResponse => {
       const u = new URL(url);
       const id = u.searchParams.get('client_id');
-      if (u.searchParams.get('datesearch') === 'dateoccurred') {
-        // Tickets live under 29 only (the "PSC" service entity).
-        return { status: 200, json: { record_count: id === '29' ? 12 : 0, tickets: id === '29' ? [{ tickettype_name: 'Incident' }] : [] } };
-      }
-      if (u.searchParams.get('datesearch') === 'dateclosed') return { status: 200, json: { record_count: id === '29' ? 10 : 0, tickets: [] } };
-      if (u.searchParams.get('open_only') === 'true') return { status: 200, json: { record_count: id === '29' ? 5 : 0, tickets: [] } };
+      // Tickets (all service-desk Incidents) live under 29 only — the service entity.
+      if (u.searchParams.get('datesearch') === 'dateoccurred') return { status: 200, json: { record_count: id === '29' ? 12 : 0, tickets: id === '29' ? incidents(12) : [] } };
+      if (u.searchParams.get('datesearch') === 'dateclosed') return { status: 200, json: { record_count: id === '29' ? 10 : 0, tickets: id === '29' ? incidents(10, 100) : [] } };
+      if (u.searchParams.get('open_only') === 'true') return { status: 200, json: { record_count: id === '29' ? 5 : 0, tickets: id === '29' ? incidents(5, 200) : [] } };
       // Unfiltered probe (zero-fallback check for id 62): genuinely no tickets.
       return { status: 200, json: { record_count: 0, tickets: [] } };
     };
@@ -296,7 +316,7 @@ describe('ticket-type allowlist + SLA', () => {
     expect(by['tickets.closed']).toBe(1);
   });
 
-  it('tallyHaloSla scans sla-prefixed fields tolerantly', () => {
+  it('tallyHaloSla scans sla-prefixed fields tolerantly (text fallback)', () => {
     expect(
       tallyHaloSla([
         { sla_response_state: 'Met' },
@@ -305,7 +325,7 @@ describe('ticket-type allowlist + SLA', () => {
         { sla_id: 3 }, // numeric — not counted
         { status: 'Closed' }, // not sla-keyed — not counted
       ]),
-    ).toEqual({ met: 2, breached: 1 });
+    ).toMatchObject({ met: 2, breached: 1, source: 'text' });
   });
 
   it('tallyHaloSla handles negations, multi-field rows, and SLA-name fields', () => {
@@ -316,7 +336,25 @@ describe('ticket-type allowlist + SLA', () => {
         { slaname: 'Respond within 4 hours', slastate: 'Breached' }, // the SLA *name* must not read as met
         { slaname: 'Respond within 4 hours' }, // only a name → not counted at all
       ]),
-    ).toEqual({ met: 0, breached: 3 });
+    ).toMatchObject({ met: 0, breached: 3 });
+  });
+
+  it('tallyHaloSla computes from SLA deadline vs actual dates (preferred over text)', () => {
+    const out = tallyHaloSla([
+      // Responded before the respond deadline and closed before the fix deadline → met.
+      { respondbydate: '2026-05-01T12:00:00Z', dateresponded: '2026-05-01T10:00:00Z', fixbydate: '2026-05-03T00:00:00Z', dateclosed: '2026-05-02T00:00:00Z' },
+      // Responded after the respond deadline → breached (even though it says "Met").
+      { respondbydate: '2026-05-01T09:00:00Z', dateresponded: '2026-05-01T10:00:00Z', sla_status: 'Met' },
+      // No deadline/actual pair → not considered by the date pass.
+      { sla_id: 7 },
+    ]);
+    expect(out).toMatchObject({ met: 1, breached: 1, source: 'dates' });
+  });
+
+  it('tallyHaloSla names the SLA-ish fields it saw when nothing is recognizable', () => {
+    const out = tallyHaloSla([{ respondbydate: '2026-05-01T09:00:00Z', slaname: 'Incident SLA' }]);
+    expect(out.source).toBe('none');
+    expect(out.seenKeys).toContain('respondbydate');
   });
 
   it('reports unavailable (not zeros) when list rows expose no ticket-type id', async () => {
@@ -341,6 +379,119 @@ describe('ticket-type allowlist + SLA', () => {
     expect(out.metrics.some((m) => m.key.startsWith('tickets.'))).toBe(false);
     expect(out.metrics.some((m) => m.key === 'finance.mrr')).toBe(true); // finance still flows
     expect(out.warnings.some((w) => w.includes("ticket-type filter can't be applied"))).toBe(true);
+  });
+});
+
+describe('classifyTicketType (ITIL, verified against the real Mash IT taxonomy)', () => {
+  it('separates automated alerts from human service-desk work', () => {
+    // Alerts (checked first — several contain other keywords).
+    for (const n of ['Ninja Alert', 'Vulnerability Alert', 'O365 MDR Alert', 'CIPP Alert', 'Printer Alert', 'Alert - Automated', 'Security Detection'])
+      expect(classifyTicketType(n)).toBe('alert');
+    // Service-desk ITIL classes.
+    expect(classifyTicketType('Incident')).toBe('incident');
+    expect(classifyTicketType('Security Incident')).toBe('incident');
+    expect(classifyTicketType('Change Request')).toBe('change');
+    expect(classifyTicketType('Software Change')).toBe('change');
+    expect(classifyTicketType('Service Request')).toBe('service_request');
+    expect(classifyTicketType('New User Request')).toBe('service_request');
+    expect(classifyTicketType('IT Question')).toBe('service_request');
+    expect(classifyTicketType('Problem')).toBe('problem');
+    expect(classifyTicketType('Maintenance - Patching')).toBe('maintenance');
+    // Neither service-desk nor alert.
+    for (const n of ['Triage', 'Internal Task', 'Business Review', 'Project', ''])
+      expect(classifyTicketType(n)).toBe('other');
+  });
+});
+
+describe('ITIL headline: service-desk vs automated alerts', () => {
+  it('resolves type ids via /api/TicketType, headlines service-desk, and breaks out alerts', async () => {
+    const period = makePeriod(2026, 2);
+    // Rows carry only tickettype_id (as the real Halo /api/Tickets does) — names
+    // come from /api/TicketType. Mostly automated alerts, a few real tickets.
+    const opened = [
+      { id: 1, tickettype_id: 43, dateoccurred: '2026-05-01T10:00:00Z' }, // Ninja Alert
+      { id: 2, tickettype_id: 33, dateoccurred: '2026-05-02T10:00:00Z' }, // Vulnerability Alert
+      { id: 3, tickettype_id: 43, dateoccurred: '2026-05-03T10:00:00Z' }, // Ninja Alert
+      { id: 4, tickettype_id: 1, dateoccurred: '2026-05-04T10:00:00Z' }, // Incident
+      { id: 5, tickettype_id: 3, dateoccurred: '2026-05-05T10:00:00Z' }, // Service Request
+      { id: 6, tickettype_id: 3, dateoccurred: '2026-05-06T10:00:00Z' }, // Service Request
+      { id: 7, tickettype_id: 2, dateoccurred: '2026-05-07T10:00:00Z' }, // Change Request
+    ];
+    const { http } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => r.url.includes('/api/TicketType'),
+        respond: () => ({
+          status: 200,
+          json: {
+            tickettypes: [
+              { id: 43, name: 'Ninja Alert' },
+              { id: 33, name: 'Vulnerability Alert' },
+              { id: 1, name: 'Incident' },
+              { id: 2, name: 'Change Request' },
+              { id: 3, name: 'Service Request' },
+            ],
+          },
+        }),
+      },
+      {
+        match: (r) => r.url.includes('/api/Tickets'),
+        respond: (r) => {
+          const u = new URL(r.url);
+          if (u.searchParams.get('open_only') === 'true') return { status: 200, json: { record_count: 1, tickets: [{ id: 9, tickettype_id: 43 }, { id: 10, tickettype_id: 1 }] } };
+          if (u.searchParams.get('datesearch') === 'dateoccurred') return { status: 200, json: { record_count: opened.length, tickets: opened } };
+          return { status: 200, json: { record_count: 0, tickets: [] } };
+        },
+      },
+      { match: (r) => r.url.includes('/api/ClientContract'), respond: () => ({ status: 200, json: { contracts: [] } }) },
+      { match: (r) => r.url.includes('/api/Invoice'), respond: () => ({ status: 200, json: { invoices: [] } }) },
+      { match: (r) => r.url.includes('/api/Asset'), respond: () => ({ status: 200, json: { assets: [] } }) },
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'anp', period, externalRef: '19' },
+      http,
+      // Fresh baseUrl so the instance-wide type-map cache is clean for this test.
+      { baseUrl: 'https://itil.halopsa.com', clientId: 'itil-1', clientSecret: 's' },
+    );
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['tickets.total']).toBe(4); // service-desk: incident + 2 service + change (NOT the 3 alerts)
+    expect(by['tickets.incidents']).toBe(1);
+    expect(by['tickets.service']).toBe(2);
+    expect(by['tickets.changes']).toBe(1);
+    expect(by['tickets.alerts']).toBe(3); // Ninja + Vulnerability alerts, surfaced separately
+    expect(by['tickets.open']).toBe(1); // of the 2 open rows, only the Incident is service-desk
+  });
+
+  it('falls back to counting all tickets (with a warning) when types cannot be resolved', async () => {
+    const period = makePeriod(2026, 2);
+    const opened = [
+      { id: 1, tickettype_id: 43, dateoccurred: '2026-05-01T10:00:00Z' },
+      { id: 2, tickettype_id: 1, dateoccurred: '2026-05-02T10:00:00Z' },
+    ];
+    const { http } = fakeHttp([
+      tokenRoute(),
+      // No /api/TicketType route → empty type map; rows carry only ids → unclassifiable.
+      {
+        match: (r) => r.url.includes('/api/Tickets'),
+        respond: (r) => {
+          const u = new URL(r.url);
+          if (u.searchParams.get('open_only') === 'true') return { status: 200, json: { record_count: 0, tickets: [] } };
+          if (u.searchParams.get('datesearch') === 'dateoccurred') return { status: 200, json: { record_count: opened.length, tickets: opened } };
+          return { status: 200, json: { record_count: 0, tickets: [] } };
+        },
+      },
+      { match: (r) => r.url.includes('/api/ClientContract'), respond: () => ({ status: 200, json: { contracts: [] } }) },
+      { match: (r) => r.url.includes('/api/Invoice'), respond: () => ({ status: 200, json: { invoices: [] } }) },
+      { match: (r) => r.url.includes('/api/Asset'), respond: () => ({ status: 200, json: { assets: [] } }) },
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'anp', period, externalRef: '19' },
+      http,
+      { baseUrl: 'https://noitil.halopsa.com', clientId: 'noitil-1', clientSecret: 's' },
+    );
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['tickets.total']).toBe(2); // all counted, not zero
+    expect(out.warnings.some((w) => w.includes("couldn't be resolved"))).toBe(true);
   });
 });
 

@@ -70,9 +70,14 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
   narrative and the scorecard framing reflect it with a light touch (compliance
   *intent*, never an audit report).
 - **Integrations** — every tool connects **directly with its own API
-  credentials**: HaloPSA (Client ID/Secret — tickets with real date windows
-  and a **ticket-type allowlist** so only the categories you report on count,
-  **SLA outcomes**, contracts/invoices for MRR + an **invoice breakdown by
+  credentials**: HaloPSA (Client ID/Secret — tickets with real date windows,
+  classified by **ITIL ticket type** (type ids resolved via `/api/TicketType`)
+  so the headline is human **service-desk** volume — Incidents / Service
+  Requests / Change Requests — while automated RMM/security tickets are broken
+  out as **Automated alerts** instead of inflating the count; an optional
+  **ticket-type allowlist** narrows it further; **SLA outcomes** computed from
+  each ticket's respond-by / fix-by deadline vs. the actual response/close;
+  contracts/invoices for MRR + an **invoice breakdown by
   Halo item group** — Managed Services / Subscriptions / Software…, ticket
   push), NinjaOne (API client,
   `monitoring` scope — devices, health, AV, **quarterly patch compliance**
