@@ -277,10 +277,24 @@ slot marks the QBR **scheduled** and pings the notification bell. Setup:
    `REPORTS_TENANT_ID` / `REPORTS_CLIENT_ID` / `REPORTS_CLIENT_SECRET`; or set
    `GRAPH_*` equivalents): *API permissions → Microsoft Graph → Application* →
    `Calendars.ReadWrite` → **Grant admin consent**.
-2. **Function App → Authentication → Edit** the identity provider → add
-   `/book/*` and `/api/book/*` to **Excluded paths** — clients must reach the
-   page without a Mash IT login. The unguessable 24-char token is the
-   authorization; the endpoints expose only display names and open slots.
+2. Make the booking routes public so clients reach them without a Mash IT
+   login. Easy Auth's **excluded paths** have no portal field (they are NOT the
+   "Allowed token audiences" box on the identity-provider page) — set them from
+   **Cloud Shell** (Bash), using path *prefixes*, not globs:
+
+   ```bash
+   az webapp auth update -g <rg> -n <app> --excluded-paths "/book" "/api/book"
+   ```
+
+   `/book` covers `/book/{token}` and `/api/book` covers `/api/book/{token}`
+   and its `/slots`. Then **verify in an incognito window** that
+   `https://<app>.azurewebsites.net/book/<token>` loads instead of redirecting
+   to login (the `--excluded-paths` flag has been buggy in some CLI versions;
+   if it mangles the value, fall back to `az webapp auth show > auth.json`, add
+   `"excludedPaths": ["/book","/api/book"]` under `globalValidation`, and
+   `az webapp auth set --body @auth.json`). The unguessable 24-char CSPRNG token
+   is the sole authorization; the endpoints expose only display names and open
+   slots.
 3. Set the **organizer email** in Settings and save.
 
 Without step 1 the page still works — it offers the configured windows without
