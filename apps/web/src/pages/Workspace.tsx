@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { Link as RouterLink, useParams, useSearchParams } from 'react-router-dom';
+import { Link as RouterLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Title,
   Group,
@@ -143,7 +143,9 @@ export function Workspace() {
   const [config, setConfig] = useState<ReportConfig | null>(null);
   const [disc, setDisc] = useState<Discussion | null>(null);
   const [client, setClient] = useState<Client | null>(null);
+  const [allClients, setAllClients] = useState<Client[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -156,7 +158,13 @@ export function Workspace() {
   const discKey = useRef('');
 
   useEffect(() => {
-    api.listClients().then((d) => setClient(d.clients.find((c) => c.id === clientId) ?? null)).catch(() => {});
+    api
+      .listClients()
+      .then((d) => {
+        setAllClients(d.clients);
+        setClient(d.clients.find((c) => c.id === clientId) ?? null);
+      })
+      .catch(() => {});
     api.getConfig(clientId).then(setConfig).catch(() => setConfig({ clientId }));
     api.system().then(setSystem).catch(() => {});
   }, [clientId]);
@@ -276,7 +284,27 @@ export function Workspace() {
     <Stack gap="lg">
       <Group justify="space-between" align="flex-end">
         <div>
-          <Title order={2}>{qbr?.model.client.name ?? client?.name ?? clientId}</Title>
+          <Group gap="sm" align="center">
+            <Title order={2}>{qbr?.model.client.name ?? client?.name ?? clientId}</Title>
+            {allClients.length > 1 && (
+              <Select
+                aria-label="Switch client"
+                placeholder="Switch client…"
+                searchable
+                w={200}
+                size="xs"
+                comboboxProps={{ withinPortal: true }}
+                data={allClients
+                  .filter((c) => c.qbrEnabled !== false || c.id === clientId)
+                  .map((c) => ({ value: c.id, label: c.name }))
+                  .sort((a, b) => a.label.localeCompare(b.label))}
+                value={null}
+                onChange={(v) => {
+                  if (v && v !== clientId) navigate(`/clients/${v}`);
+                }}
+              />
+            )}
+          </Group>
           <Group gap="xs" mt={4}>
             {meta && <StatusBadge status={meta.status} />}
             {qbr && <RatingBadge rating={qbr.model.scorecard.overall.rating} score={qbr.model.scorecard.overall.score} />}

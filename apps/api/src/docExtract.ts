@@ -43,11 +43,12 @@ export type DocExtractModel = (input: {
 const EXTRACT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
+  // metrics BEFORE note so the payload is generated first — if the response is
+  // ever truncated, the data survives rather than being lost to a long note.
   required: ['vendor', 'period_hint', 'metrics', 'note'],
   properties: {
     vendor: { type: 'string' },
     period_hint: { type: 'string' },
-    note: { type: 'string' },
     metrics: {
       type: 'array',
       items: {
@@ -64,6 +65,7 @@ const EXTRACT_SCHEMA = {
         },
       },
     },
+    note: { type: 'string', maxLength: 200 },
   },
 } as const;
 
@@ -85,7 +87,7 @@ Values:
 - category picks the report section each metric lands in: backup tools (Synology, Dropsuite, Veeam) → backup; email/EDR/SIEM/vulnerability → security; MFA/accounts → identity; tickets/SLA → operations; devices/network/hardware → infrastructure; invoices/costs → spend.
 
 period_hint: the quarter the document's CONTENT covers, formatted YYYY-QN (e.g. 2026-Q2), or "" if the document doesn't say.
-note: ONE sentence describing the document and any caveat the reviewer should know.
+note: ONE short sentence (max ~20 words) describing the document and any caveat the reviewer should know. Keep it terse.
 Return only the structured object.`;
 
 /** Build the default Claude-backed extractor (native PDF input, structured output). */
@@ -93,7 +95,9 @@ export function createClaudeDocExtractor(client: Anthropic = new Anthropic(), mo
   return async ({ pdfBase64, clientName, period, knownKeys, docCategory }) => {
     const params = {
       model: modelId,
-      max_tokens: 4000,
+      // Headroom for a rich multi-vendor QBR (many metrics). Structured output
+      // only yields invalid JSON when the response is truncated, so give it room.
+      max_tokens: 8000,
       system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
       output_config: { format: { type: 'json_schema', schema: EXTRACT_SCHEMA } },
       messages: [
@@ -115,9 +119,10 @@ export function createClaudeDocExtractor(client: Anthropic = new Anthropic(), mo
         },
       ],
     };
-    // `output_config.format` may lead the installed SDK type defs; cast the
-    // request rather than pin to a possibly-stale param type.
-    const response = await client.messages.create(params as unknown as Anthropic.MessageCreateParamsNonStreaming);
+    // Stream so a slow, PDF-heavy extraction doesn't hit the request timeout.
+    // `output_config.format` may lead the installed SDK type defs; cast rather
+    // than pin to a possibly-stale param type.
+    const response = await client.messages.stream(params as unknown as Anthropic.MessageStreamParams).finalMessage();
     const text = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map((b) => b.text)
@@ -126,6 +131,10 @@ export function createClaudeDocExtractor(client: Anthropic = new Anthropic(), mo
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
     } catch {
+      // With structured output, invalid JSON means the response was cut off.
+      if (response.stop_reason === 'max_tokens') {
+        throw new Error('The document is too large for one pass — the AI response was cut off. Try a smaller PDF, or split it and extract each part.');
+      }
       throw new Error(`Document extractor did not return valid JSON. Got: ${text.slice(0, 200)}`);
     }
     const rows = Array.isArray(parsed['metrics']) ? (parsed['metrics'] as Array<Record<string, unknown>>) : [];

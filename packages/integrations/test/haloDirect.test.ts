@@ -460,6 +460,12 @@ describe('ITIL headline: service-desk vs automated alerts', () => {
     expect(by['tickets.changes']).toBe(1);
     expect(by['tickets.alerts']).toBe(3); // Ninja + Vulnerability alerts, surfaced separately
     expect(by['tickets.open']).toBe(1); // of the 2 open rows, only the Incident is service-desk
+    // Every ticket metric carries its backing list for the drill-down.
+    const detailLen = (k: string) => out.metrics.find((m) => m.key === k)?.details?.length ?? 0;
+    expect(detailLen('tickets.total')).toBe(4);
+    expect(detailLen('tickets.incidents')).toBe(1);
+    expect(detailLen('tickets.service')).toBe(2);
+    expect(detailLen('tickets.alerts')).toBe(3);
   });
 
   it('falls back to counting all tickets (with a warning) when types cannot be resolved', async () => {

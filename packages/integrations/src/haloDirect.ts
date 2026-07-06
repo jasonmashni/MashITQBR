@@ -437,52 +437,69 @@ export interface SlaTally {
   source: 'dates' | 'text' | 'none';
   /** SLA/deadline-ish field keys the rows carried (only when source === 'none'). */
   seenKeys: string[];
+  /** The rows that breached — backs the SLA-breaches drill-down. */
+  breachedRows: Json[];
+}
+
+/** Per-row SLA state via the date pass (deadline vs actual). null = not scorable by dates. */
+function slaStateByDates(row: Json): 'met' | 'breached' | null {
+  const respondDeadline = firstDateMs(row, SLA_RESPOND_DEADLINE);
+  const responded = firstDateMs(row, SLA_RESPONDED);
+  const fixDeadline = firstDateMs(row, SLA_FIX_DEADLINE);
+  const closed = firstDateMs(row, SLA_CLOSED);
+  let considered = false;
+  let breach = false;
+  if (respondDeadline !== undefined && responded !== undefined) {
+    considered = true;
+    if (responded > respondDeadline) breach = true;
+  }
+  if (fixDeadline !== undefined && closed !== undefined) {
+    considered = true;
+    if (closed > fixDeadline) breach = true;
+  }
+  return considered ? (breach ? 'breached' : 'met') : null;
+}
+
+/** Per-row SLA state via the text pass (any breach wording wins). null = no state string. */
+function slaStateByText(row: Json): 'met' | 'breached' | null {
+  let sawBreach = false;
+  let sawMet = false;
+  for (const [k, v] of Object.entries(row)) {
+    if (!/sla/i.test(k) || /name|id$/i.test(k) || typeof v !== 'string' || !v) continue;
+    const s = v.toLowerCase();
+    if (SLA_BREACH_RE.test(s)) sawBreach = true;
+    else if (SLA_MET_RE.test(s)) sawMet = true;
+  }
+  return sawBreach ? 'breached' : sawMet ? 'met' : null;
 }
 
 export function tallyHaloSla(rows: Json[]): SlaTally {
   // 1) Date-based (deadline vs actual).
   let met = 0;
   let breached = 0;
-  let sawDates = false;
+  const breachedRows: Json[] = [];
   for (const row of rows) {
-    const respondDeadline = firstDateMs(row, SLA_RESPOND_DEADLINE);
-    const responded = firstDateMs(row, SLA_RESPONDED);
-    const fixDeadline = firstDateMs(row, SLA_FIX_DEADLINE);
-    const closed = firstDateMs(row, SLA_CLOSED);
-    let considered = false;
-    let breach = false;
-    if (respondDeadline !== undefined && responded !== undefined) {
-      considered = true;
-      if (responded > respondDeadline) breach = true;
-    }
-    if (fixDeadline !== undefined && closed !== undefined) {
-      considered = true;
-      if (closed > fixDeadline) breach = true;
-    }
-    if (considered) {
-      sawDates = true;
-      if (breach) breached++;
-      else met++;
-    }
+    const state = slaStateByDates(row);
+    if (state === null) continue;
+    if (state === 'breached') {
+      breached++;
+      breachedRows.push(row);
+    } else met++;
   }
-  if (sawDates && met + breached > 0) return { met, breached, source: 'dates', seenKeys: [] };
+  if (met + breached > 0) return { met, breached, source: 'dates', seenKeys: [], breachedRows };
 
   // 2) Text-state fallback.
   met = 0;
   breached = 0;
   for (const row of rows) {
-    let sawBreach = false;
-    let sawMet = false;
-    for (const [k, v] of Object.entries(row)) {
-      if (!/sla/i.test(k) || /name|id$/i.test(k) || typeof v !== 'string' || !v) continue;
-      const s = v.toLowerCase();
-      if (SLA_BREACH_RE.test(s)) sawBreach = true;
-      else if (SLA_MET_RE.test(s)) sawMet = true;
-    }
-    if (sawBreach) breached++;
-    else if (sawMet) met++;
+    const state = slaStateByText(row);
+    if (state === null) continue;
+    if (state === 'breached') {
+      breached++;
+      breachedRows.push(row);
+    } else met++;
   }
-  if (met + breached > 0) return { met, breached, source: 'text', seenKeys: [] };
+  if (met + breached > 0) return { met, breached, source: 'text', seenKeys: [], breachedRows };
 
   // 3) Nothing recognizable — name the SLA-ish keys we DID see, so it's tunable.
   const seen = new Set<string>();
@@ -491,7 +508,7 @@ export function tallyHaloSla(rows: Json[]): SlaTally {
       if (/sla|respond|fixby|resolution|breach|target|dueby/i.test(k)) seen.add(k);
     }
   }
-  return { met: 0, breached: 0, source: 'none', seenKeys: [...seen].slice(0, 15) };
+  return { met: 0, breached: 0, source: 'none', seenKeys: [...seen].slice(0, 15), breachedRows: [] };
 }
 
 export interface HaloFinanceInput {
@@ -949,30 +966,39 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
       const openCount = openRows.length > 0 ? openRows.filter(isServiceDesk).length : openTotal;
 
       const haloBase = cfg.baseUrl.replace(/\/+$/, '');
-      const ticketRows: DetailRow[] = openedSvc.slice(0, DETAIL_CAP).map((r) => ({
-        id: String(r['id'] ?? ''),
-        summary: clip(firstStr(r, ['summary', 'subject']) ?? ''),
-        type: ticketTypeName(r, typeMap) ?? (ticketTypeIdOf(r) !== undefined ? `type ${ticketTypeIdOf(r)!}` : ''),
-        opened: (firstStr(r, TICKET_OPENED_FIELDS) ?? '').slice(0, 10),
-        url: `${haloBase}/ticket?id=${String(r['id'] ?? '')}`,
-      }));
-      metrics.push({ ...op('tickets.total', 'Tickets opened', openedSvc.length, false), details: ticketRows });
+      // Map ticket rows to a drill-down list (each row deep-links into Halo).
+      const toDetail = (rows: Json[], dateFields = TICKET_OPENED_FIELDS, dateLabel = 'opened'): DetailRow[] =>
+        rows.slice(0, DETAIL_CAP).map((r) => ({
+          id: String(r['id'] ?? ''),
+          summary: clip(firstStr(r, ['summary', 'subject']) ?? ''),
+          type: ticketTypeName(r, typeMap) ?? (ticketTypeIdOf(r) !== undefined ? `type ${ticketTypeIdOf(r)!}` : ''),
+          [dateLabel]: (firstStr(r, dateFields) ?? '').slice(0, 10),
+          url: `${haloBase}/ticket?id=${String(r['id'] ?? '')}`,
+        }));
 
-      // ITIL breakdown of the service-desk tickets.
-      const cnt = (rows: Json[], cls: ItilClass) => rows.filter((r) => classOf(r) === cls).length;
-      metrics.push(
-        op('tickets.incidents', 'Incidents', cnt(openedSvc, 'incident'), false),
-        op('tickets.service', 'Service requests', cnt(openedSvc, 'service_request')),
-        op('tickets.changes', 'Change requests', cnt(openedSvc, 'change')),
-      );
+      const incidentRows = openedSvc.filter((r) => classOf(r) === 'incident');
+      const serviceRows = openedSvc.filter((r) => classOf(r) === 'service_request');
+      const changeRows = openedSvc.filter((r) => classOf(r) === 'change');
+      const alertRows = openedRows.filter((r) => classOf(r) === 'alert');
+      const openSvcRows = openRows.filter(isServiceDesk);
+
+      // Every ticket metric carries its backing list so the Data tab / report
+      // drill-downs open the actual tickets behind the number.
+      metrics.push({ ...op('tickets.total', 'Tickets opened', openedSvc.length, false), details: toDetail(openedSvc) });
+      metrics.push({ ...op('tickets.incidents', 'Incidents', incidentRows.length, false), details: toDetail(incidentRows) });
+      metrics.push({ ...op('tickets.service', 'Service requests', serviceRows.length), details: toDetail(serviceRows) });
+      metrics.push({ ...op('tickets.changes', 'Change requests', changeRows.length), details: toDetail(changeRows) });
 
       // Automated alerts across ALL opened tickets — the RMM/security noise the
       // MSP absorbs, surfaced separately so it never inflates the ticket count.
-      const alerts = openedRows.filter((r) => classOf(r) === 'alert').length;
-      if (alerts > 0) metrics.push(op('tickets.alerts', 'Automated alerts', alerts, false));
+      if (alertRows.length > 0) metrics.push({ ...op('tickets.alerts', 'Automated alerts', alertRows.length, false), details: toDetail(alertRows) });
 
-      metrics.push(op('tickets.closed', 'Tickets closed', closedSvc.length, true));
-      metrics.push(op('tickets.open', 'Open tickets', openCount, false));
+      metrics.push({ ...op('tickets.closed', 'Tickets closed', closedSvc.length, true), details: toDetail(closedSvc, TICKET_CLOSED_FIELDS, 'closed') });
+      metrics.push({
+        ...op('tickets.open', 'Open tickets', openCount, false),
+        // Open detail only when we classified from rows (not the count-only fallback).
+        ...(openRows.length > 0 ? { details: toDetail(openSvcRows) } : {}),
+      });
 
       if (openedRows.length < openedTotal) {
         warnings.push(`Ticket tallies sampled from the first ${openedRows.length} of ${openedTotal} opened tickets — the ITIL breakdown may be partial.`);
@@ -990,7 +1016,7 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
             higherIsBetter: true,
           }),
         );
-        if (sla.breached > 0) metrics.push(op('sla.breaches', 'SLA breaches', sla.breached, false));
+        if (sla.breached > 0) metrics.push({ ...op('sla.breaches', 'SLA breaches', sla.breached, false), details: toDetail(sla.breachedRows) });
       } else if (openedSvc.length > 0) {
         warnings.push(
           `Halo SLA state not recognized on ticket rows — SLA reporting needs tuning against this instance${

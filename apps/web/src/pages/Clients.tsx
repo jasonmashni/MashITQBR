@@ -20,11 +20,13 @@ import {
   Tooltip,
   SegmentedControl,
   Autocomplete,
+  Select,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
-import { IconDownload, IconPlus, IconPencil, IconExternalLink } from '@tabler/icons-react';
+import { IconDownload, IconPlus, IconPencil, IconExternalLink, IconRefresh } from '@tabler/icons-react';
 import { api } from '../api.js';
+import { lastPeriods } from '../periods.js';
 import type { Client } from '../types.js';
 
 // Per-client external ids the sync pipeline reads off `integrationRefs`.
@@ -46,11 +48,39 @@ export function Clients() {
   const [draft, setDraft] = useState<Client | null>(null);
   const [isNew, setIsNew] = useState(false);
   const [filter, setFilter] = useState<'qbr' | 'all'>('qbr');
+  const [syncPeriod, setSyncPeriod] = useState('');
+  const [syncing, setSyncing] = useState<{ done: number; total: number } | null>(null);
 
   const load = () => api.listClients().then((d) => setClients(d.clients)).finally(() => setLoading(false));
   useEffect(() => {
     load();
+    api.currentPeriod().then((p) => setSyncPeriod(p.period)).catch(() => {});
   }, []);
+
+  /** Sync every QBR-enabled client for the chosen quarter, sequentially (gentle on the vendor APIs). */
+  async function syncAll() {
+    const targets = clients.filter((c) => c.qbrEnabled !== false);
+    if (targets.length === 0 || !syncPeriod) return;
+    setSyncing({ done: 0, total: targets.length });
+    let ok = 0;
+    const failed: string[] = [];
+    for (const c of targets) {
+      try {
+        await api.sync(c.id, syncPeriod);
+        ok += 1;
+      } catch {
+        failed.push(c.name);
+      }
+      setSyncing((s) => (s ? { ...s, done: s.done + 1 } : s));
+    }
+    setSyncing(null);
+    notifications.show({
+      color: failed.length ? 'yellow' : 'teal',
+      title: `Synced ${ok}/${targets.length} for ${syncPeriod}`,
+      message: failed.length ? `Couldn't sync: ${failed.slice(0, 5).join(', ')}${failed.length > 5 ? '…' : ''}` : 'All QBR clients pulled fresh data.',
+    });
+    await load();
+  }
 
   async function onImport() {
     setImporting(true);
@@ -109,6 +139,27 @@ export function Clients() {
           <Text c="dimmed" size="sm">Flip <b>QBR</b> on for the clients you review — only those appear on the dashboard. Imports start off.</Text>
         </div>
         <Group>
+          {syncPeriod && (
+            <Select
+              aria-label="Quarter to sync"
+              size="sm"
+              w={120}
+              data={lastPeriods(syncPeriod, 6)}
+              value={syncPeriod}
+              onChange={(v) => v && setSyncPeriod(v)}
+              allowDeselect={false}
+              disabled={!!syncing}
+            />
+          )}
+          <Button
+            variant="light"
+            leftSection={<IconRefresh size={16} />}
+            loading={!!syncing}
+            onClick={syncAll}
+            disabled={clients.filter((c) => c.qbrEnabled !== false).length === 0}
+          >
+            {syncing ? `Syncing ${syncing.done}/${syncing.total}…` : 'Sync all'}
+          </Button>
           <Button variant="default" leftSection={<IconPlus size={16} />} onClick={create}>New client</Button>
           <Button leftSection={<IconDownload size={16} />} loading={importing} onClick={onImport}>Import from Halo</Button>
         </Group>

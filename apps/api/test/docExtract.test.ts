@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { createClaudeDocExtractor, pdfSourceSlug } from '../src/docExtract.js';
 
-function fakeAnthropic(reply: unknown) {
+/** Fake Anthropic client — the extractor streams, so expose messages.stream().finalMessage(). */
+function fakeAnthropic(reply: unknown, opts: { rawText?: string; stopReason?: string } = {}) {
   const calls: Array<Record<string, unknown>> = [];
+  const message = {
+    content: [{ type: 'text', text: opts.rawText ?? JSON.stringify(reply) }],
+    stop_reason: opts.stopReason ?? 'end_turn',
+  };
   const client = {
     messages: {
-      async create(params: Record<string, unknown>) {
+      stream(params: Record<string, unknown>) {
         calls.push(params);
-        return { content: [{ type: 'text', text: JSON.stringify(reply) }] };
+        return { async finalMessage() { return message; } };
       },
     },
   };
@@ -56,6 +61,12 @@ describe('AI document metric extraction', () => {
   it('blanks an unparseable period hint', async () => {
     const { client } = fakeAnthropic({ vendor: 'X', period_hint: 'last quarter', note: '', metrics: [] });
     expect((await createClaudeDocExtractor(client)(input)).periodHint).toBe('');
+  });
+
+  it('gives a clear "too large" error when the response is truncated (max_tokens)', async () => {
+    // A truncated structured-output reply: valid JSON start, cut off mid-object.
+    const { client } = fakeAnthropic(null, { rawText: '{"vendor":"Mash IT+","period_hint":"2026-Q1","metrics":[{"key":"doc.a","label":"A","valu', stopReason: 'max_tokens' });
+    await expect(createClaudeDocExtractor(client)(input)).rejects.toThrow(/too large|cut off/i);
   });
 });
 
