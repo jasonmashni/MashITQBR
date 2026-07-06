@@ -5,7 +5,7 @@ import type { Rating } from './types.js';
 export const uid = () => Math.random().toString(36).slice(2, 9);
 
 const RATING_COLOR: Record<Rating, string> = {
-  green: 'teal',
+  green: 'green',
   amber: 'yellow',
   red: 'red',
   unknown: 'gray',
@@ -24,7 +24,7 @@ const STATUS_COLOR: Record<string, string> = {
   data_synced: 'blue',
   narrative_approved: 'indigo',
   scheduled: 'grape',
-  completed: 'teal',
+  completed: 'green',
   dispositioned: 'cyan',
   actions_pushed: 'green',
   archived: 'dark',

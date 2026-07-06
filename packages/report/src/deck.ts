@@ -168,8 +168,12 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
   {
     const s = pptx.addSlide({ masterName: 'TITLE' });
     s.addShape('rect', { x: 0, y: 0, w: PAGE_W, h: 0.22, fill: { color: ACCENT }, line: { type: 'none' } });
-    logo(s, brand.orgLogoDataUri, { x: CONTENT_X, y: 0.45, w: 2.8, h: 0.85, anchor: 'left' });
-    logo(s, brand.logoDataUri, { x: PAGE_W - CONTENT_X - 2.2, y: 0.45, w: 2.2, h: 0.85, anchor: 'right' });
+    logo(s, brand.orgLogoDataUri, { x: CONTENT_X, y: 0.42, w: 2.8, h: 0.78, anchor: 'left' });
+    if (brand.tagline) {
+      s.addText(brand.tagline, { x: CONTENT_X, y: 1.24, w: 4, h: 0.3, fontFace: FONT, fontSize: 10, color: ACCENT, bold: true, valign: 'top' });
+    }
+    // Client logo sits larger (often a small square next to a wide wordmark).
+    logo(s, brand.logoDataUri, { x: PAGE_W - CONTENT_X - 2.4, y: 0.3, w: 2.4, h: 1.2, anchor: 'right' });
 
     s.addShape('rect', { x: CONTENT_X, y: 2.6, w: 0.12, h: 2.15, fill: { color: ACCENT }, line: { type: 'none' } });
     s.addText('QUARTERLY BUSINESS REVIEW', {
@@ -397,9 +401,16 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
   // ── Thank-you / contact ─────────────────────────────────────────────────
   {
     const s = pptx.addSlide({ masterName: 'TITLE' });
+    // Deep brand field with a top accent bar; all text is LIGHT for guaranteed
+    // contrast on the dark background (no dark-on-blue).
     s.addShape('rect', { x: 0, y: 0, w: PAGE_W, h: 7.5, fill: { color: PRIMARY }, line: { type: 'none' } });
-    s.addText('Thank you', { x: CONTENT_X, y: 2.9, w: 8, h: 0.9, fontFace: FONT, fontSize: 40, color: 'FFFFFF', bold: true, valign: 'top' });
-    s.addText(`${brand.orgName} — your IT partner`, { x: CONTENT_X, y: 3.85, w: 9, h: 0.5, fontFace: FONT, fontSize: 16, color: hex(brand.accent), valign: 'top' });
+    s.addShape('rect', { x: 0, y: 0, w: PAGE_W, h: 0.22, fill: { color: ACCENT }, line: { type: 'none' } });
+    s.addShape('rect', { x: CONTENT_X, y: 2.78, w: 0.12, h: 1.9, fill: { color: ACCENT }, line: { type: 'none' } });
+    s.addText('Thank you', { x: 0.95, y: 2.8, w: 11, h: 0.95, fontFace: FONT, fontSize: 44, color: 'FFFFFF', bold: true, valign: 'top' });
+    s.addText(brand.tagline || `${brand.orgName} — your IT partner`, {
+      x: 0.95, y: 3.85, w: 11, h: 0.5, fontFace: FONT, fontSize: 18, color: 'C7D6EE', italic: true, valign: 'top',
+    });
+    s.addText(`Prepared by ${brand.orgName}`, { x: 0.95, y: 4.5, w: 11, h: 0.4, fontFace: FONT, fontSize: 13, color: '8FA6C8', valign: 'top' });
   }
 
   const out = await pptx.write({ outputType: 'nodebuffer' });

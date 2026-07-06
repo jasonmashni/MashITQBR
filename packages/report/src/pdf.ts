@@ -231,10 +231,14 @@ const COVER_BAND_H = 132;
 function coverPage(m: ReportModel): Node[] {
   const brand = m.brand;
   const logos: Node[] = [];
-  const org = logoNode(brand.orgLogoDataUri, { width: 190, height: 48 });
-  const client = logoNode(brand.logoDataUri, { width: 150, height: 48, alignment: 'right' });
-  if (org && client) logos.push({ columns: [org, client] });
-  else if (org) logos.push(org);
+  const org = logoNode(brand.orgLogoDataUri, { width: 200, height: 54 });
+  // The client logo sits larger (often a small square beside a wide wordmark).
+  const client = logoNode(brand.logoDataUri, { width: 160, height: 82, alignment: 'right' });
+  const orgBlock: Node | undefined = org
+    ? { width: '*', stack: [org, ...(brand.tagline ? [{ text: brand.tagline, color: brand.accent, fontSize: 10, bold: true, margin: [0, 5, 0, 0] as number[] }] : [])] }
+    : undefined;
+  if (orgBlock && client) logos.push({ columns: [orgBlock, { width: 'auto', stack: [client] }], columnGap: 16 });
+  else if (orgBlock) logos.push(orgBlock);
 
   return [
     ...logos,

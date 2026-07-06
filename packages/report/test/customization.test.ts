@@ -60,7 +60,7 @@ describe('renderReportHtml customization', () => {
   const html = renderReportHtml(model);
 
   it('embeds the logo and name but keeps the house colors', () => {
-    expect(html).toContain('<img class="logo" src="data:image/png;base64,AAAA"');
+    expect(html).toContain('<img class="logo-client" src="data:image/png;base64,AAAA"');
     expect(html).toContain('Acme MSP');
     expect(html).toContain(`--primary:${MASH_IT_BRAND.primary}`);
     expect(html).not.toContain('#123456');

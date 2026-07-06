@@ -15,6 +15,8 @@ export interface BrandTokens {
   ink: string;
   bg: string;
   font: string;
+  /** MSP tagline, shown under the cover logo. */
+  tagline: string;
 }
 
 /**
@@ -25,9 +27,9 @@ export interface BrandTokens {
 export const MASH_IT_WORDMARK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="64" viewBox="0 0 300 64">
 <rect x="2" y="8" width="48" height="48" rx="10" fill="#0b2545"/>
 <path d="M12 46V22l7 12 7-12v24" stroke="#ffffff" stroke-width="3.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M36 46V30" stroke="#4cc9be" stroke-width="3.4" stroke-linecap="round"/>
-<circle cx="36" cy="23.5" r="2.4" fill="#4cc9be"/>
-<text x="62" y="40" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="700" fill="#0b2545">MASH <tspan fill="#1d7874">IT</tspan></text>
+<path d="M36 46V30" stroke="#2f7bff" stroke-width="3.4" stroke-linecap="round"/>
+<circle cx="36" cy="23.5" r="2.4" fill="#2f7bff"/>
+<text x="62" y="40" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="700" fill="#0b2545">MASH <tspan fill="#004aad">IT</tspan></text>
 <text x="63" y="55" font-family="Segoe UI, Arial, sans-serif" font-size="10" letter-spacing="2.6" fill="#5a6b7b">MANAGED IT SERVICES</text>
 </svg>`;
 
@@ -39,10 +41,11 @@ export const MASH_IT_BRAND: BrandTokens = {
   orgName: 'Mash IT',
   orgLogoDataUri: MASH_IT_WORDMARK_DATA_URI,
   primary: '#0b2545',
-  accent: '#1d7874',
+  accent: '#004aad', // Mash IT blue
   ink: '#1a1a1a',
   bg: '#ffffff',
   font: "'Segoe UI', system-ui, -apple-system, sans-serif",
+  tagline: 'Your I.T. — Our Priority',
 };
 
 /**

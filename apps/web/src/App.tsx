@@ -15,6 +15,7 @@ import {
   Indicator,
   Stack,
   Anchor,
+  Select,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
@@ -148,6 +149,38 @@ function NotificationBell() {
   );
 }
 
+/** Global client jumper in the header — reflects the client you're viewing and
+ *  navigates straight to any other, from anywhere in the app. */
+function ClientSwitcher() {
+  const [clients, setClients] = useState<Array<{ id: string; name: string; qbrEnabled?: boolean }>>([]);
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    api.listClients().then((d) => setClients(d.clients)).catch(() => {});
+  }, []);
+  const current = pathname.match(/^\/clients\/([^/]+)/)?.[1] ?? null;
+  if (clients.length === 0) return null;
+  const data = clients
+    .filter((c) => c.qbrEnabled !== false || c.id === current)
+    .map((c) => ({ value: c.id, label: c.name }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  return (
+    <Select
+      aria-label="Go to client"
+      placeholder="Go to client…"
+      searchable
+      clearable={false}
+      w={240}
+      visibleFrom="sm"
+      comboboxProps={{ withinPortal: true }}
+      leftSection={<IconUsers size={16} stroke={1.6} />}
+      data={data}
+      value={current}
+      onChange={(v) => v && v !== current && navigate(`/clients/${v}`)}
+    />
+  );
+}
+
 function UserMenu() {
   const [me, setMe] = useState<Me | null>(null);
   useEffect(() => {
@@ -159,7 +192,7 @@ function UserMenu() {
       <Menu.Target>
         <UnstyledButton aria-label="Account menu">
           <Group gap={8}>
-            <Avatar radius="xl" size={32} color="teal" variant="filled">{initials(me.name)}</Avatar>
+            <Avatar radius="xl" size={32} color="brand" variant="filled">{initials(me.name)}</Avatar>
             <Box visibleFrom="sm">
               <Group gap={4}>
                 <Text size="sm" fw={600} lh={1.1}>{me.name}</Text>
@@ -198,17 +231,18 @@ export function App() {
         <Group h="100%" px="md" gap="sm" justify="space-between">
           <Group gap="sm">
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
-            <ThemeIcon size={34} radius="md" variant="gradient" gradient={{ from: 'navy.9', to: 'teal.7', deg: 135 }}>
+            <ThemeIcon size={34} radius="md" variant="gradient" gradient={{ from: 'navy.9', to: 'brand.6', deg: 135 }}>
               <IconChartHistogram size={20} />
             </ThemeIcon>
             <Box>
               <Text fw={700} size="lg" lh={1}>
-                Mash IT <Text span c="teal.7" fw={700}>QBR</Text>
+                Mash IT <Text span c="brand.8" fw={700}>QBR</Text>
               </Text>
-              <Text size="xs" c="dimmed" lh={1.2}>Quarterly Business Reviews</Text>
+              <Text size="xs" c="dimmed" lh={1.2}>Your I.T. — Our Priority</Text>
             </Box>
           </Group>
           <Group gap="sm">
+            <ClientSwitcher />
             <NotificationBell />
             <UserMenu />
           </Group>

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { Link as RouterLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link as RouterLink, useParams, useSearchParams } from 'react-router-dom';
 import {
   Title,
   Group,
@@ -34,6 +34,7 @@ import {
   SegmentedControl,
   CopyButton,
   Stepper,
+  Popover,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { RadarChart, BarChart } from '@mantine/charts';
@@ -62,6 +63,8 @@ import {
   IconSparkles,
   IconTableImport,
   IconCheck,
+  IconInfoCircle,
+  IconMail,
 } from '@tabler/icons-react';
 import { api, documentUrl, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
@@ -143,9 +146,7 @@ export function Workspace() {
   const [config, setConfig] = useState<ReportConfig | null>(null);
   const [disc, setDisc] = useState<Discussion | null>(null);
   const [client, setClient] = useState<Client | null>(null);
-  const [allClients, setAllClients] = useState<Client[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
-  const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -158,13 +159,12 @@ export function Workspace() {
   const discKey = useRef('');
 
   useEffect(() => {
-    api
-      .listClients()
-      .then((d) => {
-        setAllClients(d.clients);
-        setClient(d.clients.find((c) => c.id === clientId) ?? null);
-      })
-      .catch(() => {});
+    // Switching clients: clear stale report state so the header + tabs never
+    // show the previous client's data while the new one loads.
+    setClient(null);
+    setQbr(null);
+    setError(null);
+    api.listClients().then((d) => setClient(d.clients.find((c) => c.id === clientId) ?? null)).catch(() => {});
     api.getConfig(clientId).then(setConfig).catch(() => setConfig({ clientId }));
     api.system().then(setSystem).catch(() => {});
   }, [clientId]);
@@ -284,27 +284,7 @@ export function Workspace() {
     <Stack gap="lg">
       <Group justify="space-between" align="flex-end">
         <div>
-          <Group gap="sm" align="center">
-            <Title order={2}>{qbr?.model.client.name ?? client?.name ?? clientId}</Title>
-            {allClients.length > 1 && (
-              <Select
-                aria-label="Switch client"
-                placeholder="Switch client…"
-                searchable
-                w={200}
-                size="xs"
-                comboboxProps={{ withinPortal: true }}
-                data={allClients
-                  .filter((c) => c.qbrEnabled !== false || c.id === clientId)
-                  .map((c) => ({ value: c.id, label: c.name }))
-                  .sort((a, b) => a.label.localeCompare(b.label))}
-                value={null}
-                onChange={(v) => {
-                  if (v && v !== clientId) navigate(`/clients/${v}`);
-                }}
-              />
-            )}
-          </Group>
+          <Title order={2}>{client?.name ?? qbr?.model.client.name ?? clientId}</Title>
           <Group gap="xs" mt={4}>
             {meta && <StatusBadge status={meta.status} />}
             {qbr && <RatingBadge rating={qbr.model.scorecard.overall.rating} score={qbr.model.scorecard.overall.score} />}
@@ -1552,28 +1532,39 @@ function ReportsTab({
   return (
     <Stack gap="lg">
       <Card withBorder radius="md" padding="lg">
-        <Group justify="space-between" mb="sm">
-          <div>
-            <Title order={5}>Report repository</Title>
-            <Text size="xs" c="dimmed">
-              Every vendor report and upload for this client, across all quarters — Huntress attaches on Sync, the report inbox
-              files what you forward, and uploads land in the selected quarter ({period}). Rename, categorize, or move anything
-              filed to the wrong quarter — or let <b>AI match</b> read each PDF and suggest all three, then accept with one click.
-              The <b>table-import</b> button reads a PDF's numbers into that quarter's data (great for Check Point checkups and for
-              ingesting a previous QBR so trends have history). PDFs are appended to that quarter's QBR PDF and ride on its email draft.
-            </Text>
-          </div>
+        <Group justify="space-between" wrap="nowrap">
+          <Group gap={6}>
+            <Title order={5}>Reports</Title>
+            <Popover width={340} withArrow position="bottom-start" shadow="md">
+              <Popover.Target>
+                <ActionIcon variant="subtle" color="gray" size="sm" aria-label="How reports work">
+                  <IconInfoCircle size={17} />
+                </ActionIcon>
+              </Popover.Target>
+              <Popover.Dropdown>
+                <Text size="xs">
+                  Every vendor report and upload for this client, across all quarters (Huntress attaches on Sync, forwarded
+                  email files itself, uploads land in the selected quarter). Rename, categorize, or move any to the right
+                  quarter — or <b>AI match</b> fills all three. The <b>table-import</b> icon (
+                  <IconTableImport size={12} style={{ verticalAlign: 'middle' }} />) reads a PDF's numbers into that quarter's data.
+                </Text>
+                <Text size="xs" mt="xs">
+                  <b>Add a previous QBR:</b> upload it, click <IconTableImport size={12} style={{ verticalAlign: 'middle' }} />,
+                  confirm the auto-detected <b>target quarter</b> in the review, and accept — those figures become that quarter's
+                  snapshot, so this report shows real quarter-over-quarter trends.
+                </Text>
+              </Popover.Dropdown>
+            </Popover>
+          </Group>
           <Group gap="xs">
             {aiEnabled && (docs ?? []).some(isPdf) && (
-              <Tooltip label="The AI reads each PDF and suggests the vendor, a clean name, the quarter its content covers, and a category — you accept each match with one click.">
-                <Button variant="light" color="teal" loading={bulkMatching} leftSection={<IconSparkles size={16} />} onClick={analyzeAll}>
-                  AI match PDFs
-                </Button>
-              </Tooltip>
+              <Button variant="subtle" color="brand" loading={bulkMatching} leftSection={<IconSparkles size={16} />} onClick={analyzeAll}>
+                AI match
+              </Button>
             )}
             <FileButton onChange={upload} accept="application/pdf,image/*,.csv,.xlsx,.docx">
               {(props) => (
-                <Button {...props} variant="light" loading={uploading} leftSection={<IconUpload size={16} />}>
+                <Button {...props} loading={uploading} leftSection={<IconUpload size={16} />}>
                   Upload to {period}
                 </Button>
               )}
@@ -1581,45 +1572,24 @@ function ReportsTab({
           </Group>
         </Group>
         {inboxAddress ? (
-          <Alert color="teal" variant="light" p="xs">
-            <Group gap="xs" wrap="nowrap" align="flex-start">
-              <Text size="xs" style={{ flex: 1 }}>
-                This client's report inbox:{' '}
-                <Text span fw={700} style={{ userSelect: 'all' }}>{inboxAddress}</Text>
-                {' '}— schedule vendor reports to send here, or forward them yourself (checked every 5 minutes). No quarter tag in
-                the subject = the current quarter; add one like “2026-Q2” to aim at a specific QBR.
-              </Text>
-              <CopyButton value={inboxAddress}>
-                {({ copied, copy }) => (
-                  <Button size="compact-xs" variant={copied ? 'filled' : 'light'} color="teal" onClick={copy}>
-                    {copied ? 'Copied' : 'Copy address'}
-                  </Button>
-                )}
-              </CopyButton>
-              <Tooltip label="Drain the mailbox right now instead of waiting for the 5-minute timer.">
-                <Button size="compact-xs" variant="light" color="teal" loading={pollingInbox} onClick={checkInboxNow}>
-                  Check now
-                </Button>
-              </Tooltip>
-            </Group>
-          </Alert>
-        ) : (
-          <Alert color="gray" variant="light" p="xs">
-            <Text size="xs">
-              <b>Report inbox not set up yet.</b> Once configured, this client gets its own email address to receive scheduled
-              vendor reports. The 3-step setup is on the <Anchor component={RouterLink} to="/settings" size="xs">Settings page</Anchor>.
+          <Group gap="xs" wrap="nowrap" mt="sm">
+            <IconMail size={15} style={{ color: 'var(--mantine-color-dimmed)', flexShrink: 0 }} />
+            <Text size="xs" c="dimmed" style={{ flex: 1 }} lineClamp={1}>
+              Inbox <Text span fw={600} c="brand.8" style={{ userSelect: 'all' }}>{inboxAddress}</Text> — forward or schedule vendor reports here (tag the subject “2026-Q2” to aim a quarter).
             </Text>
-          </Alert>
-        )}
-        <Alert color="blue" variant="light" p="xs" mt="xs" icon={<IconTableImport size={16} />}>
-          <Text size="xs">
-            <b>Adding a previous QBR (for quarter-over-quarter history)?</b> 1) <b>Upload</b> the old QBR PDF here. 2) Click the
-            <b> table-import</b> icon (<IconTableImport size={12} style={{ verticalAlign: 'middle' }} />) on its row to have the AI
-            read its numbers. 3) In the review that opens, confirm the <b>target quarter</b> (it auto-detects the quarter the PDF
-            covers) and accept — those figures become that quarter's snapshot, so this quarter's report shows real QoQ trends. You
-            don't need to switch the period picker first; the target quarter is chosen in the review.
+            <CopyButton value={inboxAddress}>
+              {({ copied, copy }) => (
+                <Button size="compact-xs" variant={copied ? 'filled' : 'subtle'} onClick={copy}>{copied ? 'Copied' : 'Copy'}</Button>
+              )}
+            </CopyButton>
+            <Button size="compact-xs" variant="subtle" loading={pollingInbox} onClick={checkInboxNow}>Check now</Button>
+          </Group>
+        ) : (
+          <Text size="xs" c="dimmed" mt="sm">
+            Report inbox not set up — give this client its own forwarding address via the{' '}
+            <Anchor component={RouterLink} to="/settings" size="xs">Settings page</Anchor>.
           </Text>
-        </Alert>
+        )}
       </Card>
 
       <Card withBorder radius="md" padding="lg">

@@ -31,8 +31,10 @@ body{font-family:${brand.font};color:var(--ink);margin:0;background:var(--bg);fo
 h1{color:var(--primary);font-size:30px;margin:0 0 4px}
 h2{color:var(--primary);font-size:18px;border-bottom:2px solid var(--accent);padding-bottom:4px;margin:24px 0 12px}
 .brandbar{color:var(--accent);font-weight:600;letter-spacing:.04em}
-.logos{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin:0 0 20px}
-.logo{max-height:64px;max-width:280px;display:block}
+.logos{display:flex;justify-content:space-between;align-items:center;gap:24px;margin:0 0 20px}
+.logo{max-height:70px;max-width:300px;display:block}
+.logo-client{max-height:104px;max-width:200px;display:block}
+.tagline{color:var(--accent);font-weight:600;letter-spacing:.02em;margin:2px 0 0}
 .meta{color:#555;margin:2px 0}
 table{width:100%;border-collapse:collapse;margin:8px 0}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e3e3e3;vertical-align:top}
@@ -60,8 +62,12 @@ ul{margin:6px 0;padding-left:20px}
 }
 
 function renderLogos(brand: BrandTokens): string {
-  const org = `<img class="logo" src="${esc(brand.orgLogoDataUri)}" alt="${esc(brand.orgName)} logo">`;
-  const client = brand.logoDataUri ? `<img class="logo" src="${esc(brand.logoDataUri)}" alt="${esc(brand.name)} logo">` : '';
+  const org = `<div><img class="logo" src="${esc(brand.orgLogoDataUri)}" alt="${esc(brand.orgName)} logo">${
+    brand.tagline ? `<div class="tagline">${esc(brand.tagline)}</div>` : ''
+  }</div>`;
+  // The client's logo sits larger so it reads as a peer to the MSP wordmark
+  // (client logos are often small squares next to a wide wordmark).
+  const client = brand.logoDataUri ? `<img class="logo-client" src="${esc(brand.logoDataUri)}" alt="${esc(brand.name)} logo">` : '';
   return `<div class="logos">${org}${client}</div>`;
 }
 
