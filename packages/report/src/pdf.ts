@@ -1,6 +1,7 @@
 import type { DiscussionItem, FunctionScore, MetricTrend, Rating } from '@mashit/core';
 import type { BrandTokens } from './brand.js';
 import { formatPercent, formatValue, ratingColor, discussionOutcome, trendDeltaText, goalStatusLabel, goalStatusColor } from './format.js';
+import { moversBarChartSvg, selectKpiTiles } from './charts.js';
 import type { ReportModel, ReportSection } from './model.js';
 
 /**
@@ -141,31 +142,9 @@ function sectionTable(section: ReportSection, brand: BrandTokens): Node {
   };
 }
 
-/** Priority order for the executive KPI band (first four available win). */
-const KPI_CANDIDATES: Array<{ key: string; label: string }> = [
-  { key: 'tickets.total', label: 'Tickets handled' },
-  { key: 'email.threats_blocked', label: 'Email threats blocked' },
-  { key: 'huntress.blocked_malware', label: 'Malware blocked' },
-  { key: 'identity.mfa_coverage_pct', label: 'MFA coverage' },
-  { key: 'finance.mrr', label: 'Monthly investment' },
-  { key: 'endpoints.managed', label: 'Devices managed' },
-];
-
 /** The stat band under the executive summary — the quarter at a glance. */
 function kpiBand(m: ReportModel): Node | undefined {
-  const tiles: Array<{ value: string; label: string; color: string }> = [];
-  const score = m.scorecard.overall.score;
-  tiles.push({
-    value: score === null ? '—' : String(Math.round(score)),
-    label: 'Security maturity / 100',
-    color: ratingColor(m.scorecard.overall.rating),
-  });
-  const byKey = new Map(m.sections.flatMap((s) => s.rows.map((r) => [r.metric.key, r.metric] as const)));
-  for (const c of KPI_CANDIDATES) {
-    if (tiles.length >= 4) break;
-    const metric = byKey.get(c.key);
-    if (metric && metric.value !== null) tiles.push({ value: formatValue(metric), label: c.label, color: m.brand.primary });
-  }
+  const tiles = selectKpiTiles(m);
   if (tiles.length < 2) return undefined;
   return {
     table: {
@@ -309,6 +288,18 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
     for (const p of m.executive.paragraphs) content.push({ text: p, style: 'body' });
     if (m.executive.highlights.length) {
       content.push({ ul: m.executive.highlights.map((h) => ({ text: h, style: 'body', margin: [0, 1, 0, 1] })), margin: [0, 4, 0, 0] });
+    }
+    // "Biggest changes this quarter" — a diverging QoQ movers chart tells the
+    // change story at a glance so the section tables stay reference detail.
+    const moversSvg = moversBarChartSvg(m.trends, { width: 508 });
+    if (moversSvg) {
+      content.push({ text: 'Biggest changes this quarter', style: 'h2', color: brand.primary, margin: [0, 12, 0, 2] });
+      content.push({
+        text: 'Improvements extend right; areas needing attention extend left. Bar length shows the size of the change.',
+        style: 'small',
+        margin: [0, 0, 0, 6],
+      });
+      content.push({ svg: moversSvg, width: 508, margin: [0, 0, 0, 8] });
     }
   }
 

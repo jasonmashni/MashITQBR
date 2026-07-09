@@ -1,6 +1,7 @@
 import type { CustomSection, DiscussionItem, FunctionScore, SafeguardResult } from '@mashit/core';
 import { MASH_IT_BRAND, type BrandTokens } from './brand.js';
 import { formatPercent, formatTrend, formatValue, ratingClass, discussionOutcome, goalStatusLabel, goalStatusColor } from './format.js';
+import { moversBarChartSvg, selectKpiTiles } from './charts.js';
 import type { ReportModel, ReportSection } from './model.js';
 
 function esc(s: string): string {
@@ -48,6 +49,14 @@ th{color:#555;font-weight:600;font-size:11px;text-transform:uppercase;letter-spa
 .fn{border:1px solid #e3e3e3;border-radius:8px;padding:10px}
 .fn .score{font-size:22px;font-weight:700;color:var(--primary)}
 .headline{font-size:16px;font-weight:600;color:var(--primary);margin:0 0 8px}
+.kpis{display:grid;gap:4px;margin:14px 0 18px}
+.kpi{background:#f4f7fa;border-radius:8px;padding:14px 8px;text-align:center}
+.kpi .v{font-size:24px;font-weight:700;line-height:1.1}
+.kpi .l{font-size:9px;color:#5a6b7b;text-transform:uppercase;letter-spacing:.05em;margin-top:5px}
+.figure{margin:14px 0 6px}
+.figure .fig-title{font-weight:600;color:var(--primary);font-size:14px;margin:0}
+.figure .fig-cap{color:#5a6b7b;font-size:11px;margin:2px 0 8px}
+.figure svg{max-width:100%;height:auto;display:block}
 .note{background:#f6f8fa;border-left:3px solid var(--accent);padding:8px 12px;margin:8px 0;white-space:pre-wrap}
 .section-summary{background:#f6f8fa;border-left:3px solid var(--accent);padding:8px 12px;margin:4px 0 10px;color:#333}
 .goal{border:1px solid #e3e3e3;border-left:3px solid var(--accent);border-radius:8px;padding:10px 12px;margin:8px 0}
@@ -84,13 +93,37 @@ function renderCover(m: ReportModel): string {
 </section>`;
 }
 
+/** The "quarter at a glance" stat tiles — the top-line numbers before the prose. */
+function renderKpis(m: ReportModel): string {
+  const tiles = selectKpiTiles(m);
+  if (tiles.length < 2) return '';
+  const tile = (t: { value: string; label: string; color: string }) =>
+    `<div class="kpi"><div class="v" style="color:${t.color}">${esc(t.value)}</div><div class="l">${esc(t.label)}</div></div>`;
+  return `<div class="kpis" style="grid-template-columns:repeat(${tiles.length},1fr)">${tiles.map(tile).join('')}</div>`;
+}
+
+/** "Biggest changes this quarter" — diverging bars of the top QoQ movers. */
+function renderMovers(m: ReportModel): string {
+  const svg = moversBarChartSvg(m.trends);
+  if (!svg) return '';
+  return `<div class="figure">
+    <p class="fig-title">Biggest changes this quarter</p>
+    <p class="fig-cap">Improvements extend right; areas needing attention extend left. Bar length shows the size of the change.</p>
+    ${svg}
+  </div>`;
+}
+
 function renderExecutive(m: ReportModel): string {
-  if (!m.executive.headline && m.executive.paragraphs.length === 0) return '';
+  const kpis = renderKpis(m);
+  const movers = renderMovers(m);
+  if (!m.executive.headline && m.executive.paragraphs.length === 0 && !kpis && !movers) return '';
   return `<section class="page">
   <h2>Executive Summary</h2>
   ${m.executive.headline ? `<p class="headline">${esc(m.executive.headline)}</p>` : ''}
+  ${kpis}
   ${m.executive.paragraphs.map((p) => `<p>${esc(p)}</p>`).join('\n')}
   ${m.executive.highlights.length ? `<ul>${m.executive.highlights.map((h) => `<li>${esc(h)}</li>`).join('')}</ul>` : ''}
+  ${movers}
 </section>`;
 }
 
