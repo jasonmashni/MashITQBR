@@ -35,6 +35,7 @@ const REF_FIELDS: Array<[string, string]> = [
   ['ninja', 'NinjaOne org id'],
   ['huntress', 'Huntress org id'],
   ['checkpoint', 'Check Point id'],
+  ['defensx', 'DefensX customer id'],
   ['zomentum', 'Zomentum client id'],
 ];
 

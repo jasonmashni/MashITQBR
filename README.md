@@ -18,7 +18,7 @@ centerpiece (the gap across CloudRadial / ScalePad / Strategy Overview).
 | Package | Responsibility |
 |---|---|
 | `packages/core` | Domain model, quarter periods, QoQ trend engine, blended **CIS v8 / NIST CSF 2.0** maturity scorecard, dashboard **flags engine**, seed data from real QBRs |
-| `packages/integrations` | **Direct vendor API clients** — HaloPSA, NinjaOne, Hudu, Huntress, Check Point, Dropsuite, Printix, ConnectSecure — plus snapshot assembly (legacy MASH-MCP path kept only as a fallback) |
+| `packages/integrations` | **Direct vendor API clients** — HaloPSA, NinjaOne, Hudu, Huntress, Check Point, Dropsuite, Printix, ConnectSecure, CIPP, Google Workspace, DefensX — plus snapshot assembly (legacy MASH-MCP path kept only as a fallback) |
 | `packages/narrative` | Claude-backed executive narrative with a **figure-verification guardrail** + deterministic offline drafter |
 | `packages/report` | One view-model → branded HTML, **designed pdfmake PDF**, rebuilt pptxgenjs deck |
 | `apps/api` | Azure Functions (v4) HTTP API + orchestration, data/secret/**document** stores (Table Storage / Key Vault / Blob), live sync + workflow pipeline, Outlook `.eml` drafts |
@@ -95,7 +95,9 @@ mutation is written to the **Audit log** page (who / what / when) for compliance
   SharePoint coverage, connection failures**), Printix (tenant + API client —
   Printix tenants are per-client, so add one connection per client and
   dedicate it to that QBR client),
-  ConnectSecure (pod + Client ID/Secret), and Zomentum. Each connection has
+  ConnectSecure (pod + Client ID/Secret), **DefensX** (Partner API Bearer token
+  — cyber-resilience score, protected & risky users, risky browser extensions,
+  blocked malicious/credential-theft sites per customer), and Zomentum. Each connection has
   **Test** and **Map clients** (pick who's who from the orgs found in the
   tool) — and **Halo mappings accept multiple entities per client** (service
   + billing companies get summed; Madison Peds maps to both its Halo

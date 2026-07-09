@@ -166,6 +166,13 @@ const TYPES: TypeDef[] = [
     secrets: [{ key: 'clientSecret', label: 'Client Secret' }],
   },
   {
+    value: 'defensx',
+    label: 'DefensX',
+    hint: 'Web security / DNS filtering / credential & phishing protection. Cyber-resilience score, protected & risky users, risky browser extensions, and blocked malicious/credential-theft sites per customer. Generate an API token on the DefensX portal’s API Keys page, then map each client to a DefensX customer.',
+    config: [{ key: 'baseUrl', label: 'API root (optional)', placeholder: 'https://cloud.defensx.com/api/partner/v1' }],
+    secrets: [{ key: 'token', label: 'API token (Authorization: Bearer)' }],
+  },
+  {
     value: 'zomentum',
     label: 'Zomentum',
     hint: 'Push opportunities',

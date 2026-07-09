@@ -18,6 +18,7 @@ export type IntegrationId =
   | 'printix'
   | 'connectsecure'
   | 'googleworkspace'
+  | 'defensx'
   | 'synology'
   | 'manual'
   // Metrics imported from a filed document (AI extraction), e.g. pdf:check-point.

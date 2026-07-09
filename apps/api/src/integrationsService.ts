@@ -7,6 +7,7 @@ import {
   collectCheckpoint,
   collectCipp,
   collectConnectSecure,
+  collectDefensx,
   collectDropsuite,
   collectGoogleWorkspace,
   collectHalo,
@@ -22,6 +23,7 @@ import {
   haloGet,
   listCippTenants,
   listConnectSecureCompanies,
+  listDefensxCustomers,
   listDropsuiteOrgs,
   listHaloClients,
   listHuduCompanies,
@@ -35,6 +37,7 @@ import {
   type CippCfg,
   type CollectResult,
   type ConnectSecureCfg,
+  type DefensxCfg,
   type DropsuiteCfg,
   type GoogleWorkspaceCfg,
   type HaloCfg,
@@ -105,6 +108,13 @@ async function connectSecureCfg(secrets: SecretStore, conn: Connection): Promise
     clientId: conn.config['clientId'] ?? '',
     clientSecret: (await resolveSecret(secrets, conn, 'clientSecret')) ?? '',
     tenant: conn.config['tenant'] || undefined,
+  };
+}
+
+async function defensxCfg(secrets: SecretStore, conn: Connection): Promise<DefensxCfg> {
+  return {
+    baseUrl: conn.config['baseUrl'] || undefined,
+    token: (await resolveSecret(secrets, conn, 'token')) ?? (await resolveSecret(secrets, conn, 'apiKey')) ?? '',
   };
 }
 
@@ -243,6 +253,8 @@ export async function listOrgs(intg: Integrations, conn: Connection): Promise<Ex
       return listConnectSecureCompanies(http, await connectSecureCfg(intg.secrets, conn));
     case 'cipp':
       return listCippTenants(http, await cippCfg(intg.secrets, conn));
+    case 'defensx':
+      return listDefensxCustomers(http, await defensxCfg(intg.secrets, conn));
     case 'huntress': {
       const base = conn.config['baseUrl'] ?? 'https://api.huntress.io/v1';
       const headers = {
@@ -338,6 +350,12 @@ export async function testConnection(intg: Integrations, conn: Connection): Prom
         }
         await listCippTenants(http, cfg);
         return { ok: true, message: 'CIPP reachable' };
+      }
+      case 'defensx': {
+        const cfg = await defensxCfg(intg.secrets, conn);
+        if (!cfg.token) return { ok: false, message: 'DefensX needs an API token (generate one on the DefensX portal API Keys page).' };
+        await listDefensxCustomers(http, cfg);
+        return { ok: true, message: 'DefensX reachable' };
       }
       case 'googleworkspace': {
         const cfg = await googleWorkspaceCfg(intg.secrets, conn);
@@ -519,6 +537,11 @@ export async function syncClientMetrics(
   const connectsecure = conns.get('connectsecure');
   if (refs.connectsecure && connectsecure) {
     runs.push({ source: 'connectsecure', run: async () => collectConnectSecure(ctx(refs.connectsecure), http, await connectSecureCfg(secrets, connectsecure)) });
+  }
+
+  const defensx = conns.get('defensx');
+  if (refs.defensx && defensx) {
+    runs.push({ source: 'defensx', run: async () => collectDefensx(ctx(refs.defensx), http, await defensxCfg(secrets, defensx)) });
   }
 
   const results = await runCollectors(runs);

@@ -14,4 +14,5 @@ export * from './printix.js';
 export * from './connectsecure.js';
 export * from './cipp.js';
 export * from './googleWorkspace.js';
+export * from './defensx.js';
 export * from './collect.js';

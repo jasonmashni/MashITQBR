@@ -24,6 +24,7 @@ export const CONNECTION_TYPES = [
   'printix',
   'connectsecure',
   'googleworkspace',
+  'defensx',
   'synology',
   'manual',
   'mcp',
