@@ -132,15 +132,16 @@ export function Workspace() {
   // we're already on this client (useParams alone wouldn't remount).
   const [searchParams, setSearchParams] = useSearchParams();
   const wantedPeriod = searchParams.get('period');
-  const selectPeriod = (p: string) =>
-    setSearchParams(
-      (prev) => {
-        prev.set('period', p);
-        return prev;
-      },
-      { replace: true },
-    );
+  // Persist the selected quarter in the URL. Build a FRESH URLSearchParams
+  // (mutating the existing one is unreliable in React Router) so the change
+  // always lands and survives a refresh.
+  const selectPeriod = (p: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('period', p);
+    setSearchParams(next, { replace: true });
+  };
   const [periods, setPeriods] = useState<Array<{ value: string; label: string }>>([]);
+  const [periodList, setPeriodList] = useState<Array<{ period: string; hasSnapshot: boolean; status?: string }>>([]);
   const [period, setPeriod] = useState('');
   const [qbr, setQbr] = useState<QbrResponse | null>(null);
   const [config, setConfig] = useState<ReportConfig | null>(null);
@@ -183,53 +184,55 @@ export function Workspace() {
     };
   }, [clientId, refresh]);
 
-  // One call tells us which of the last 8 quarters have data; land on the
-  // newest one that does — unless that QBR is already completed/archived, in
-  // which case the NEXT quarter is the working target. A ?period= deep link
-  // (notification bell) always wins.
+  // Load which of the last 8 quarters have data — ONCE per client. Kept
+  // separate from period selection so picking a quarter doesn't re-fetch (which
+  // used to race and snap back to the current quarter).
   useEffect(() => {
     let live = true;
-    const wanted = wantedPeriod;
     api
       .periods(clientId)
       .then(({ periods: list }) => {
         if (!live) return;
+        setPeriodList(list);
         setPeriods(list.map((p) => ({ value: p.period, label: p.hasSnapshot ? p.period : `${p.period} — no data` })));
-        // The URL's ?period= wins (refresh persistence + notification deep links).
-        if (wanted && list.some((p) => p.period === wanted)) {
-          setPeriod(wanted);
-          return;
-        }
-        let chosen: string | undefined;
-        const newestWithData = list.find((p) => p.hasSnapshot);
-        const done = newestWithData?.status === 'completed' || newestWithData?.status === 'archived';
-        if (newestWithData && done) {
-          // list is newest-first; the entry BEFORE the finished quarter is the
-          // next one (falls back to the newest available = current quarter).
-          const idx = list.findIndex((p) => p.period === newestWithData.period);
-          chosen = (list[Math.max(0, idx - 1)] ?? newestWithData).period;
-        } else if (newestWithData) {
-          chosen = newestWithData.period;
-        } else if (list[0]) {
-          chosen = list[0].period;
-        }
-        if (chosen) {
-          setPeriod(chosen);
-          // Pin it in the URL so the next refresh stays put (one extra effect
-          // run: wanted becomes chosen, then the branch above short-circuits).
-          if (chosen !== wanted) selectPeriod(chosen);
-        }
       })
       .catch(() => {
         if (!live) return;
         const options = lastPeriods('2026-Q1', 4);
+        setPeriodList(options.map((p) => ({ period: p, hasSnapshot: false })));
         setPeriods(options.map((p) => ({ value: p, label: p })));
-        setPeriod(options[0]!);
       });
     return () => {
       live = false;
     };
-  }, [clientId, wantedPeriod]);
+  }, [clientId]);
+
+  // Choose the active quarter off the loaded list (synchronous — no refetch):
+  // the URL's ?period= wins when it's in range (refresh persistence +
+  // notification deep links); otherwise land on the newest quarter with data,
+  // or the NEXT quarter when that one is already completed/archived.
+  useEffect(() => {
+    if (periodList.length === 0) return;
+    if (wantedPeriod && periodList.some((p) => p.period === wantedPeriod)) {
+      setPeriod(wantedPeriod);
+      return;
+    }
+    let chosen: string | undefined;
+    const newestWithData = periodList.find((p) => p.hasSnapshot);
+    const done = newestWithData?.status === 'completed' || newestWithData?.status === 'archived';
+    if (newestWithData && done) {
+      const idx = periodList.findIndex((p) => p.period === newestWithData.period);
+      chosen = (periodList[Math.max(0, idx - 1)] ?? newestWithData).period;
+    } else if (newestWithData) {
+      chosen = newestWithData.period;
+    } else if (periodList[0]) {
+      chosen = periodList[0].period;
+    }
+    if (chosen) {
+      setPeriod(chosen);
+      if (chosen !== wantedPeriod) selectPeriod(chosen);
+    }
+  }, [periodList, wantedPeriod]);
 
   useEffect(() => {
     if (!clientId || !period) return;
