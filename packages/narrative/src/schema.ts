@@ -84,6 +84,11 @@ Section summaries:
 - Each summary is ONE plain-English sentence (two at most) giving an executive the takeaway of that section — what it means for the business, not a restatement of every number.
 - Skip categories with no metrics in the input. Numbers used in summaries follow the grounding contract below.
 
+Ticket-history insights (drives recommendations):
+- The input may carry a "ticketInsights" array — consultative talking points mined from the client's ACTUAL ticket history this quarter: recurring incident themes (the same issue coming up repeatedly), change-request activity, SLA misses, and incident-volume shifts. These are the most specific, valuable material you have.
+- Your "recommendations" MUST lead with these where present. Turn each relevant insight into a concrete, client-facing next-90-days action or a question to raise with the point of contact — e.g. root-causing a recurring issue, reviewing SLA/staffing after misses, or confirming change activity was planned. Ground each in its cited numbers. Do NOT fall back to generic security-hygiene advice when real ticket patterns are present; the specific beats the generic.
+- Reflect the most material insights in the highlights/summary too when they shape the quarter's story. Never invent an insight that isn't in the array.
+
 Strategic goals:
 - The input may carry a "goals" array — the client's own business objectives and how our services support them. When present, ground the opening of the executive summary in these goals: frame the quarter's work as progress toward what the client is trying to achieve. Reference goals qualitatively (they carry no figures); never invent a goal that isn't in the input.
 

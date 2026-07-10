@@ -60,7 +60,11 @@ export function draftOfflineNarrative(input: NarrativeInput): NarrativeOutput {
   const expired = metricNum('assets.warranty_expired');
   if (expired !== null) highlights.push(`${cite('devices out of warranty', expired)} devices are out of warranty.`);
 
-  const recommendations = sc.remediations.map((r) => `${r.title}: ${r.evidence}`);
+  // Lead with the consultative ticket-history talking points (recurring issues,
+  // SLA misses, change activity) — the specific beats the generic — then fill
+  // out with security-hygiene remediations from the scorecard.
+  const insightRecs = (input.ticketInsights ?? []).map((i) => `${i.title}. ${i.detail}`);
+  const recommendations = [...insightRecs, ...sc.remediations.map((r) => `${r.title}: ${r.evidence}`)].slice(0, 6);
 
   const rating = sc.overall.rating;
   const headline =

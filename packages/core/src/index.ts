@@ -4,6 +4,7 @@ export * from './workflow.js';
 export * from './flags.js';
 export * from './health.js';
 export * from './roadmap.js';
+export * from './insights.js';
 export * from './metrics.js';
 export * from './scorecard.js';
 export * from './seed.js';

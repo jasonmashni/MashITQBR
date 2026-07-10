@@ -1,12 +1,14 @@
 import {
   asNumber,
   computeScorecard,
+  computeTicketInsights,
   computeTrends,
   parsePeriod,
   type Client,
   type MaturityScorecard,
   type MetricSnapshot,
   type MetricTrend,
+  type TicketInsight,
 } from '@mashit/core';
 
 /** Author steering for the narrative (focus, standing guidance, compliance). */
@@ -31,6 +33,12 @@ export interface NarrativeInput {
     functions: Array<{ function: string; score: number | null; rating: string }>;
     remediations: Array<{ title: string; score: number | null; evidence: string }>;
   };
+  /**
+   * Consultative talking points mined from the actual ticket history — recurring
+   * incident themes, change activity, SLA misses. The most material source of
+   * specific recommendations; grounded in real ticket counts.
+   */
+  ticketInsights?: Array<{ title: string; detail: string; severity: string }>;
   /** The client's strategic goals (qualitative) so the narrative can align to them. */
   goals?: Array<{ title: string; alignment?: string; status: string; targetPeriod?: string }>;
   /** Present only when the author set direction — changes bust the AI cache. */
@@ -55,6 +63,7 @@ export function buildNarrativeInput(args: {
   const period = parsePeriod(current.period);
   const trends = computeTrends(current, previous);
   const scorecard = computeScorecard(current);
+  const ticketInsights = computeTicketInsights(current.metrics, trends);
 
   return {
     client: { name: client.name, industry: client.industry, hipaa: client.hipaa, complianceStandard: client.complianceStandard },
@@ -75,6 +84,9 @@ export function buildNarrativeInput(args: {
       functions: scorecard.functions.map((f) => ({ function: f.function, score: f.score, rating: f.rating })),
       remediations: scorecard.remediations.map((r) => ({ title: r.title, score: r.score, evidence: r.evidence })),
     },
+    ticketInsights: ticketInsights.length
+      ? ticketInsights.map((i) => ({ title: i.title, detail: i.detail, severity: i.severity }))
+      : undefined,
     goals: goals.length ? goals : undefined,
     direction,
   };
@@ -107,6 +119,12 @@ export function buildAllowedNumbers(input: NarrativeInput): number[] {
   add(input.scorecard.overall.coverage * 100); // coverage often cited as a %
   for (const f of input.scorecard.functions) add(f.score);
   for (const r of input.scorecard.remediations) add(r.score);
+
+  // Counts embedded in the ticket-insight talking points (recurring-theme
+  // counts, SLA breaches…) are figures we computed — let the model quote them.
+  for (const i of input.ticketInsights ?? []) {
+    for (const match of `${i.title} ${i.detail}`.match(/\d+(?:\.\d+)?/g) ?? []) add(Number(match));
+  }
 
   // Period years / quarter numbers appear in prose and shouldn't be flagged.
   for (const p of [input.period, input.previousPeriod]) {

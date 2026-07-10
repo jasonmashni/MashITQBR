@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { computeTicketInsights, type TicketInsight } from '@mashit/core';
 import type { ReportModel } from '@mashit/report';
 import { DOC_MATCH_MODEL_ID } from './docMatch.js';
 
@@ -38,6 +39,8 @@ export interface AgendaContext {
   weakFunctions: Array<{ function: string; score: number | null; rating: string }>;
   /** Decision-relevant headline metrics that are present this quarter. */
   metrics: Array<{ key: string; label: string; value: number | string | boolean | null; unit?: string }>;
+  /** Consultative talking points mined from the actual ticket history (recurring issues, SLA misses, change activity). */
+  ticketInsights: TicketInsight[];
 }
 
 /** Metric keys worth surfacing for a consultative discussion, when present. */
@@ -88,6 +91,11 @@ export function buildAgendaContext(model: ReportModel): AgendaContext {
     return m ? [{ key, label: m.label, value: m.value, unit: m.unit }] : [];
   });
 
+  const ticketInsights = computeTicketInsights(
+    model.sections.flatMap((s) => s.rows.map((r) => r.metric)),
+    model.trends,
+  );
+
   return {
     clientName: model.client.name,
     periodLabel: model.period.label,
@@ -96,6 +104,7 @@ export function buildAgendaContext(model: ReportModel): AgendaContext {
     movers,
     weakFunctions,
     metrics,
+    ticketInsights,
   };
 }
 
@@ -111,6 +120,13 @@ const num = (ctx: AgendaContext, key: string): number | null => {
 export function offlineAgenda(ctx: AgendaContext): AgendaSuggestion[] {
   const out: AgendaSuggestion[] = [];
   const compliance = ctx.complianceStandard ? ` (relevant to ${ctx.complianceStandard})` : '';
+
+  // Ticket-history talking points lead — recurring issues, SLA misses, change
+  // activity are the most consultative, specific things to raise with the POC.
+  for (const i of ctx.ticketInsights) {
+    out.push({ topic: i.title, rationale: i.detail });
+    if (out.length >= 3) return out.slice(0, 3);
+  }
 
   const renewing = num(ctx, 'finance.contracts_expiring');
   if (renewing && renewing > 0) {
@@ -206,12 +222,16 @@ const AGENDA_SCHEMA = {
   },
 } as const;
 
-const SYSTEM = `You help an MSP account manager prep a CONSULTATIVE quarterly business review. Given this quarter's metrics and quarter-over-quarter trends for one client, propose the 2-3 highest-value talking points to raise in the meeting — decisions, risks, and improvement opportunities (hardware refresh, security/compliance gaps, ticket trends, backup & continuity, spend).
+const SYSTEM = `You help an MSP account manager prep a CONSULTATIVE quarterly business review. Given this quarter's metrics, quarter-over-quarter trends, and ticket-history insights for one client, propose the 2-3 highest-value talking points to raise with the point of contact — decisions, risks, and improvement opportunities.
+
+The input includes "ticketInsights": talking points already mined from the client's ACTUAL ticket history this quarter — recurring incident themes (the same issue coming up repeatedly), change-request activity, SLA misses, and incident-volume shifts. These are the most valuable, specific material you have.
 
 Rules:
+- PRIORITIZE the ticketInsights when present — a recurring issue worth root-causing, an SLA miss worth reviewing, or change activity worth confirming is far more useful to raise with the client than generic advice. Turn each into a concrete discussion point.
+- Then consider the metrics/trends for anything material not already covered (hardware refresh, security/compliance gaps, backup & continuity, renewals, spend).
 - Each item has a short "topic" phrased as a discussion point or decision, plus a one-sentence "rationale" that cites a SPECIFIC number from the provided data.
 - Use ONLY numbers present in the data. Never invent or estimate figures.
-- Prefer the most material items (biggest risks or changes). Skip anything already healthy — do not pad to three.
+- Prefer the most material items. Skip anything already healthy — do not pad to three.
 - Keep it executive and concise. 2-3 items maximum.
 Return only the structured object.`;
 

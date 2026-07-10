@@ -1,8 +1,10 @@
 import {
   computeScorecard,
+  computeTicketInsights,
   computeTrends,
   indexTrends,
   parsePeriod,
+  ticketInsightRecommendations,
   type Brand,
   type Client,
   type ClientGoal,
@@ -103,10 +105,14 @@ export function buildReportModel(args: {
     if (rows.length) sections.push({ category, title, summary: summaries.get(category), rows });
   }
 
-  const recommendations =
-    narrative?.recommendations?.length
-      ? narrative.recommendations
-      : scorecard.remediations.map((r) => `${r.title}: ${r.evidence}`);
+  // Recommendations: the AI/offline narrative leads (now grounded in ticket
+  // insights). With no narrative recommendations at all, fall back to the
+  // ticket-history talking points first, then generic scorecard remediations —
+  // the specific beats the generic.
+  const insightRecs = ticketInsightRecommendations(computeTicketInsights(current.metrics, trends));
+  const recommendations = narrative?.recommendations?.length
+    ? narrative.recommendations
+    : [...insightRecs, ...scorecard.remediations.map((r) => `${r.title}: ${r.evidence}`)].slice(0, 6);
 
   return {
     client: {
