@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { computeTicketInsights, type TicketInsight } from '@mashit/core';
+import { computeTicketInsights, hasTicketDigest, ticketDigest, type TicketDigest, type TicketInsight } from '@mashit/core';
 import type { ReportModel } from '@mashit/report';
 import { DOC_MATCH_MODEL_ID } from './docMatch.js';
 
@@ -41,6 +41,8 @@ export interface AgendaContext {
   metrics: Array<{ key: string; label: string; value: number | string | boolean | null; unit?: string }>;
   /** Consultative talking points mined from the actual ticket history (recurring issues, SLA misses, change activity). */
   ticketInsights: TicketInsight[];
+  /** Actual ticket subjects (incidents/changes/SLA breaches) for the model to read past naming conventions. */
+  ticketSamples?: TicketDigest;
 }
 
 /** Metric keys worth surfacing for a consultative discussion, when present. */
@@ -91,10 +93,9 @@ export function buildAgendaContext(model: ReportModel): AgendaContext {
     return m ? [{ key, label: m.label, value: m.value, unit: m.unit }] : [];
   });
 
-  const ticketInsights = computeTicketInsights(
-    model.sections.flatMap((s) => s.rows.map((r) => r.metric)),
-    model.trends,
-  );
+  const ticketMetrics = model.sections.flatMap((s) => s.rows.map((r) => r.metric));
+  const ticketInsights = computeTicketInsights(ticketMetrics, model.trends);
+  const samples = ticketDigest(ticketMetrics);
 
   return {
     clientName: model.client.name,
@@ -105,6 +106,7 @@ export function buildAgendaContext(model: ReportModel): AgendaContext {
     weakFunctions,
     metrics,
     ticketInsights,
+    ticketSamples: hasTicketDigest(samples) ? samples : undefined,
   };
 }
 
@@ -207,8 +209,10 @@ const AGENDA_SCHEMA = {
   required: ['suggestions'],
   properties: {
     suggestions: {
+      // No maxItems here — structured-output schemas reject array length
+      // constraints (the whole call 400s and silently falls back to offline).
+      // The 2-3 cap is enforced in the prompt and by slicing the result.
       type: 'array',
-      maxItems: 3,
       items: {
         type: 'object',
         additionalProperties: false,
@@ -222,16 +226,21 @@ const AGENDA_SCHEMA = {
   },
 } as const;
 
-const SYSTEM = `You help an MSP account manager prep a CONSULTATIVE quarterly business review. Given this quarter's metrics, quarter-over-quarter trends, and ticket-history insights for one client, propose the 2-3 highest-value talking points to raise with the point of contact — decisions, risks, and improvement opportunities.
+const SYSTEM = `You help an MSP account manager prep a CONSULTATIVE quarterly business review. Given this quarter's data for one client, propose the 2-3 highest-value talking points to raise with the point of contact (a business owner / executive) — genuine problems, risks, decisions, and opportunities.
 
-The input includes "ticketInsights": talking points already mined from the client's ACTUAL ticket history this quarter — recurring incident themes (the same issue coming up repeatedly), change-request activity, SLA misses, and incident-volume shifts. These are the most valuable, specific material you have.
+READ the tickets, don't just count them:
+- The input includes "ticketSamples": actual ticket subjects this quarter, grouped as incidents, changes, and slaBreaches. Read them to understand what was really happening.
+- IGNORE ticket-naming conventions. Subjects are often prefixed with the action ("Troubleshoot …", "Service Request - …", "Change Request - …", "Config …"). Those prefixes are NOT the issue and never a "recurring theme". Look past them to the real subject matter — the same application, site, user, or root cause showing up repeatedly, or a cluster worth a systemic fix.
+- "ticketInsights" is a rough keyword pass; treat it as a weak hint and prefer your own reading. Never surface a talking point that is just a naming-convention artifact.
+
+What makes a good talking point (be genuinely useful to a CEO):
+- A real recurring problem worth root-causing (name the actual issue, e.g. "several VPN connectivity tickets from remote staff"), an SLA/service concern worth reviewing, a security or continuity risk worth acting on, or an opportunity (a project, an upgrade, a consolidation) the tickets/metrics point to.
+- Do NOT surface bare counts ("6 change requests this quarter") — that is useless to a client. If change activity is worth raising, say what the changes were about and why it matters.
 
 Rules:
-- PRIORITIZE the ticketInsights when present — a recurring issue worth root-causing, an SLA miss worth reviewing, or change activity worth confirming is far more useful to raise with the client than generic advice. Turn each into a concrete discussion point.
-- Then consider the metrics/trends for anything material not already covered (hardware refresh, security/compliance gaps, backup & continuity, renewals, spend).
-- Each item has a short "topic" phrased as a discussion point or decision, plus a one-sentence "rationale" that cites a SPECIFIC number from the provided data.
+- Each item has a short "topic" phrased as a discussion point/decision, plus a one-sentence "rationale" grounded in the actual tickets or a SPECIFIC number from the data.
 - Use ONLY numbers present in the data. Never invent or estimate figures.
-- Prefer the most material items. Skip anything already healthy — do not pad to three.
+- Prefer the most material items. Skip anything already healthy — do not pad. If nothing is noteworthy, return fewer.
 - Keep it executive and concise. 2-3 items maximum.
 Return only the structured object.`;
 

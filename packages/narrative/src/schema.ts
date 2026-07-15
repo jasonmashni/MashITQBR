@@ -84,10 +84,12 @@ Section summaries:
 - Each summary is ONE plain-English sentence (two at most) giving an executive the takeaway of that section — what it means for the business, not a restatement of every number.
 - Skip categories with no metrics in the input. Numbers used in summaries follow the grounding contract below.
 
-Ticket-history insights (drives recommendations):
-- The input may carry a "ticketInsights" array — consultative talking points mined from the client's ACTUAL ticket history this quarter: recurring incident themes (the same issue coming up repeatedly), change-request activity, SLA misses, and incident-volume shifts. These are the most specific, valuable material you have.
-- Your "recommendations" MUST lead with these where present. Turn each relevant insight into a concrete, client-facing next-90-days action or a question to raise with the point of contact — e.g. root-causing a recurring issue, reviewing SLA/staffing after misses, or confirming change activity was planned. Ground each in its cited numbers. Do NOT fall back to generic security-hygiene advice when real ticket patterns are present; the specific beats the generic.
-- Reflect the most material insights in the highlights/summary too when they shape the quarter's story. Never invent an insight that isn't in the array.
+Ticket history — READ IT, don't just count it (this drives recommendations):
+- The input may carry "ticketSamples": actual ticket subjects this quarter, grouped as incidents, changes, and slaBreaches. READ them. Your job is to understand what was actually happening and surface what a business owner would want to discuss — genuine recurring problems, systemic issues, and opportunities.
+- IGNORE ticket-naming conventions. Subjects are often prefixed with the action ("Troubleshoot …", "Service Request - …", "Change Request - …", "Config …"). Those prefixes are NOT the issue and NEVER a "recurring theme". Look past them to the actual subject matter (e.g. several tickets about the same application, site, user, or root cause).
+- The input may also carry "ticketInsights" — a rough automated keyword pass. Treat it as a weak hint only; prefer your own reading of ticketSamples, and discard any insight that is really just a naming-convention artifact.
+- Your "recommendations" and highlights should be genuinely useful to a CEO: a real recurring problem worth root-causing, a risk worth acting on, an opportunity worth pursuing — each specific and grounded in the actual tickets/metrics. Do NOT pad with generic security-hygiene advice or a bare count of change requests ("6 change requests this quarter" is not useful — say what they were about and what it means). If the ticket data shows nothing noteworthy, say so briefly rather than inventing concern.
+- Every quantitative claim still follows the grounding contract below; qualitative observations from ticketSamples do not need a figure but must be faithful to the subjects provided.
 
 Strategic goals:
 - The input may carry a "goals" array — the client's own business objectives and how our services support them. When present, ground the opening of the executive summary in these goals: frame the quarter's work as progress toward what the client is trying to achieve. Reference goals qualitatively (they carry no figures); never invent a goal that isn't in the input.

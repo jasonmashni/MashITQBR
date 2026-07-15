@@ -41,6 +41,20 @@ describe('computeTicketInsights — recurring themes', () => {
     expect(recurring!.evidence.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('never surfaces a ticket-naming-convention prefix ("Troubleshoot") as a theme', () => {
+    const metrics = [
+      ticketMetric('tickets.incidents', 'Incidents', [
+        'Troubleshoot TGA2 Internet Offline for Gilbert',
+        'Troubleshoot Lenovo P73 laptop needs Windows reinstall',
+        'Troubleshoot Outlook on mobile for Youjong Kwon',
+        'Troubleshoot printer in accounting',
+      ]),
+    ];
+    const insights = computeTicketInsights(metrics);
+    // "troubleshoot" is a naming prefix, not an issue — it must not be a theme.
+    expect(insights.some((i) => i.kind === 'recurring_incident' && /troubleshoot/i.test(i.title))).toBe(false);
+  });
+
   it('does not invent a theme when every incident subject is distinct', () => {
     const metrics = [
       ticketMetric('tickets.incidents', 'Incidents', [

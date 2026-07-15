@@ -3,12 +3,14 @@ import {
   computeScorecard,
   computeTicketInsights,
   computeTrends,
+  hasTicketDigest,
   parsePeriod,
+  ticketDigest,
   type Client,
   type MaturityScorecard,
   type MetricSnapshot,
   type MetricTrend,
-  type TicketInsight,
+  type TicketDigest,
 } from '@mashit/core';
 
 /** Author steering for the narrative (focus, standing guidance, compliance). */
@@ -34,9 +36,16 @@ export interface NarrativeInput {
     remediations: Array<{ title: string; score: number | null; evidence: string }>;
   };
   /**
-   * Consultative talking points mined from the actual ticket history — recurring
-   * incident themes, change activity, SLA misses. The most material source of
-   * specific recommendations; grounded in real ticket counts.
+   * A sample of the ACTUAL ticket subjects this quarter, grouped by type. The
+   * model reads these to find genuine recurring problems and opportunities —
+   * far better than keyword counts, which can't tell a naming-convention prefix
+   * from a real issue.
+   */
+  ticketSamples?: TicketDigest;
+  /**
+   * Deterministic keyword-derived talking points — recurring themes, change
+   * activity, SLA misses. Kept as a rough hint for the model and the source for
+   * the offline (no-AI) recommendations.
    */
   ticketInsights?: Array<{ title: string; detail: string; severity: string }>;
   /** The client's strategic goals (qualitative) so the narrative can align to them. */
@@ -64,6 +73,7 @@ export function buildNarrativeInput(args: {
   const trends = computeTrends(current, previous);
   const scorecard = computeScorecard(current);
   const ticketInsights = computeTicketInsights(current.metrics, trends);
+  const samples = ticketDigest(current.metrics);
 
   return {
     client: { name: client.name, industry: client.industry, hipaa: client.hipaa, complianceStandard: client.complianceStandard },
@@ -84,6 +94,7 @@ export function buildNarrativeInput(args: {
       functions: scorecard.functions.map((f) => ({ function: f.function, score: f.score, rating: f.rating })),
       remediations: scorecard.remediations.map((r) => ({ title: r.title, score: r.score, evidence: r.evidence })),
     },
+    ticketSamples: hasTicketDigest(samples) ? samples : undefined,
     ticketInsights: ticketInsights.length
       ? ticketInsights.map((i) => ({ title: i.title, detail: i.detail, severity: i.severity }))
       : undefined,

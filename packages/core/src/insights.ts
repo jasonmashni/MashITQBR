@@ -46,11 +46,19 @@ const STOPWORDS = new Set([
   'still', 'some', 'user', 'users', 'client', 'support', 'urgent', 'follow', 'general', 'other', 'question',
   'change', 'incident', 'service', 'requestor', 'alert', 'alerts', 'auto', 'automated', 'monitor', 'monitoring',
   'update', 'updates', 'check', 'review', 'status', 'ticketing', 'email', 'emails', 'setup', 'access', 'login',
+  // ticket-naming-convention verbs/prefixes — these describe the ACTION, not the
+  // underlying issue, so they must never surface as a "recurring theme".
+  'troubleshoot', 'troubleshooting', 'config', 'configure', 'configuration', 'install', 'installation',
+  'reinstall', 'uninstall', 'setup', 'provision', 'provisioning', 'deploy', 'deployment', 'onboard',
+  'onboarding', 'offboard', 'offboarding', 'decommission', 'migrate', 'migration', 'restrict', 'enable',
+  'disable', 'reset', 'reboot', 'restart', 'create', 'remove', 'delete', 'replace', 'upgrade', 'renew',
+  'renewal', 'schedule', 'assist', 'assistance', 'investigate', 'resolve', 'fix', 'repair', 'add', 'added',
+  'new', 'move', 'moving', 'change', 'changes',
   // short English function words
   'the', 'and', 'for', 'are', 'was', 'not', 'you', 'can', 'has', 'had', 'her', 'his', 'our', 'out', 'who',
   'why', 'how', 'all', 'any', 'its', 'one', 'two', 'but', 'now', 'use', 'see', 'way', 'day', 'new', 'old',
   'get', 'got', 'let', 'may', 'off', 'per', 'via', 'this', 'that', 'have', 'from', 'your', 'when', 'would',
-  'like', 'been', 'they', 'them', 'here', 'there', 'into', 'with', 'will', 'cant', 'wont',
+  'like', 'been', 'they', 'them', 'here', 'there', 'into', 'with', 'will', 'cant', 'wont', 'for',
 ]);
 
 function tokens(summary: string): string[] {
@@ -232,4 +240,47 @@ export function computeTicketInsights(metrics: MetricValue[], trends: MetricTren
 /** Flatten insights into recommendation lines (report fallback + evidence for the AI). */
 export function ticketInsightRecommendations(insights: TicketInsight[]): string[] {
   return insights.map((i) => `${i.title}. ${i.detail}`);
+}
+
+/**
+ * A capped, de-duplicated sample of the ACTUAL ticket subjects, grouped by
+ * type — handed to the AI so it can read inside the tickets and identify
+ * genuine problems/opportunities, rather than relying on keyword counting.
+ * Keyword clustering can't tell a naming-convention prefix ("Troubleshoot…")
+ * from a real theme; a language model reading the text can.
+ */
+export interface TicketDigest {
+  incidents: string[];
+  changes: string[];
+  slaBreaches: string[];
+}
+
+function sampleSubjects(rows: Row[], cap: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of summaries(rows)) {
+    const t = s.replace(/\s+/g, ' ').trim().slice(0, 100);
+    const k = t.toLowerCase();
+    if (!t || seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
+export function ticketDigest(
+  metrics: MetricValue[],
+  caps: { incidents?: number; changes?: number; sla?: number } = {},
+): TicketDigest {
+  return {
+    incidents: sampleSubjects(rowsOf(metrics, 'tickets.incidents'), caps.incidents ?? 24),
+    changes: sampleSubjects(rowsOf(metrics, 'tickets.changes'), caps.changes ?? 12),
+    slaBreaches: sampleSubjects(rowsOf(metrics, 'sla.breaches'), caps.sla ?? 12),
+  };
+}
+
+/** True when a digest carries any ticket subjects worth handing to the model. */
+export function hasTicketDigest(d: TicketDigest): boolean {
+  return d.incidents.length + d.changes.length + d.slaBreaches.length > 0;
 }
