@@ -183,24 +183,78 @@ export function normalizeCippCa(rows: Json[]): MetricValue[] {
   ];
 }
 
-/** License waste: assigned vs purchased across SKUs (tolerant field names). */
-export function normalizeCippLicenses(rows: Json[]): MetricValue[] {
+/** Friendly SKU name (CIPP surfaces a readable "License" already; fall back to the part number). */
+const skuNameOf = (r: Json): string =>
+  String(r['License'] ?? r['Product'] ?? r['SkuPartNumber'] ?? r['skuPartNumber'] ?? r['name'] ?? 'License').trim() || 'License';
+
+// Renewal/expiry lives on the commerce side and only some CIPP builds surface
+// it on ListLicenses — read it tolerantly and simply omit when absent.
+const LICENSE_DATE_FIELDS = [
+  'ExpiryDate', 'expiryDate', 'ExpirationDate', 'expirationDate', 'RenewalDate', 'renewalDate',
+  'contractEndDate', 'ContractEndDate', 'nextLifecycleDateTime', 'NextLifecycleDateTime',
+];
+const licenseDate = (r: Json): string | undefined => {
+  for (const f of LICENSE_DATE_FIELDS) {
+    const v = r[f];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return undefined;
+};
+
+/**
+ * Microsoft 365 licensing across SKUs (tolerant field names). Emits the totals
+ * an exec cares about — purchased, assigned, available (unused) — with a
+ * per-SKU drill-down (name, counts, and renewal/expiry when CIPP surfaces it),
+ * plus a renewal-soon count and the next renewal date when dates are present.
+ */
+export function normalizeCippLicenses(rows: Json[], now: number = Date.now()): MetricValue[] {
   let used = 0;
   let total = 0;
   let recognized = 0;
+  let expiringSoon = 0;
+  let next: { date: string; ms: number } | undefined;
+  const skuRows: Array<Record<string, string | number>> = [];
+
   for (const r of rows) {
     const u = asNum(r['CountUsed'] ?? r['countUsed'] ?? r['consumedUnits']);
     const a = asNum(r['CountAvailable'] ?? r['countAvailable'] ?? r['availableUnits']);
     const t = asNum(r['TotalLicenses'] ?? r['totalLicenses'] ?? r['prepaidUnits']);
-    if (u === undefined) continue;
+    if (u === undefined && t === undefined) continue;
     recognized++;
-    used += u;
-    total += t !== undefined ? t : u + (a ?? 0);
+    const assigned = u ?? 0;
+    const purchased = t !== undefined ? t : assigned + (a ?? 0);
+    const available = a !== undefined ? a : Math.max(0, purchased - assigned);
+    used += assigned;
+    total += purchased;
+
+    const row: Record<string, string | number> = { license: skuNameOf(r), purchased, assigned, available };
+    const date = licenseDate(r);
+    if (date) {
+      row['renews'] = date.slice(0, 10);
+      const ms = Date.parse(date);
+      if (Number.isFinite(ms) && ms > now) {
+        if (ms < now + 90 * 86_400_000) expiringSoon++;
+        if (!next || ms < next.ms) next = { date: date.slice(0, 10), ms };
+      }
+    }
+    skuRows.push(row);
   }
   if (recognized === 0) return [];
-  const out = [metric('licenses.assigned', 'Licenses assigned', used, { category: 'spend', source: 'cipp', unit: 'count' })];
+
+  const available = Math.max(0, total - used);
+  const out: MetricValue[] = [
+    { ...metric('licenses.total', 'Licenses purchased', total, { category: 'spend', source: 'cipp', unit: 'count' }), details: skuRows },
+    metric('licenses.assigned', 'Licenses assigned', used, { category: 'spend', source: 'cipp', unit: 'count' }),
+  ];
+  // "Available" (paid but unassigned) — kept under the historical key for trend continuity.
   if (total > used) {
-    out.push(metric('licenses.unassigned', 'Licenses paid but unassigned', total - used, { category: 'spend', source: 'cipp', unit: 'count', higherIsBetter: false }));
+    out.push(metric('licenses.unassigned', 'Licenses available (unassigned)', available, { category: 'spend', source: 'cipp', unit: 'count', higherIsBetter: false }));
+  }
+  if (skuRows.some((r) => 'renews' in r)) {
+    if (expiringSoon > 0) {
+      out.push(metric('licenses.expiring_90d', 'License SKUs renewing within 90 days', expiringSoon, { category: 'spend', source: 'cipp', unit: 'count', higherIsBetter: false }));
+    }
+    if (next) out.push(metric('licenses.next_renewal', 'Next license renewal', next.date, { category: 'spend', source: 'cipp' }));
   }
   return out;
 }

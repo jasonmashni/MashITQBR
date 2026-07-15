@@ -116,6 +116,34 @@ describe('CIPP', () => {
     // Devices without a compliance state still count the fleet.
     expect(normalizeCippDevices([{ id: 1 }]).map((m) => m.key)).toEqual(['devices.m365_managed']);
   });
+
+  it('licenses: totals, per-SKU drill-down, and renewal dates when present', () => {
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    const metrics = normalizeCippLicenses(
+      [
+        { License: 'Microsoft 365 Business Premium', CountUsed: 20, CountAvailable: 5, RenewalDate: '2026-08-30T00:00:00Z' },
+        { License: 'Exchange Online (Plan 1)', TotalLicenses: 10, CountUsed: 10, ExpiryDate: '2027-01-01T00:00:00Z' },
+      ],
+      now,
+    );
+    const by = Object.fromEntries(metrics.map((m) => [m.key, m.value]));
+    expect(by['licenses.total']).toBe(35); // 25 + 10 purchased
+    expect(by['licenses.assigned']).toBe(30); // 20 + 10 used
+    expect(by['licenses.unassigned']).toBe(5); // available/unused
+    expect(by['licenses.expiring_90d']).toBe(1); // only Business Premium renews within 90 days
+    expect(by['licenses.next_renewal']).toBe('2026-08-30'); // earliest upcoming
+    // Per-SKU drill-down rides on the total.
+    const total = metrics.find((m) => m.key === 'licenses.total')!;
+    expect(total.details).toHaveLength(2);
+    expect(total.details?.[0]).toMatchObject({ license: 'Microsoft 365 Business Premium', purchased: 25, assigned: 20, available: 5, renews: '2026-08-30' });
+  });
+
+  it('licenses: backward-compatible with count-only rows (no dates)', () => {
+    const by = Object.fromEntries(normalizeCippLicenses([{ License: 'BP', CountUsed: 20, CountAvailable: 5 }]).map((m) => [m.key, m.value]));
+    expect(by['licenses.assigned']).toBe(20);
+    expect(by['licenses.unassigned']).toBe(5);
+    expect(by['licenses.next_renewal']).toBeUndefined();
+  });
 });
 
 describe('Google Workspace', () => {
