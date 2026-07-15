@@ -123,6 +123,13 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
   });
   pptx.defineSlideMaster({ title: 'TITLE', background: { color: 'FFFFFF' } });
 
+  // Speaker notes turn each slide into something you can actually present from:
+  // the detail lives here so the slide can stay clean.
+  const notes = (slide: any, text: string) => {
+    const t = text.trim();
+    if (t) slide.addNotes(t);
+  };
+
   const heading = (slide: any, text: string) => {
     slide.addText(text, {
       x: CONTENT_X,
@@ -189,6 +196,10 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     s.addText(`Prepared by ${brand.orgName} — confidential`, {
       x: CONTENT_X, y: 6.9, w: 8, h: 0.35, fontFace: FONT, fontSize: 10, color: GRAY, valign: 'top',
     });
+    notes(
+      s,
+      `Open the meeting: thank ${model.client.primaryContact ?? 'the client'} for their time and set the agenda — this quarter's results, security posture, what needs a decision, and where we go next. Keep it conversational; the slides are a backdrop for the discussion.`,
+    );
   }
 
   // ── Executive summary ───────────────────────────────────────────────────
@@ -197,18 +208,30 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     heading(s, 'Executive Summary');
     let y = BODY_Y;
     if (model.executive.headline) {
-      s.addText(model.executive.headline, { x: CONTENT_X, y, w: CONTENT_W, h: 0.75, fontFace: FONT, fontSize: 16, color: ACCENT, bold: true, valign: 'top', fit: 'shrink' });
-      y += 0.85;
+      s.addText(model.executive.headline, { x: CONTENT_X, y, w: CONTENT_W, h: 0.85, fontFace: FONT, fontSize: 18, color: ACCENT, bold: true, valign: 'top', fit: 'shrink' });
+      y += 1.0;
     }
-    const bullets = [...model.executive.paragraphs, ...model.executive.highlights].map((t) => ({
-      text: t,
-      options: { bullet: { code: '2022' }, color: '222222' },
-    }));
-    if (bullets.length) {
-      s.addText(bullets, {
-        x: CONTENT_X, y, w: CONTENT_W, h: FOOTER_Y - 0.2 - y, fontFace: FONT, fontSize: 13, valign: 'top', fit: 'shrink', paraSpaceAfter: 8,
-      });
+    // The slide shows a few crisp talking points (highlights, or a first
+    // sentence per paragraph) — never the full prose, which overflowed the
+    // page. The complete narrative goes into the speaker notes below.
+    const points = (model.executive.highlights.length ? model.executive.highlights : model.executive.paragraphs.map(firstSentence)).slice(0, 5);
+    if (points.length) {
+      s.addText(
+        points.map((t, i) => ({ text: t, options: { bullet: { code: '2022' }, color: '222222', paraSpaceAfter: i === points.length - 1 ? 0 : 12 } })),
+        { x: CONTENT_X, y, w: CONTENT_W, h: FOOTER_Y - 0.2 - y, fontFace: FONT, fontSize: 16, valign: 'top', fit: 'shrink' },
+      );
     }
+    notes(
+      s,
+      [
+        model.executive.headline,
+        '',
+        ...model.executive.paragraphs,
+        ...(model.executive.highlights.length ? ['', 'Highlights:', ...model.executive.highlights.map((h) => `• ${h}`)] : []),
+      ]
+        .filter((l) => l !== undefined)
+        .join('\n'),
+    );
   }
 
   // ── Strategic goals & IT alignment ──────────────────────────────────────
@@ -238,6 +261,12 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
       autoPageRepeatHeader: true,
       newSlideStartY: BODY_Y,
     });
+    notes(
+      s,
+      `Tie the quarter's work back to what the client is trying to achieve. Walk each goal, confirm the status is still right, and ask what's changed on their side. Goals: ${model.goals
+        .map((g) => `${g.title} (${goalStatusLabel(g.status)})`)
+        .join('; ')}.`,
+    );
   }
 
   // ── Maturity scorecard: doughnut + radar ────────────────────────────────
@@ -315,40 +344,56 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
         });
       }
     }
+    const weakest = sc.functions.filter((f) => f.score !== null).sort((a, b) => (a.score ?? 0) - (b.score ?? 0)).slice(0, 2);
+    notes(
+      s,
+      `Explain the score in plain terms: it blends the security safeguards we can measure (MFA, endpoint protection, patching, backups) against an industry checklist, grouped under the NIST framework. It's a posture guide, not a compliance audit. Overall ${
+        sc.overall.score === null ? 'not yet scored' : `${Math.round(sc.overall.score)}/100 (${sc.overall.rating})`
+      }.${weakest.length ? ` Point the conversation at where to invest next: ${weakest.map((f) => f.function).join(' and ')}.` : ''}`,
+    );
   }
 
-  // ── Quarter-over-quarter movers (native bar chart) ──────────────────────
-  const movers = pickMovers(model.trends);
-  if (movers.length >= 2) {
+  // ── Service desk, quarter over quarter (coherent ticket counts only) ─────
+  const qoq = operationalQoQ(model.trends);
+  if (qoq.length >= 2) {
     const s = pptx.addSlide({ masterName: 'QBR' });
-    heading(s, 'Quarter over Quarter');
+    heading(s, 'Service Desk — Quarter over Quarter');
     s.addChart(
       pptx.ChartType.bar,
       [
-        { name: model.previousPeriod?.label ?? 'Previous', labels: movers.map((t) => t.label), values: movers.map((t) => t.previous ?? 0) },
-        { name: model.period.label, labels: movers.map((t) => t.label), values: movers.map((t) => t.current ?? 0) },
+        { name: model.previousPeriod?.label ?? 'Previous', labels: qoq.map((t) => t.label), values: qoq.map((t) => t.previous ?? 0) },
+        { name: model.period.label, labels: qoq.map((t) => t.label), values: qoq.map((t) => t.current ?? 0) },
       ],
       {
-        x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: 5.1,
+        x: CONTENT_X, y: BODY_Y + 0.1, w: CONTENT_W, h: 4.7,
         barDir: 'col',
-        chartColors: [LIGHT.toLowerCase() === 'e9edf2' ? 'B9C4CF' : LIGHT, ACCENT],
+        chartColors: ['B9C4CF', ACCENT],
         showLegend: true,
         legendPos: 'b',
         legendFontFace: FONT,
         catAxisLabelFontFace: FONT,
-        catAxisLabelFontSize: 10,
+        catAxisLabelFontSize: 11,
         valAxisLabelFontSize: 9,
         dataLabelFontFace: FONT,
         showValue: true,
-        dataLabelFontSize: 9,
+        dataLabelFontSize: 10,
         dataLabelColor: '333333',
       },
+    );
+    s.addText('Support ticket volume this quarter versus last — automated system alerts are excluded so the human-facing work is comparable.', {
+      x: CONTENT_X, y: FOOTER_Y - 0.55, w: CONTENT_W, h: 0.4, fontFace: FONT, fontSize: 10, color: GRAY, italic: true, valign: 'top',
+    });
+    notes(
+      s,
+      `Talk to the trend, not the bars. ${qoq
+        .map((t) => `${t.label}: ${t.previous ?? 0} → ${t.current ?? 0}`)
+        .join(', ')}. Frame improvement as the value of proactive management; frame any increase honestly and say what you're doing about it.`,
     );
   }
 
   // ── One slide per metric section (styled, auto-paging tables) ───────────
   for (const section of model.sections) {
-    addSectionSlides(pptx, section, { PRIMARY, ACCENT, FONT, heading });
+    addSectionSlides(pptx, section, { PRIMARY, ACCENT, FONT, heading, notes });
   }
 
   // ── Client-authored custom sections ─────────────────────────────────────
@@ -356,6 +401,7 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     const s = pptx.addSlide({ masterName: 'QBR' });
     heading(s, cs.title);
     s.addText(cs.body, { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: FOOTER_Y - 0.2 - BODY_Y, fontFace: FONT, fontSize: 13, color: '222222', valign: 'top', fit: 'shrink' });
+    notes(s, cs.body);
   }
 
   // ── Discussion & decisions ──────────────────────────────────────────────
@@ -386,6 +432,12 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     } else if (model.notes) {
       s.addText(model.notes, { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: 4.5, fontFace: FONT, fontSize: 12, color: '444444', italic: true, valign: 'top', fit: 'shrink' });
     }
+    notes(
+      s,
+      model.discussion.length
+        ? `Work through each item live — capture the client's response and the agreed outcome. Topics: ${model.discussion.map((d) => d.topic).join('; ')}.`
+        : 'Use this space to capture decisions and client responses during the meeting.',
+    );
   }
 
   // ── Recommendations / next 90 days ──────────────────────────────────────
@@ -395,6 +447,10 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     s.addText(
       model.recommendations.map((t, i) => ({ text: t, options: { bullet: { code: '2022' }, color: '222222', paraSpaceAfter: i === model.recommendations.length - 1 ? 0 : 10 } })),
       { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: FOOTER_Y - 0.2 - BODY_Y, fontFace: FONT, fontSize: 14, valign: 'top', fit: 'shrink' },
+    );
+    notes(
+      s,
+      'Land the meeting on next steps: for each recommendation, agree an owner and a rough timeframe, and note which ones become tickets or opportunities. These flow to the Actions tab for follow-through.',
     );
   }
 
@@ -423,6 +479,30 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
 const QOQ_EXCLUDE = /siem|logs|events|signals/i;
 const QOQ_MAX_MAGNITUDE = 100_000;
 
+/** First sentence of a paragraph (for a slide bullet; the rest goes to notes). */
+export function firstSentence(text: string): string {
+  const m = text.match(/^.*?[.!?](?=\s|$)/);
+  const s = (m ? m[0] : text).trim();
+  return s.length > 180 ? `${s.slice(0, 177)}…` : s;
+}
+
+// A coherent service-desk QoQ: ticket COUNTS only, in a fixed sensible order,
+// excluding automated alerts and telemetry. Mixing dollars, percentages and
+// alert volumes onto one axis (the old pickMovers behavior for this chart) made
+// the slide unreadable.
+const QOQ_KEYS = ['tickets.total', 'tickets.incidents', 'tickets.service', 'tickets.changes', 'sla.breaches', 'tickets.closed', 'tickets.open'];
+
+/** Ticket-count trends for the QoQ slide, in QOQ_KEYS order, both quarters present. */
+export function operationalQoQ(trends: MetricTrend[]): MetricTrend[] {
+  const byKey = new Map(trends.map((t) => [t.key, t]));
+  const out: MetricTrend[] = [];
+  for (const key of QOQ_KEYS) {
+    const t = byKey.get(key);
+    if (t && t.current !== null && t.previous !== null) out.push(t);
+  }
+  return out;
+}
+
 /** The most meaningful QoQ movers: numeric both quarters, biggest % change first. */
 export function pickMovers(trends: MetricTrend[], max = 6): MetricTrend[] {
   return trends
@@ -444,10 +524,35 @@ export function pickMovers(trends: MetricTrend[], max = 6): MetricTrend[] {
 function addSectionSlides(
   pptx: any,
   section: ReportSection,
-  t: { PRIMARY: string; ACCENT: string; FONT: string; heading: (slide: any, text: string) => void },
+  t: {
+    PRIMARY: string;
+    ACCENT: string;
+    FONT: string;
+    heading: (slide: any, text: string) => void;
+    notes: (slide: any, text: string) => void;
+  },
 ): void {
   const s = pptx.addSlide({ masterName: 'QBR' });
   t.heading(s, section.title);
+  // Coach the presenter to talk to the story, not read the table. Call out the
+  // most notable move (biggest sentiment-bearing change) as the thing to raise.
+  const notable = section.rows
+    .filter((r) => r.trend && r.trend.sentiment !== 'neutral' && r.trend.sentiment !== 'na' && r.trend.deltaPct !== null)
+    .sort((a, b) => Math.abs(b.trend!.deltaPct ?? 0) - Math.abs(a.trend!.deltaPct ?? 0))[0];
+  t.notes(
+    s,
+    [
+      section.summary ?? `Walk ${section.title.toLowerCase()} at a high level — hit the headline, don't read every row.`,
+      notable
+        ? `Worth calling out: ${notable.metric.label} moved ${trendDeltaText(notable.trend!)} (${
+            notable.trend!.sentiment === 'negative' ? 'watch this' : 'a win to highlight'
+          }).`
+        : '',
+      'Move quickly through the numbers; spend the time on what they mean for the business.',
+    ]
+      .filter(Boolean)
+      .join(' '),
+  );
   let tableY = BODY_Y;
   if (section.summary) {
     s.addText(section.summary, {

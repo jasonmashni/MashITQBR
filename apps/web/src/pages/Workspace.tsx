@@ -37,7 +37,7 @@ import {
   Popover,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
-import { RadarChart, BarChart } from '@mantine/charts';
+import { RadarChart, BarChart, DonutChart } from '@mantine/charts';
 import { notifications } from '@mantine/notifications';
 import {
   IconRefresh,
@@ -570,7 +570,14 @@ function OverviewTab({
   const trendData = useMemo(
     () =>
       model.trends
-        .filter((t) => t.current !== null && (t.category === 'operations' || t.category === 'security') && !/siem|logs|events|signals/i.test(t.key))
+        // Automated alerts (and raw telemetry) dwarf the service-desk figures on
+        // a shared axis — the QoQ chart is about the human-facing ticket work.
+        .filter(
+          (t) =>
+            t.current !== null &&
+            (t.category === 'operations' || t.category === 'security') &&
+            !/siem|logs|events|signals|alert/i.test(t.key),
+        )
         .slice(0, 6)
         .map((t) => ({
           label: t.label.length > 14 ? t.label.slice(0, 13) + '…' : t.label,
@@ -587,13 +594,30 @@ function OverviewTab({
     const rows = invoiced.length > 0 ? invoiced : model.trends.filter((t) => t.current !== null && t.key.startsWith('finance.recurring.'));
     return rows
       .map((t) => ({
-        label: (t.label.length > 20 ? t.label.slice(0, 19) + '…' : t.label).replace(/\s+/g, ' '),
+        label: (t.label.length > 24 ? t.label.slice(0, 23) + '…' : t.label).replace(/\s+/g, ' '),
         amount: t.current ?? 0,
       }))
+      .filter((r) => r.amount > 0)
       .sort((a, b) => b.amount - a.amount)
-      .slice(0, 6);
+      .slice(0, 7);
   }, [model.trends]);
   const spendIsRecurring = useMemo(() => !model.trends.some((t) => t.key.startsWith('finance.invoiced.')), [model.trends]);
+  // A brand-tinted, single-system palette (navy → blue → teal → slate → light),
+  // assigned largest-slice-first so the donut reads as one elegant ramp rather
+  // than a rainbow. Total sits in the middle; the legend carries exact $ and %.
+  const spendDonut = useMemo(() => {
+    const palette = ['#004aad', '#2f7bff', '#0b7285', '#3b5b78', '#5f7d99', '#8fa6bd', '#b9c4cf'];
+    const total = spendData.reduce((s, r) => s + r.amount, 0);
+    return {
+      total,
+      slices: spendData.map((r, i) => ({
+        name: r.label,
+        value: r.amount,
+        color: palette[i] ?? '#b9c4cf',
+        pct: total > 0 ? Math.round((r.amount / total) * 100) : 0,
+      })),
+    };
+  }, [spendData]);
 
   useEffect(() => {
     let live = true;
@@ -704,21 +728,39 @@ function OverviewTab({
 
       {spendData.length > 0 && (
         <Card withBorder radius="md" padding="lg">
-          <Title order={5} mb={2}>{spendIsRecurring ? 'Monthly recurring breakdown' : 'IT spend breakdown'}</Title>
+          <Title order={5} mb={2}>{spendIsRecurring ? 'Monthly recurring breakdown' : 'Where the IT investment went'}</Title>
           <Text size="xs" c="dimmed" mb="md">{spendIsRecurring ? 'Composition of the monthly bill.' : 'Invoiced this quarter, by category.'}</Text>
-          <BarChart
-            h={spendData.length * 44 + 40}
-            data={spendData}
-            dataKey="label"
-            orientation="vertical"
-            series={[{ name: 'amount', label: 'USD', color: 'navy.6' }]}
-            valueFormatter={(v) => `$${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
-            barProps={{ maxBarSize: 22, radius: [0, 4, 4, 0] }}
-            gridAxis="x"
-            withTooltip
-            yAxisProps={{ width: 150, tickLine: false }}
-            xAxisProps={{ tickLine: false }}
-          />
+          <Group align="center" gap={40} wrap="wrap">
+            <DonutChart
+              data={spendDonut.slices}
+              size={190}
+              thickness={26}
+              paddingAngle={2}
+              withTooltip
+              tooltipDataSource="segment"
+              valueFormatter={(v) => `$${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
+              chartLabel={`$${spendDonut.total.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
+            />
+            <Stack gap={8} style={{ flex: 1, minWidth: 240 }}>
+              {spendDonut.slices.map((s) => (
+                <Group key={s.name} justify="space-between" wrap="nowrap" gap="sm">
+                  <Group gap={8} wrap="nowrap" style={{ minWidth: 0 }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color, flex: '0 0 auto' }} />
+                    <Text size="sm" truncate>{s.name}</Text>
+                  </Group>
+                  <Group gap={10} wrap="nowrap" style={{ flex: '0 0 auto' }}>
+                    <Text size="sm" fw={600}>${s.value.toLocaleString('en-US', { maximumFractionDigits: 0 })}</Text>
+                    <Text size="xs" c="dimmed" w={34} ta="right">{s.pct}%</Text>
+                  </Group>
+                </Group>
+              ))}
+              <Divider my={2} />
+              <Group justify="space-between">
+                <Text size="sm" c="dimmed">Total {spendIsRecurring ? 'monthly' : 'invoiced'}</Text>
+                <Text size="sm" fw={700}>${spendDonut.total.toLocaleString('en-US', { maximumFractionDigits: 0 })}</Text>
+              </Group>
+            </Stack>
+          </Group>
         </Card>
       )}
 

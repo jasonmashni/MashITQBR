@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MetricTrend } from '@mashit/core';
-import { discussionOutcome, imageDims, pickMovers } from '@mashit/report';
+import { discussionOutcome, firstSentence, imageDims, operationalQoQ, pickMovers } from '@mashit/report';
 
 const trend = (key: string, current: number, previous: number): MetricTrend => ({
   key,
@@ -36,6 +36,31 @@ describe('deck QoQ movers', () => {
       trend('c.real', 10, 5),
     ]);
     expect(picked.map((t) => t.key)).toEqual(['c.real']);
+  });
+});
+
+describe('operationalQoQ (deck service-desk chart)', () => {
+  it('keeps ticket counts in a fixed order and excludes automated alerts', () => {
+    const out = operationalQoQ([
+      trend('tickets.alerts', 438, 1023), // must be excluded — it dwarfs the axis
+      trend('sla.breaches', 5, 17),
+      trend('tickets.total', 62, 116),
+      trend('finance.invoiced.other', 1444, 6147), // dollars — not a ticket count
+      trend('tickets.incidents', 13, 39),
+    ]);
+    expect(out.map((t) => t.key)).toEqual(['tickets.total', 'tickets.incidents', 'sla.breaches']);
+  });
+
+  it('drops metrics missing a prior quarter (needs both bars)', () => {
+    const out = operationalQoQ([{ ...trend('tickets.total', 62, 0), previous: null }]);
+    expect(out).toHaveLength(0);
+  });
+});
+
+describe('firstSentence (exec-slide bullet from a paragraph)', () => {
+  it('takes the first sentence and leaves the rest for the notes', () => {
+    expect(firstSentence('Incidents fell sharply. Everything else held steady.')).toBe('Incidents fell sharply.');
+    expect(firstSentence('No period here')).toBe('No period here');
   });
 });
 
