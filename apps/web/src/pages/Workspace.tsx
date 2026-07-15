@@ -1946,11 +1946,20 @@ function MeetingTab({
   async function suggestAgenda() {
     setSuggesting(true);
     try {
-      const r = await api.suggestAgenda(clientId, period);
+      // On Refresh, tell the server which topics are already on screen (and any
+      // already on the agenda) so it proposes fresh ones instead of repeating.
+      const exclude = [...(suggested?.map((s) => s.topic) ?? []), ...disc.items.map((it) => it.topic)].filter(Boolean);
+      const r = await api.suggestAgenda(clientId, period, exclude);
       setSuggestSource(r.source);
-      setSuggested(r.suggestions);
       if (r.suggestions.length === 0) {
-        notifications.show({ color: 'yellow', message: r.note ?? 'No standout talking points from this quarter\'s data yet.' });
+        notifications.show({
+          color: 'yellow',
+          message: r.note ?? (suggested ? 'No further talking points to suggest — you\'ve covered the standouts.' : 'No standout talking points from this quarter\'s data yet.'),
+        });
+        // Keep the current suggestions on a no-op refresh rather than clearing them.
+        if (!suggested) setSuggested([]);
+      } else {
+        setSuggested(r.suggestions);
       }
     } catch (e) {
       notifications.show({ color: 'red', title: 'Could not suggest an agenda', message: e instanceof Error ? e.message : 'Unknown error' });

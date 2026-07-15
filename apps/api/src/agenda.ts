@@ -43,6 +43,8 @@ export interface AgendaContext {
   ticketInsights: TicketInsight[];
   /** Actual ticket subjects (incidents/changes/SLA breaches) for the model to read past naming conventions. */
   ticketSamples?: TicketDigest;
+  /** Topics already shown to the author — propose different ones (drives "Refresh"). */
+  exclude?: string[];
 }
 
 /** Metric keys worth surfacing for a consultative discussion, when present. */
@@ -117,7 +119,8 @@ const num = (ctx: AgendaContext, key: string): number | null => {
 
 /**
  * Deterministic, data-driven agenda when AI is off or unavailable. Ranks the
- * most material risks/changes and returns up to three.
+ * most material risks/changes and returns up to three, skipping anything the
+ * caller already showed (so "Refresh" surfaces the next-best items).
  */
 export function offlineAgenda(ctx: AgendaContext): AgendaSuggestion[] {
   const out: AgendaSuggestion[] = [];
@@ -127,7 +130,6 @@ export function offlineAgenda(ctx: AgendaContext): AgendaSuggestion[] {
   // activity are the most consultative, specific things to raise with the POC.
   for (const i of ctx.ticketInsights) {
     out.push({ topic: i.title, rationale: i.detail });
-    if (out.length >= 3) return out.slice(0, 3);
   }
 
   const renewing = num(ctx, 'finance.contracts_expiring');
@@ -191,14 +193,16 @@ export function offlineAgenda(ctx: AgendaContext): AgendaSuggestion[] {
 
   // Weakest maturity function, as an improvement theme.
   const weakest = ctx.weakFunctions[0];
-  if (out.length < 3 && weakest && weakest.score !== null) {
+  if (weakest && weakest.score !== null) {
     out.push({
       topic: `Set a plan to strengthen ${weakest.function}`,
       rationale: `${weakest.function} is the lowest maturity area (score ${Math.round(weakest.score)}/100) — a good target for next quarter.`,
     });
   }
 
-  return out.slice(0, 3);
+  // Drop anything already shown so "Refresh" advances through the ranked pool.
+  const seen = new Set((ctx.exclude ?? []).map((s) => s.trim().toLowerCase()));
+  return out.filter((o) => !seen.has(o.topic.trim().toLowerCase())).slice(0, 3);
 }
 
 export type AgendaModel = (ctx: AgendaContext) => Promise<AgendaSuggestion[]>;
@@ -241,6 +245,7 @@ Rules:
 - Each item has a short "topic" phrased as a discussion point/decision, plus a one-sentence "rationale" grounded in the actual tickets or a SPECIFIC number from the data.
 - Use ONLY numbers present in the data. Never invent or estimate figures.
 - Prefer the most material items. Skip anything already healthy — do not pad. If nothing is noteworthy, return fewer.
+- If the input carries an "exclude" list, the author has already seen those talking points and wants fresh ones: propose DIFFERENT topics (a new angle, a different issue or opportunity), and never repeat an excluded topic.
 - Keep it executive and concise. 2-3 items maximum.
 Return only the structured object.`;
 

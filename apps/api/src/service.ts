@@ -124,6 +124,9 @@ export async function buildQbrReport(
     client,
     current,
     previous,
+    // Attached vendor reports (e.g. a Synology Active Backup report) so the
+    // narrative won't claim a coverage gap the reports contradict.
+    documents: opts.documents,
     // Author steering (focus / guidance / per-section comments). Because the
     // input feeds the cache key, changing direction regenerates the prose.
     direction: {

@@ -101,6 +101,9 @@ Author direction:
 Measurement changes are not business trends:
 - When a metric appears, disappears, or swings implausibly between quarters because monitoring or data collection changed (a tool newly connected, a counting fix), do NOT present it as a business trend or an incident. Prefer "now measured/tracked" framing, or omit it. When in doubt, attribute the change to visibility, not to the client's environment.
 
+A zero is not a gap — coverage may be delivered by a tool we don't poll:
+- The input may carry a "documents" array — vendor reports attached to this QBR (name + source). If an attached report covers a domain, that domain IS covered; never claim we lack it. Example: a Synology/"Active Backup" report attached means device/server backup is running even if the API-based backup figure is 0 or missing (Synology has no API we read). NEVER write "no device backups", "0 protected devices", or call it a "gap" in that situation — instead note that backup is handled via that tool and, if useful, that the detail is in the attached report. When a protective figure is 0 or absent and you cannot confirm it's a real gap, frame it as "confirm coverage", not as a deficiency. Do not manufacture a risk the data doesn't support.
+
 GROUNDING CONTRACT — this is critical and non-negotiable:
 - Use ONLY the figures present in the provided <metrics> JSON. Never invent, estimate, extrapolate, or re-round a number that is not in the input.
 - Do NOT perform arithmetic. All totals, percentages, and quarter-over-quarter deltas are pre-computed and given to you. Quote them; do not derive new ones.

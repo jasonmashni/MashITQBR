@@ -46,6 +46,15 @@ describe('agenda suggestions', () => {
     expect(blob).toMatch(/10|82|3|2/); // real figures cited, nothing invented
   });
 
+  it('excludes already-shown topics on refresh so the next-best items surface', () => {
+    const ctx = buildAgendaContext(buildReportModel({ client, current, previous }));
+    const first = offlineAgenda(ctx);
+    expect(first.length).toBeGreaterThan(0);
+    const next = offlineAgenda({ ...ctx, exclude: first.map((s) => s.topic) });
+    // None of the first batch reappears.
+    expect(next.every((s) => !first.some((f) => f.topic === s.topic))).toBe(true);
+  });
+
   it('handler falls back to offline suggestions without an AI key', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'qbr-agenda-'));
     process.env['QBR_DATA_DIR'] = dir;

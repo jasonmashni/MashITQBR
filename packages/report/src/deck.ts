@@ -520,7 +520,14 @@ export function pickMovers(trends: MetricTrend[], max = 6): MetricTrend[] {
     .slice(0, max);
 }
 
-/** Section slide with a styled table (auto-pages over extra slides when long). */
+/** How many metric rows fit comfortably under one section-slide heading. */
+const SECTION_ROWS_PER_SLIDE = 12;
+
+/**
+ * Section slide(s) with a styled table. Long sections are paged MANUALLY —
+ * one titled slide per chunk ("… (cont.)") — because pptxgenjs autoPage creates
+ * untitled continuation slides (the reported blank security slide).
+ */
 function addSectionSlides(
   pptx: any,
   section: ReportSection,
@@ -532,57 +539,61 @@ function addSectionSlides(
     notes: (slide: any, text: string) => void;
   },
 ): void {
-  const s = pptx.addSlide({ masterName: 'QBR' });
-  t.heading(s, section.title);
-  // Coach the presenter to talk to the story, not read the table. Call out the
-  // most notable move (biggest sentiment-bearing change) as the thing to raise.
+  const header = ['Metric', 'This quarter', 'vs last'].map((text) => ({
+    text,
+    options: { bold: true, color: 'FFFFFF', fill: { color: t.PRIMARY }, fontFace: t.FONT, fontSize: 11 },
+  }));
+  const bodyRow = ({ metric, trend }: ReportSection['rows'][number]) => {
+    const delta = trend ? trendDeltaText(trend) : '';
+    const deltaColor = trend?.sentiment === 'negative' ? 'C62828' : trend?.sentiment === 'positive' ? '2E7D32' : '5A6B7B';
+    return [
+      { text: metric.label, options: { fontFace: t.FONT, fontSize: 11 } },
+      { text: formatValue(metric), options: { fontFace: t.FONT, fontSize: 11, align: 'right', bold: true } },
+      { text: delta, options: { fontFace: t.FONT, fontSize: 11, align: 'right', color: deltaColor } },
+    ];
+  };
+
+  const chunks: ReportSection['rows'][] = [];
+  for (let i = 0; i < section.rows.length; i += SECTION_ROWS_PER_SLIDE) chunks.push(section.rows.slice(i, i + SECTION_ROWS_PER_SLIDE));
+  if (chunks.length === 0) chunks.push([]);
+
+  // Coaching note (first slide only): call out the most notable sentiment-bearing move.
   const notable = section.rows
     .filter((r) => r.trend && r.trend.sentiment !== 'neutral' && r.trend.sentiment !== 'na' && r.trend.deltaPct !== null)
     .sort((a, b) => Math.abs(b.trend!.deltaPct ?? 0) - Math.abs(a.trend!.deltaPct ?? 0))[0];
-  t.notes(
-    s,
-    [
-      section.summary ?? `Walk ${section.title.toLowerCase()} at a high level — hit the headline, don't read every row.`,
-      notable
-        ? `Worth calling out: ${notable.metric.label} moved ${trendDeltaText(notable.trend!)} (${
-            notable.trend!.sentiment === 'negative' ? 'watch this' : 'a win to highlight'
-          }).`
-        : '',
-      'Move quickly through the numbers; spend the time on what they mean for the business.',
-    ]
-      .filter(Boolean)
-      .join(' '),
-  );
-  let tableY = BODY_Y;
-  if (section.summary) {
-    s.addText(section.summary, {
-      x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: 0.6,
-      fontFace: t.FONT, fontSize: 13, italic: true, color: '444444', valign: 'top', fit: 'shrink',
+
+  chunks.forEach((chunk, idx) => {
+    const s = pptx.addSlide({ masterName: 'QBR' });
+    t.heading(s, idx === 0 ? section.title : `${section.title} (cont.)`);
+    let tableY = BODY_Y;
+    if (idx === 0) {
+      if (section.summary) {
+        s.addText(section.summary, {
+          x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: 0.6,
+          fontFace: t.FONT, fontSize: 13, italic: true, color: '444444', valign: 'top', fit: 'shrink',
+        });
+        tableY = BODY_Y + 0.7;
+      }
+      t.notes(
+        s,
+        [
+          section.summary ?? `Walk ${section.title.toLowerCase()} at a high level — hit the headline, don't read every row.`,
+          notable
+            ? `Worth calling out: ${notable.metric.label} moved ${trendDeltaText(notable.trend!)} (${
+                notable.trend!.sentiment === 'negative' ? 'watch this' : 'a win to highlight'
+              }).`
+            : '',
+          'Move quickly through the numbers; spend the time on what they mean for the business.',
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+    }
+    s.addTable([header, ...chunk.map(bodyRow)], {
+      x: CONTENT_X, y: tableY, w: CONTENT_W,
+      colW: [7.6, 2.6, 1.93],
+      border: { type: 'solid', color: 'DDE3EA', pt: 0.5 },
+      valign: 'top',
     });
-    tableY = BODY_Y + 0.7;
-  }
-  const rows = [
-    ['Metric', 'This quarter', 'vs last'].map((text) => ({
-      text,
-      options: { bold: true, color: 'FFFFFF', fill: { color: t.PRIMARY }, fontFace: t.FONT, fontSize: 11 },
-    })),
-    ...section.rows.map(({ metric, trend }) => {
-      const delta = trend ? trendDeltaText(trend) : '';
-      const deltaColor = trend?.sentiment === 'negative' ? 'C62828' : trend?.sentiment === 'positive' ? '2E7D32' : '5A6B7B';
-      return [
-        { text: metric.label, options: { fontFace: t.FONT, fontSize: 11 } },
-        { text: formatValue(metric), options: { fontFace: t.FONT, fontSize: 11, align: 'right', bold: true } },
-        { text: delta, options: { fontFace: t.FONT, fontSize: 11, align: 'right', color: deltaColor } },
-      ];
-    }),
-  ];
-  s.addTable(rows, {
-    x: CONTENT_X, y: tableY, w: CONTENT_W,
-    colW: [7.6, 2.6, 1.93],
-    border: { type: 'solid', color: 'DDE3EA', pt: 0.5 },
-    valign: 'top',
-    autoPage: true,
-    autoPageRepeatHeader: true,
-    newSlideStartY: BODY_Y,
   });
 }

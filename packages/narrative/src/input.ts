@@ -50,6 +50,13 @@ export interface NarrativeInput {
   ticketInsights?: Array<{ title: string; detail: string; severity: string }>;
   /** The client's strategic goals (qualitative) so the narrative can align to them. */
   goals?: Array<{ title: string; alignment?: string; status: string; targetPeriod?: string }>;
+  /**
+   * Vendor reports attached to this QBR (name + source). The model must not
+   * claim we lack visibility/coverage in a domain an attached report covers —
+   * e.g. a Synology "Active Backup" report proves device backup exists even when
+   * our API-based backup figure is 0 (Synology has no API).
+   */
+  documents?: Array<{ name: string; source: string }>;
   /** Present only when the author set direction — changes bust the AI cache. */
   direction?: NarrativeDirection;
 }
@@ -60,6 +67,8 @@ export function buildNarrativeInput(args: {
   current: MetricSnapshot;
   previous?: MetricSnapshot;
   direction?: NarrativeDirection;
+  /** Vendor reports attached to this QBR — so the model won't contradict them. */
+  documents?: Array<{ name: string; source: string }>;
 }): NarrativeInput {
   const { client, current, previous } = args;
   const goals = (client.goals ?? [])
@@ -99,6 +108,7 @@ export function buildNarrativeInput(args: {
       ? ticketInsights.map((i) => ({ title: i.title, detail: i.detail, severity: i.severity }))
       : undefined,
     goals: goals.length ? goals : undefined,
+    documents: args.documents?.length ? args.documents : undefined,
     direction,
   };
 }

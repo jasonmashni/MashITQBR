@@ -373,7 +373,12 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
  * (one cheap call per request), grounded in the quarter's own metrics/trends;
  * falls back to deterministic data-driven suggestions when AI is off/unavailable.
  */
-export async function suggestQbrAgenda(clientId: string, period: string, suggester?: AgendaModel): Promise<ApiResult> {
+export async function suggestQbrAgenda(
+  clientId: string,
+  period: string,
+  suggester?: AgendaModel,
+  exclude: string[] = [],
+): Promise<ApiResult> {
   let model;
   try {
     // ai=null: the context comes from the computed metrics/scorecard, no Opus
@@ -382,7 +387,8 @@ export async function suggestQbrAgenda(clientId: string, period: string, suggest
   } catch (e) {
     return mapBuildError(e);
   }
-  const ctx = buildAgendaContext(model);
+  // `exclude` carries the talking points already on screen so Refresh advances.
+  const ctx = { ...buildAgendaContext(model), exclude: exclude.length ? exclude.slice(0, 12) : undefined };
   if (ctx.movers.length === 0 && ctx.weakFunctions.length === 0 && ctx.metrics.length === 0) {
     return ok({ suggestions: [], source: 'offline', note: 'Not enough data yet — run a Sync first.' });
   }
