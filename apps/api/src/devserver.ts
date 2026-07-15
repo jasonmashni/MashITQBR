@@ -49,6 +49,7 @@ const routes: Route[] = [
   { method: 'GET', re: /^\/api\/clients$/, run: () => h.listClients() },
   { method: 'POST', re: /^\/api\/clients\/import\/halo$/, run: () => h.importHalo() },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/goals$/, run: (m, b) => h.putClientGoals(m[1]!, b) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/research$/, run: (m) => h.researchClient(m[1]!) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)$/, run: (m) => h.getClientRecord(m[1]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)$/, run: (m, b) => h.updateClient(m[1]!, b) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/opportunities$/, run: (m) => h.listOpportunities(m[1]!) },

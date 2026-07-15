@@ -224,6 +224,21 @@ export const api = {
   /** Cancel the scheduled meeting: deletes the Teams event, reopens booking. */
   cancelMeeting: (clientId: string, period: string) =>
     send('DELETE', `/api/clients/${clientId}/qbr/${period}/meeting`).then(json<{ cancelled: boolean }>),
+  /** Client + industry intelligence (web-search-backed) for QBR prep. */
+  researchClient: (clientId: string) =>
+    send('POST', `/api/clients/${clientId}/research`).then(
+      json<{
+        available: boolean;
+        note?: string;
+        research?: {
+          summary: string;
+          trends: Array<{ title: string; insight: string; relevance: string; sourceName?: string; sourceUrl?: string }>;
+          suggestedGoals: Array<{ title: string; alignment: string }>;
+          recommendations: string[];
+          sourced: boolean;
+        };
+      }>,
+    ),
   /** Consultative agenda suggestions from the quarter's data (2-3 talking points).
    * Pass `exclude` (topics already shown) so Refresh surfaces different ones. */
   suggestAgenda: (clientId: string, period: string, exclude: string[] = []) =>

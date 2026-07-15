@@ -64,6 +64,7 @@ import { renderBookingPage } from './bookingPage.js';
 import { appendPdfAttachments, loadPdfAttachments, pdfFirstPages } from './pdfMerge.js';
 import { createClaudeDocMatcher, type DocMatchModel } from './docMatch.js';
 import { buildAgendaContext, createClaudeAgendaSuggester, offlineAgenda, type AgendaModel } from './agenda.js';
+import { createClaudeResearcher, type ResearchModel } from './research.js';
 import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 
@@ -403,6 +404,32 @@ export async function suggestQbrAgenda(
   } catch {
     // Never fail the request — data-driven suggestions still help.
     return ok({ suggestions: offlineAgenda(ctx), source: 'offline', note: 'AI unavailable — showing data-driven suggestions.' });
+  }
+}
+
+/**
+ * Client + industry intelligence for QBR prep — recent, sourced developments an
+ * account manager should know, plus suggested strategic goals. On demand;
+ * web-search-backed. Needs an Anthropic key; degrades to a clear message when
+ * AI is off or the researcher fails.
+ */
+export async function researchClient(clientId: string, researcher?: ResearchModel): Promise<ApiResult> {
+  const client = await getDataStore().getClient(clientId);
+  if (!client) return err(404, 'Unknown client');
+  if (!researcher && !process.env['ANTHROPIC_API_KEY']) {
+    return ok({ available: false, note: 'Client research needs AI — add the Anthropic key (Settings) to enable it.' });
+  }
+  try {
+    const research = await (researcher ?? createClaudeResearcher())({
+      clientName: client.name,
+      industry: client.industry,
+      complianceStandard: client.complianceStandard,
+      existingGoals: (client.goals ?? []).map((g) => g.title).filter(Boolean),
+    });
+    audit('client.research', `client:${clientId}`, `${research.trends.length} trend(s)`);
+    return ok({ available: true, research });
+  } catch (e) {
+    return err(502, `Research failed: ${e instanceof Error ? e.message : 'unknown error'}`);
   }
 }
 

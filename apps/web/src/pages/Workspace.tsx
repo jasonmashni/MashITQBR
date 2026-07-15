@@ -2629,10 +2629,21 @@ const GOAL_STATUS_OPTIONS: Array<{ value: ClientGoalStatus; label: string; color
  * and how IT supports them — these open the report and steer the AI narrative.
  * Loads/saves the whole list on the client record via a dedicated endpoint.
  */
+type ResearchResult = {
+  summary: string;
+  trends: Array<{ title: string; insight: string; relevance: string; sourceName?: string; sourceUrl?: string }>;
+  suggestedGoals: Array<{ title: string; alignment: string }>;
+  recommendations: string[];
+  sourced: boolean;
+};
+
 function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => void }) {
   const [goals, setGoals] = useState<ClientGoal[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [research, setResearch] = useState<ResearchResult | null>(null);
+  const [researching, setResearching] = useState(false);
+  const [researchNote, setResearchNote] = useState('');
 
   useEffect(() => {
     let live = true;
@@ -2652,6 +2663,31 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
   const patch = (id: string, p: Partial<ClientGoal>) => setGoals((g) => g.map((x) => (x.id === id ? { ...x, ...p } : x)));
   const remove = (id: string) => setGoals((g) => g.filter((x) => x.id !== id));
 
+  // Append a researched suggestion as an editable goal (user reviews, then Save).
+  const addSuggestedGoal = (title: string, alignment?: string) => {
+    setGoals((g) => [...g, { id: rid(), title, alignment, status: 'planned' }]);
+    notifications.show({ color: 'teal', message: 'Added below — review it, then Save goals.' });
+  };
+
+  async function runResearch() {
+    setResearching(true);
+    setResearchNote('');
+    try {
+      const r = await api.researchClient(clientId);
+      if (!r.available || !r.research) {
+        setResearchNote(r.note ?? 'Research is unavailable right now.');
+        setResearch(null);
+      } else {
+        setResearch(r.research);
+        if (!r.research.sourced) setResearchNote('Live web search was unavailable — this reflects the model\'s general knowledge, so verify before acting.');
+      }
+    } catch (e) {
+      setResearchNote(e instanceof Error ? e.message : 'Research failed.');
+    } finally {
+      setResearching(false);
+    }
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -2669,6 +2705,7 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
   }
 
   return (
+    <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="lg">
     <Card withBorder radius="md" padding="lg">
       <Group justify="space-between" mb={4}>
         <Title order={5}>Strategic goals &amp; alignment</Title>
@@ -2732,6 +2769,97 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
         <Button loading={saving} onClick={save} disabled={loading}>Save goals</Button>
       </Group>
     </Card>
+
+    <Card withBorder radius="md" padding="lg">
+      <Group justify="space-between" mb={4}>
+        <Title order={5}>Market &amp; industry intelligence</Title>
+        <Button
+          size="compact-sm"
+          variant="light"
+          color="teal"
+          loading={researching}
+          leftSection={<IconSparkles size={14} />}
+          onClick={runResearch}
+        >
+          {research ? 'Refresh' : 'Research'}
+        </Button>
+      </Group>
+      <Text size="xs" c="dimmed" mb="md">
+        Recent, sourced developments in this client's industry and region that could shape their IT, security, or
+        compliance priorities — plus goals worth proposing. For your prep; nothing is added to the report automatically.
+      </Text>
+      {researching ? (
+        <Stack gap="xs" align="center" py="xl">
+          <Loader size="sm" />
+          <Text size="xs" c="dimmed">Researching the client and their industry…</Text>
+        </Stack>
+      ) : research ? (
+        <Stack gap="md">
+          {research.summary && <Text size="sm">{research.summary}</Text>}
+          {researchNote && <Text size="xs" c="orange.7">{researchNote}</Text>}
+          {research.trends.length > 0 && (
+            <div>
+              <Text size="xs" fw={700} tt="uppercase" c="dimmed" mb={6}>Trends &amp; news</Text>
+              <Stack gap="sm">
+                {research.trends.map((t, i) => (
+                  <Card key={i} withBorder radius="sm" padding="sm" bg="var(--mantine-color-gray-0)">
+                    <Text size="sm" fw={600}>{t.title}</Text>
+                    {t.insight && <Text size="xs" mt={2}>{t.insight}</Text>}
+                    {t.relevance && <Text size="xs" c="dimmed" mt={4}><b>Why it matters:</b> {t.relevance}</Text>}
+                    {t.sourceUrl && (
+                      <Anchor href={t.sourceUrl} target="_blank" rel="noreferrer" size="xs" mt={4} style={{ display: 'inline-block' }}>
+                        {t.sourceName || 'Source'} ↗
+                      </Anchor>
+                    )}
+                  </Card>
+                ))}
+              </Stack>
+            </div>
+          )}
+          {research.suggestedGoals.length > 0 && (
+            <div>
+              <Text size="xs" fw={700} tt="uppercase" c="dimmed" mb={6}>Suggested goals</Text>
+              <Stack gap="xs">
+                {research.suggestedGoals.map((g, i) => (
+                  <Group key={i} justify="space-between" wrap="nowrap" align="flex-start" gap="sm">
+                    <div style={{ minWidth: 0 }}>
+                      <Text size="sm" fw={500}>{g.title}</Text>
+                      {g.alignment && <Text size="xs" c="dimmed">{g.alignment}</Text>}
+                    </div>
+                    <Button size="compact-xs" variant="light" leftSection={<IconPlus size={12} />} style={{ flex: '0 0 auto' }} onClick={() => addSuggestedGoal(g.title, g.alignment)}>
+                      Add
+                    </Button>
+                  </Group>
+                ))}
+              </Stack>
+            </div>
+          )}
+          {research.recommendations.length > 0 && (
+            <div>
+              <Text size="xs" fw={700} tt="uppercase" c="dimmed" mb={6}>Recommendations</Text>
+              <Stack gap="xs">
+                {research.recommendations.map((r, i) => (
+                  <Group key={i} justify="space-between" wrap="nowrap" align="flex-start" gap="sm">
+                    <Text size="sm" style={{ minWidth: 0 }}>{r}</Text>
+                    <Button size="compact-xs" variant="subtle" leftSection={<IconPlus size={12} />} style={{ flex: '0 0 auto' }} onClick={() => addSuggestedGoal(r)}>
+                      Add as goal
+                    </Button>
+                  </Group>
+                ))}
+              </Stack>
+            </div>
+          )}
+        </Stack>
+      ) : (
+        <Stack gap="xs" align="center" py="xl">
+          <IconBulb size={22} color="var(--mantine-color-teal-6)" />
+          <Text size="sm" c="dimmed" ta="center" maw={300}>
+            {researchNote || 'Click Research to pull recent industry trends, relevant news, and goal ideas for this client.'}
+          </Text>
+        </Stack>
+      )}
+    </Card>
+    </SimpleGrid>
   );
 }
 

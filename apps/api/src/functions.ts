@@ -49,6 +49,7 @@ route('listClients', 'GET', 'api/clients', () => h.listClients());
 route('getClientRecord', 'GET', 'api/clients/{clientId}', (req) => h.getClientRecord(req.params['clientId']!));
 route('updateClient', 'PUT', 'api/clients/{clientId}', async (req) => h.updateClient(req.params['clientId']!, await body(req)));
 route('putClientGoals', 'PUT', 'api/clients/{clientId}/goals', async (req) => h.putClientGoals(req.params['clientId']!, await body(req)));
+route('researchClient', 'POST', 'api/clients/{clientId}/research', (req) => h.researchClient(req.params['clientId']!));
 route('importHalo', 'POST', 'api/clients/import/halo', () => h.importHalo());
 route('getQbr', 'GET', 'api/clients/{clientId}/qbr/{period}', (req) => h.getQbr(req.params['clientId']!, req.params['period']!, ai(req)));
 route('getReportHtml', 'GET', 'api/clients/{clientId}/qbr/{period}/report.html', (req) => h.getReportHtml(req.params['clientId']!, req.params['period']!, ai(req)));
