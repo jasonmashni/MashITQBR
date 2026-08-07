@@ -124,7 +124,10 @@ describe('booking flow end-to-end (JSON store + fake Graph)', () => {
     expect((info.json as { status: string }).status).toBe('open');
 
     // Slots (no Graph creds -> configured windows, calendarChecked false).
-    const slots = await h.publicBookingSlots(booking.token, '2026-08-03', '2026-08-07');
+    // Ask for a live window relative to now — beyond the 24h lead, inside the
+    // 45-day max, spanning enough days to always contain weekdays.
+    const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+    const slots = await h.publicBookingSlots(booking.token, day(2), day(8));
     expect(slots.status).toBe(200);
     const slotBody = slots.json as { slots: string[]; calendarChecked: boolean };
     expect(slotBody.calendarChecked).toBe(false);

@@ -143,6 +143,9 @@ export const api = {
     send('POST', `/api/clients/${clientId}/qbr/${period}/sync`).then(json<{ metrics: number; warnings: string[]; documents?: number }>),
   putStatus: (clientId: string, period: string, status: string) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/status`, { status }).then(json<unknown>),
+  /** Client skipped the meeting: record the disposition and close the quarter as completed. */
+  dispositionSkipped: (clientId: string, period: string, reason?: string) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/disposition`, reason ? { reason } : {}).then(json<unknown>),
   putSchedule: (clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/schedule`, body).then(json<unknown>),
   // Report repository (all quarters) + per-document updates

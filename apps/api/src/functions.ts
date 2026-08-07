@@ -96,6 +96,7 @@ route('suggestAgenda', 'POST', 'api/clients/{clientId}/qbr/{period}/agenda', asy
 // Live pipeline + workflow
 route('syncQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/sync', (req) => h.syncQbr(req.params['clientId']!, req.params['period']!));
 route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) => h.putStatus(req.params['clientId']!, req.params['period']!, (await body(req))['status']));
+route('dispositionSkipped', 'POST', 'api/clients/{clientId}/qbr/{period}/disposition', async (req) => h.dispositionQbrSkipped(req.params['clientId']!, req.params['period']!, (await body(req)) as { reason?: unknown }));
 route('putSchedule', 'PUT', 'api/clients/{clientId}/qbr/{period}/schedule', async (req) => h.putSchedule(req.params['clientId']!, req.params['period']!, (await body(req)) as { scheduledAt?: string; joinUrl?: string }));
 route('pushAction', 'POST', 'api/clients/{clientId}/qbr/{period}/actions/push', async (req) => h.pushQbrAction(req.params['clientId']!, req.params['period']!, (await body(req)) as { actionId?: string; target: PushInput['target'] }));
 route('emailDraft', 'GET', 'api/clients/{clientId}/qbr/{period}/email.eml', (req) => h.getEmailDraft(req.params['clientId']!, req.params['period']!, ai(req), headerGet(req)));

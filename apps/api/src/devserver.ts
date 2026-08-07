@@ -82,6 +82,7 @@ const routes: Route[] = [
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/agenda$/, run: (m, b) => h.suggestQbrAgenda(m[1]!, m[2]!, undefined, Array.isArray(b['exclude']) ? (b['exclude'] as string[]) : []) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/sync$/, run: (m) => h.syncQbr(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/status$/, run: (m, b) => h.putStatus(m[1]!, m[2]!, b['status']) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/disposition$/, run: (m, b) => h.dispositionQbrSkipped(m[1]!, m[2]!, b as { reason?: unknown }) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/schedule$/, run: (m, b) => h.putSchedule(m[1]!, m[2]!, b as { scheduledAt?: string; joinUrl?: string }) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/actions\/push$/, run: (m, b) => h.pushQbrAction(m[1]!, m[2]!, b as { actionId?: string; target: PushInput['target'] }) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/email\.eml$/, run: (m, _b, url, header) => h.getEmailDraft(m[1]!, m[2]!, url.searchParams.get('ai'), header) },

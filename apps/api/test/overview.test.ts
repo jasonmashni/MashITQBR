@@ -83,6 +83,35 @@ describe('overview + periods endpoints', () => {
     expect(rec?.meeting?.heldAt).toBe(past);
   });
 
+  it('dispositioning a skipped meeting completes the QBR without stamping heldAt', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+
+    // Guard: the report package must have gone out first.
+    expect((await h.dispositionQbrSkipped('mp', '2026-Q1', { reason: 'client passed' })).status).toBe(409);
+
+    // Generating the email draft stamps packageSentAt; then the skip closes the quarter.
+    await h.getEmailDraft('mp', '2026-Q1', null);
+    const res = await h.dispositionQbrSkipped('mp', '2026-Q1', { reason: 'Client declined — emailed report only' });
+    expect(res.status).toBe(200);
+    const rec = await store.getQbr('mp', '2026-Q1');
+    expect(rec?.status).toBe('completed');
+    expect(rec?.meetingSkipped?.reason).toBe('Client declined — emailed report only');
+    expect(rec?.meeting?.heldAt).toBeUndefined();
+
+    // Engagement signal stays honest: the quarter closed, but no QBR was held.
+    const over = await h.getOverview('2026-Q1');
+    const mp = (over.json as { clients: Array<{ clientId: string; status: string; health: { drivers: string[] } }> }).clients.find(
+      (c) => c.clientId === 'mp',
+    )!;
+    expect(mp.status).toBe('completed');
+    expect(mp.health.drivers.join(' ')).toMatch(/no qbr held/i);
+
+    // Later stage changes must not backfill heldAt on a skipped quarter.
+    await h.putStatus('mp', '2026-Q1', 'actions_pushed');
+    expect((await store.getQbr('mp', '2026-Q1'))?.meeting?.heldAt).toBeUndefined();
+  });
+
   it('sums open opportunity value into the roadmap figure and clears on empty', async () => {
     const h = await import('../src/handlers.js');
     // A one-time and a recurring open card → annualized roadmap value.

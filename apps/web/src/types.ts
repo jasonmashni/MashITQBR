@@ -154,6 +154,8 @@ export interface QbrMeta {
   meeting?: { scheduledAt?: string; joinUrl?: string; heldAt?: string };
   /** When the QBR package (email draft) was last generated. */
   packageSentAt?: string;
+  /** Set when the client opted to skip the review meeting this quarter. */
+  meetingSkipped?: { at: string; reason?: string };
 }
 
 export interface QbrResponse {

@@ -62,6 +62,7 @@ import {
   IconExternalLink,
   IconSparkles,
   IconTableImport,
+  IconCalendarOff,
   IconCheck,
   IconInfoCircle,
   IconMail,
@@ -290,6 +291,11 @@ export function Workspace() {
           <Title order={2}>{client?.name ?? qbr?.model.client.name ?? clientId}</Title>
           <Group gap="xs" mt={4}>
             {meta && <StatusBadge status={meta.status} />}
+            {meta?.meetingSkipped && (
+              <Tooltip label={meta.meetingSkipped.reason ?? 'The client opted to skip the review meeting this quarter.'}>
+                <Badge color="gray" variant="light">meeting skipped</Badge>
+              </Tooltip>
+            )}
             {qbr && <RatingBadge rating={qbr.model.scorecard.overall.rating} score={qbr.model.scorecard.overall.score} />}
             {qbr && !qbr.verification && <Badge color="red" variant="light">figures unverified</Badge>}
           </Group>
@@ -381,6 +387,15 @@ export function Workspace() {
                     setRefresh((n) => n + 1);
                   } catch (e) {
                     notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Could not complete' });
+                  }
+                }}
+                onSkipMeeting={async (reason) => {
+                  try {
+                    await api.dispositionSkipped(clientId, period, reason || undefined);
+                    notifications.show({ color: 'teal', message: `${period} QBR dispositioned — meeting skipped, quarter closed as completed.` });
+                    setRefresh((n) => n + 1);
+                  } catch (e) {
+                    notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Could not disposition' });
                   }
                 }}
               />
@@ -477,6 +492,7 @@ function PipelineStepper({
   disc,
   goTab,
   onComplete,
+  onSkipMeeting,
 }: {
   hasData: boolean;
   meta: QbrResponse['meta'] | undefined;
@@ -484,24 +500,33 @@ function PipelineStepper({
   disc: Discussion | null;
   goTab: (tab: string) => void;
   onComplete: () => void;
+  onSkipMeeting: (reason: string) => void | Promise<void>;
 }) {
   const scheduled = Boolean(meta?.meeting?.scheduledAt);
+  const skipped = Boolean(meta?.meetingSkipped);
   const met =
     (scheduled && new Date(meta!.meeting!.scheduledAt!) < new Date()) ||
     Boolean(disc?.items.some((i) => i.status === 'discussed')) ||
-    statusAtLeast(meta?.status, 'completed');
+    (statusAtLeast(meta?.status, 'completed') && !skipped);
   const completed = meta?.status === 'completed' || meta?.status === 'archived';
   const steps: Array<{ label: string; desc: string; done: boolean; tab?: string }> = [
     { label: 'Sync data', desc: hasData ? 'Data is in' : 'Pull from the connected tools', done: hasData, tab: 'data' },
     { label: 'File reports', desc: unfiled > 0 ? `${unfiled} need filing` : 'Repository tidy', done: hasData && unfiled === 0, tab: 'reports' },
     { label: 'Review narrative', desc: 'Edit and approve the story', done: statusAtLeast(meta?.status, 'narrative_approved'), tab: 'overview' },
-    { label: 'Schedule', desc: scheduled ? 'On the calendar' : 'Send the booking link', done: scheduled, tab: 'meeting' },
-    { label: 'Hold the meeting', desc: 'Capture answers live', done: met, tab: 'meeting' },
+    { label: 'Schedule', desc: skipped && !scheduled ? 'Client skipped' : scheduled ? 'On the calendar' : 'Send the booking link', done: scheduled || skipped, tab: 'meeting' },
+    { label: 'Hold the meeting', desc: skipped ? 'Client skipped this quarter' : 'Capture answers live', done: met || skipped, tab: 'meeting' },
     { label: 'Send package', desc: meta?.packageSentAt ? 'Draft generated' : 'Email draft carries the PDF', done: Boolean(meta?.packageSentAt) },
     { label: 'Complete', desc: completed ? 'Next quarter is up' : 'Close out this QBR', done: completed },
   ];
   const active = steps.findIndex((s) => !s.done);
   const readyToComplete = !completed && steps.slice(0, 6).every((s) => s.done);
+  // The escape hatch when the client passes on the review: once the package is
+  // out, the QBR can be dispositioned as "meeting skipped" and closed without
+  // walking the Schedule / Hold steps.
+  const canSkip = !completed && !skipped && Boolean(meta?.packageSentAt);
+  const [skipOpen, setSkipOpen] = useState(false);
+  const [skipReason, setSkipReason] = useState('');
+  const [skipping, setSkipping] = useState(false);
   return (
     <Card withBorder radius="md" padding="md">
       <Stepper
@@ -523,11 +548,59 @@ function PipelineStepper({
           />
         ))}
       </Stepper>
-      {readyToComplete && (
+      {(readyToComplete || canSkip) && (
         <Group justify="flex-end" mt="xs">
-          <Button size="xs" color="teal" leftSection={<IconCheck size={14} />} onClick={onComplete}>
-            Mark this QBR complete
-          </Button>
+          {canSkip && (
+            <Popover opened={skipOpen} onChange={setSkipOpen} width={340} position="bottom-end" withArrow shadow="md">
+              <Popover.Target>
+                <Button size="xs" variant="default" leftSection={<IconCalendarOff size={14} />} onClick={() => setSkipOpen((o) => !o)}>
+                  Client skipped the meeting
+                </Button>
+              </Popover.Target>
+              <Popover.Dropdown>
+                <Stack gap="xs">
+                  <Text size="sm" fw={600}>Disposition: meeting skipped</Text>
+                  <Text size="xs" c="dimmed">
+                    Closes this quarter as completed without a review meeting. The report package already went out; no meeting date is recorded.
+                  </Text>
+                  <Textarea
+                    size="xs"
+                    autosize
+                    minRows={2}
+                    placeholder="Reason (optional) — e.g. client declined, happy with the emailed report"
+                    value={skipReason}
+                    onChange={(e) => setSkipReason(e.currentTarget.value)}
+                  />
+                  <Group justify="flex-end" gap="xs">
+                    <Button size="xs" variant="default" onClick={() => setSkipOpen(false)}>Cancel</Button>
+                    <Button
+                      size="xs"
+                      color="teal"
+                      loading={skipping}
+                      leftSection={<IconCheck size={14} />}
+                      onClick={async () => {
+                        setSkipping(true);
+                        try {
+                          await onSkipMeeting(skipReason.trim());
+                          setSkipOpen(false);
+                          setSkipReason('');
+                        } finally {
+                          setSkipping(false);
+                        }
+                      }}
+                    >
+                      Disposition &amp; complete
+                    </Button>
+                  </Group>
+                </Stack>
+              </Popover.Dropdown>
+            </Popover>
+          )}
+          {readyToComplete && (
+            <Button size="xs" color="teal" leftSection={<IconCheck size={14} />} onClick={onComplete}>
+              Mark this QBR complete
+            </Button>
+          )}
         </Group>
       )}
     </Card>

@@ -1212,7 +1212,8 @@ export async function putStatus(clientId: string, period: string, status: unknow
   // forward — use the scheduled time if it's already passed, else now.
   if (QBR_HELD_STAGES.includes(status)) {
     const existing = await getDataStore().getQbr(clientId, period);
-    if (!existing?.meeting?.heldAt) {
+    // A skipped-meeting quarter never gets a heldAt — no review took place.
+    if (!existing?.meeting?.heldAt && !existing?.meetingSkipped) {
       const sched = existing?.meeting?.scheduledAt;
       const heldAt = sched && Date.parse(sched) <= Date.now() ? sched : new Date().toISOString();
       patch.meeting = { ...existing?.meeting, heldAt };
@@ -1220,6 +1221,29 @@ export async function putStatus(clientId: string, period: string, status: unknow
   }
   const saved = await patchQbr(clientId, period, patch);
   audit('qbr.status', `qbr:${clientId}/${period}`, status);
+  return ok(saved);
+}
+
+/**
+ * Disposition a QBR whose client skipped the review meeting: record the skip
+ * and close the quarter out as completed. Guarded on the package having gone
+ * out (packageSentAt) — the client must at least have the report in hand
+ * before the quarter closes without a meeting. Deliberately does NOT stamp
+ * meeting.heldAt: no review happened, so the account-health engagement signal
+ * keeps counting from the last quarter that was actually held.
+ */
+export async function dispositionQbrSkipped(clientId: string, period: string, body: { reason?: unknown } | undefined): Promise<ApiResult> {
+  const existing = await getDataStore().getQbr(clientId, period);
+  if (!existing?.packageSentAt) {
+    return err(409, 'Send the report package first (Email draft / PDF), then disposition the skipped meeting.');
+  }
+  if (existing.status === 'archived') return err(409, 'This QBR is archived — un-archive it before changing its disposition.');
+  const reason = typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : undefined;
+  const saved = await patchQbr(clientId, period, {
+    status: advanceStatus(existing.status, 'completed'),
+    meetingSkipped: { at: new Date().toISOString(), ...(reason ? { reason } : {}) },
+  });
+  audit('qbr.disposition', `qbr:${clientId}/${period}`, `meeting skipped${reason ? ` — ${reason}` : ''}`);
   return ok(saved);
 }
 
@@ -1817,9 +1841,14 @@ function ratingRank(r: string): number {
  * has already passed (the review happened). A future or absent meeting means it
  * hasn't been held yet.
  */
-function qbrHeldDate(qbr: { meeting?: { heldAt?: string; scheduledAt?: string } } | undefined): string | undefined {
+function qbrHeldDate(
+  qbr: { meeting?: { heldAt?: string; scheduledAt?: string }; meetingSkipped?: { at: string } } | undefined,
+): string | undefined {
   const m = qbr?.meeting;
   if (m?.heldAt) return m.heldAt;
+  // A dispositioned skip means the review did NOT happen — a stale scheduled
+  // time (e.g. a no-show) must not read as engagement.
+  if (qbr?.meetingSkipped) return undefined;
   if (m?.scheduledAt && Date.parse(m.scheduledAt) <= Date.now()) return m.scheduledAt;
   return undefined;
 }

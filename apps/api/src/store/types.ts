@@ -69,6 +69,8 @@ export interface QbrRecord {
   meeting?: { scheduledAt?: string; joinUrl?: string; heldAt?: string; attendees?: string[]; eventId?: string };
   /** When the QBR package (email draft with the PDF) was last generated. */
   packageSentAt?: string;
+  /** Set when the client opted to skip the review meeting this quarter. */
+  meetingSkipped?: { at: string; reason?: string };
   /** When the "time to schedule" reminder fired — so it fires at most once. */
   dueRemindedAt?: string;
   updatedAt: string;
