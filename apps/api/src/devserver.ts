@@ -15,9 +15,12 @@ import type { ConnectionInput } from './connections.js';
 import type { PushInput } from './actions.js';
 import { actorFrom, principalFrom } from './auth.js';
 import { runWithActor } from './requestContext.js';
+import { gate } from './gate.js';
 import { resolveStaticFile, SECURITY_HEADERS } from './static.js';
 
 const PORT = Number(process.env['PORT'] ?? 7071);
+// Loopback only: the dev server has no Easy Auth in front of it.
+const HOST = '127.0.0.1';
 const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -124,17 +127,10 @@ const routes: Route[] = [
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   const path = url.pathname.replace(/\/+$/, '') || '/';
-  const cors = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    ...SECURITY_HEADERS,
-  };
+  // No CORS headers: the web app reaches this server same-origin (Vite proxy
+  // or the static SPA below), so cross-origin pages get nothing.
+  const cors = { ...SECURITY_HEADERS };
   try {
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204, cors);
-      return res.end();
-    }
     const header: HeaderGet = (name) => {
       const v = req.headers[name.toLowerCase()];
       return Array.isArray(v) ? v[0] : v;
@@ -144,7 +140,7 @@ const server = createServer(async (req, res) => {
       const m = path.match(rt.re);
       if (!m) continue;
       const b = req.method === 'PUT' || req.method === 'POST' ? await readJson(req) : {};
-      const result = await runWithActor(actorFrom(header), async () => rt.run(m, b, url, header));
+      const result = await runWithActor(actorFrom(header), async () => gate(path, header, () => rt.run(m, b, url, header)));
       if (result.html !== undefined) { res.writeHead(result.status, { 'Content-Type': 'text/html; charset=utf-8', ...cors }); return res.end(result.html); }
       if (result.pdf !== undefined) { res.writeHead(result.status, { 'Content-Type': 'application/pdf', ...cors }); return res.end(result.pdf); }
       if (result.pptx !== undefined) {
@@ -181,4 +177,4 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`QBR dev API on http://localhost:${PORT}`));
+server.listen(PORT, HOST, () => console.log(`QBR dev API on http://${HOST}:${PORT}`));

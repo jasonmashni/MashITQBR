@@ -2,6 +2,7 @@ import { app, type HttpMethod, type HttpRequest, type HttpResponseInit } from '@
 import { SECURITY_HEADERS } from './static.js';
 import { actorFrom, principalFrom } from './auth.js';
 import { runWithActor } from './requestContext.js';
+import { gate } from './gate.js';
 import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
@@ -40,8 +41,11 @@ const route = (name: string, method: HttpMethod, r: string, fn: (req: HttpReques
     route: r,
     methods: [method],
     authLevel: 'anonymous',
-    // Actor context lets handlers attribute audit entries to the Easy Auth user.
-    handler: async (req) => runWithActor(actorFrom(headerGet(req)), async () => toResponse(await fn(req))),
+    // The gate refuses non-public routes without an Easy Auth principal when
+    // auth is required (Azure, or QBR_AUTH_REQUIRED=1). Actor context lets
+    // handlers attribute audit entries to the Easy Auth user.
+    handler: async (req) =>
+      runWithActor(actorFrom(headerGet(req)), async () => toResponse(await gate(new URL(req.url).pathname, headerGet(req), () => fn(req)))),
   });
 
 // Clients + report
