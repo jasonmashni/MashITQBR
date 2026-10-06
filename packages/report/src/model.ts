@@ -57,6 +57,12 @@ export interface ReportModel {
   recommendations: string[];
   /** Vendor reports / uploads attached to this QBR (rendered as an appendix). */
   documents: Array<{ name: string; source: string }>;
+  /**
+   * Sync caveats carried from the snapshot (partial pulls, failed collectors).
+   * Rendered as a "Data confidence" note so a sampled count is never read as
+   * a complete one.
+   */
+  dataConfidence: string[];
 }
 
 const SECTION_ORDER: Array<{ category: MetricCategory; title: string }> = [
@@ -88,11 +94,12 @@ export function buildReportModel(args: {
 }): ReportModel {
   const { client, current, previous, narrative, config } = args;
   const period = parsePeriod(current.period);
-  const trends = computeTrends(current, previous);
+  const hidden = new Set(config?.hiddenSections ?? []);
+  // Hidden sections drop out of the trends too, so the movers chart, the deck's
+  // QoQ slide and the fallback recommendations cannot leak a hidden category.
+  const trends = computeTrends(current, previous).filter((t) => !hidden.has(t.category));
   const trendIndex = indexTrends(trends);
   const scorecard = computeScorecard(current);
-
-  const hidden = new Set(config?.hiddenSections ?? []);
   // Categories are lowercase tokens by contract, but tolerate case drift from
   // older cached narratives.
   const summaries = new Map((narrative?.section_summaries ?? []).map((s) => [s.category.trim().toLowerCase(), s.summary]));
@@ -146,5 +153,6 @@ export function buildReportModel(args: {
     notes: args.notes,
     recommendations,
     documents: args.documents ?? [],
+    dataConfidence: (current.warnings ?? []).map((w) => w.trim()).filter(Boolean),
   };
 }

@@ -60,8 +60,8 @@ describe('moversBarChartSvg', () => {
       trend('email.threats_blocked', 40, 22, 'positive'),
     ]);
     expect(svg.startsWith('<svg')).toBe(true);
-    expect(svg).toContain('#2e7d32'); // improved (green)
-    expect(svg).toContain('#c62828'); // needs attention (red)
+    expect(svg).toContain('#0e7c72'); // improved (teal, the shared "good")
+    expect(svg).toContain('#b42318'); // needs attention (red, the shared "act")
     expect(svg).toContain('Improved');
     expect(svg).toContain('Needs attention');
     expect(svg).toContain('<rect');
@@ -81,8 +81,25 @@ describe('selectKpiTiles', () => {
     });
     const tiles = selectKpiTiles(model);
     expect(tiles.length).toBeGreaterThanOrEqual(2);
-    expect(tiles[0]!.label).toBe('Security maturity / 100');
+    expect(tiles[0]!.label).toMatch(/^Security maturity/);
+    expect(tiles[0]!.note).toMatch(/of controls measured/);
     // The rest are drawn from the metric sections (headline candidates).
     expect(tiles.slice(1).every((t) => t.value !== '—')).toBe(true);
+    // The tickets tile carries its movement in words, WinAnsi-safe.
+    const tickets = tiles.find((t) => t.label === 'Tickets handled')!;
+    expect(tickets.note).toBe('up from 47');
+    expect(tickets.noteTone).toBe('bad');
+  });
+
+  it('says "Not scored" instead of a number when confidence is low', () => {
+    const model = buildReportModel({
+      client: SEED_CLIENTS.find((c) => c.id === 'anp')!,
+      current: { clientId: 'anp', period: '2026-Q2', capturedAt: '2026-06-30T00:00:00Z', metrics: [
+        { key: 'tickets.total', label: 'Total tickets', value: 12, source: 'halo', category: 'operations' },
+      ] },
+    });
+    const tiles = selectKpiTiles(model);
+    expect(tiles[0]!.value).toBe('Not scored');
+    expect(tiles[0]!.label).toBe('Security maturity');
   });
 });

@@ -1,5 +1,5 @@
 import type { MetricTrend } from '@mashit/core';
-import { formatValue, ratingColor, trendDeltaText } from './format.js';
+import { formatPercent, formatValue, ratingColor, ratingWord, SEMANTIC, trendDeltaText } from './format.js';
 import type { ReportModel } from './model.js';
 
 /**
@@ -9,19 +9,21 @@ import type { ReportModel } from './model.js';
  * PDF WinAnsi set (▲/▼/→) is ever drawn. Colour carries direction instead.
  */
 
-const GOOD = '#2e7d32';
-const BAD = '#c62828';
-const AXIS = '#c9d2dc';
-const INK = '#33404d';
-const MUTED = '#5a6b7b';
+const GOOD = SEMANTIC.good;
+const BAD = SEMANTIC.act;
+const AXIS = SEMANTIC.hairline;
+const INK = SEMANTIC.text;
+const MUTED = SEMANTIC.muted;
 
 // Telemetry-volume metrics (SIEM events, log/signal counts) dwarf everything
 // else and aren't executive QoQ material — the same exclusion the deck uses.
 const QOQ_EXCLUDE = /siem|logs|events|signals/i;
-// Percent beyond which a swing stops informing the bar length (a tiny prior
-// quarter reads as +2000%); capped for ranking + width, but the label still
-// shows the honest movement.
-const MAG_CAP = 200;
+/**
+ * Percent beyond which a swing stops informing the bar length (a tiny prior
+ * quarter reads as +2000%); capped for ranking + width, but the label still
+ * shows the honest movement. Captions must say the bar is capped.
+ */
+export const MOVER_MAGNITUDE_CAP = 200;
 
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -32,7 +34,7 @@ function truncate(s: string, n: number): string {
 }
 
 /** WinAnsi-safe "vs last" text (mirrors the PDF helper: no → glyph). */
-function safeDelta(t: MetricTrend): string {
+export function safeDelta(t: MetricTrend): string {
   return trendDeltaText(t).replace(' → ', ' to ');
 }
 
@@ -44,6 +46,8 @@ export interface Mover {
   good: boolean;
   /** |deltaPct| capped, for ranking + bar scaling. */
   magnitude: number;
+  /** True when the bar length was capped and understates the real swing. */
+  capped: boolean;
 }
 
 /**
@@ -66,16 +70,26 @@ export function selectMovers(trends: MetricTrend[], max = 6): Mover[] {
       label: t.label,
       deltaText: safeDelta(t),
       good: t.sentiment === 'positive',
-      magnitude: Math.min(Math.abs(t.deltaPct as number), MAG_CAP),
+      magnitude: Math.min(Math.abs(t.deltaPct as number), MOVER_MAGNITUDE_CAP),
+      capped: Math.abs(t.deltaPct as number) > MOVER_MAGNITUDE_CAP,
     }))
     .filter((m) => m.deltaText)
     .sort((a, b) => b.magnitude - a.magnitude)
     .slice(0, max);
 }
 
+/** Caption for the movers figure; names the cap only when a bar actually hit it. */
+export function moversCaption(trends: MetricTrend[], max = 6): string {
+  const movers = selectMovers(trends, max);
+  const capped = movers.some((m) => m.capped);
+  return `Improvements extend right; areas needing attention extend left. Bar length shows the size of the change${
+    capped ? `, capped at ${MOVER_MAGNITUDE_CAP}% so one extreme swing does not flatten the rest; the label carries the real movement` : ''
+  }.`;
+}
+
 /**
  * A diverging horizontal bar chart of the biggest QoQ movers: improvements
- * extend right in green, concerns extend left in red, bar length = the size
+ * extend right in teal, concerns extend left in red, bar length = the size
  * of the change. Returns '' when fewer than two movers exist (not worth a
  * figure). The returned string is a self-contained `<svg>`.
  */
@@ -104,7 +118,7 @@ export function moversBarChartSvg(trends: MetricTrend[], opts: { width?: number;
       const valX = m.good ? cx + w + 6 : cx - w - 6;
       const anchor = m.good ? 'start' : 'end';
       return `<text x="0" y="${(midY + 3.5).toFixed(1)}" font-family="Helvetica, Arial" font-size="10" fill="${INK}">${esc(truncate(m.label, 26))}</text>
-<rect x="${barX.toFixed(1)}" y="${(midY - 7).toFixed(1)}" width="${w.toFixed(1)}" height="14" rx="3" fill="${color}"/>
+<rect x="${barX.toFixed(1)}" y="${(midY - 7).toFixed(1)}" width="${w.toFixed(1)}" height="14" rx="2" fill="${color}"/>
 <text x="${valX.toFixed(1)}" y="${(midY + 3.5).toFixed(1)}" text-anchor="${anchor}" font-family="Helvetica, Arial" font-size="9.5" font-weight="bold" fill="${color}">${esc(m.deltaText)}</text>`;
     })
     .join('\n');
@@ -122,6 +136,10 @@ export interface KpiTile {
   value: string;
   label: string;
   color: string;
+  /** Second line under the value: a WinAnsi-safe trend ("up from 47", "0 to 3") or a confidence note. */
+  note?: string;
+  /** Sentiment of the note, for colour; undefined renders in muted ink. */
+  noteTone?: 'good' | 'bad' | 'neutral';
 }
 
 /** Priority order for the executive KPI band (first three metrics available win). */
@@ -134,25 +152,48 @@ const KPI_CANDIDATES: Array<{ key: string; label: string }> = [
   { key: 'endpoints.managed', label: 'Devices managed' },
 ];
 
+/** Trend note for a tile: "up from 47" / "down from 60" / "0 to 3"; blank with no prior quarter. */
+function tileNote(t: MetricTrend | undefined): Pick<KpiTile, 'note' | 'noteTone'> {
+  if (!t || t.previous === null || t.current === null || t.direction === 'na') return {};
+  if (t.direction === 'flat') return { note: 'unchanged from last quarter', noteTone: 'neutral' };
+  const tone: KpiTile['noteTone'] = t.sentiment === 'positive' ? 'good' : t.sentiment === 'negative' ? 'bad' : 'neutral';
+  if (t.previous === 0) return { note: safeDelta(t), noteTone: tone };
+  const prev = formatValue({ value: t.previous, unit: undefined });
+  return { note: `${t.direction === 'up' ? 'up' : 'down'} from ${prev}`, noteTone: tone };
+}
+
 /**
  * The executive "quarter at a glance" stat tiles — the maturity score plus up
  * to three headline metrics. Shared by the HTML band and the PDF kpiBand so
  * both surfaces tell the same top-line story. Returns [] when there's nothing
  * beyond the score to show; callers gate on `length >= 2`.
+ *
+ * The score tile is honest about confidence: with low coverage it says
+ * "Not scored" instead of a number; with medium coverage it is marked
+ * provisional and carries the coverage figure.
  */
 export function selectKpiTiles(m: ReportModel): KpiTile[] {
   const tiles: KpiTile[] = [];
-  const score = m.scorecard.overall.score;
-  tiles.push({
-    value: score === null ? '—' : String(Math.round(score)),
-    label: 'Security maturity / 100',
-    color: ratingColor(m.scorecard.overall.rating),
-  });
-  const byKey = new Map(m.sections.flatMap((s) => s.rows.map((r) => [r.metric.key, r.metric] as const)));
+  const { score, rating, coverage, confidence } = m.scorecard.overall;
+  const coverageText = `${formatPercent(Math.round(coverage * 100))} of controls measured`;
+  if (score === null || confidence === 'low') {
+    tiles.push({ value: 'Not scored', label: 'Security maturity', color: SEMANTIC.unknown, note: coverageText, noteTone: 'neutral' });
+  } else {
+    tiles.push({
+      value: String(Math.round(score)),
+      label: 'Security maturity, out of 100',
+      color: ratingColor(rating),
+      note: confidence === 'medium' ? `${ratingWord(rating)}, provisional: ${coverageText}` : `${ratingWord(rating)}, ${coverageText}`,
+      noteTone: 'neutral',
+    });
+  }
+  const byKey = new Map(m.sections.flatMap((s) => s.rows.map((r) => [r.metric.key, r] as const)));
   for (const c of KPI_CANDIDATES) {
     if (tiles.length >= 4) break;
-    const metric = byKey.get(c.key);
-    if (metric && metric.value !== null) tiles.push({ value: formatValue(metric), label: c.label, color: m.brand.primary });
+    const row = byKey.get(c.key);
+    if (row && row.metric.value !== null) {
+      tiles.push({ value: formatValue(row.metric), label: c.label, color: m.brand.primary, ...tileNote(row.trend) });
+    }
   }
   return tiles;
 }
