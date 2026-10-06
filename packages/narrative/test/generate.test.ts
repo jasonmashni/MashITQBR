@@ -4,6 +4,7 @@ import {
   buildAllowedNumbers,
   buildNarrativeInput,
   generateNarrative,
+  parseModelText,
   type NarrativeInput,
   type NarrativeModel,
   type NarrativeOutput,
@@ -119,5 +120,39 @@ describe('generateNarrative', () => {
     const r = await generateNarrative(input, model, { maxRetries: 2 });
     expect(r.attempts).toBe(2);
     expect(r.verification.ok).toBe(true);
+  });
+});
+
+describe('model output validation', () => {
+  it('rejects output that does not match the narrative shape', async () => {
+    const model = (async () => ({ headline: 'x' })) as unknown as NarrativeModel;
+    await expect(generateNarrative(input, model)).rejects.toThrow(/shape/);
+  });
+
+  it('rejects a list holding a non-string', async () => {
+    const model = (async () => ({ ...clean, highlights: [42] })) as unknown as NarrativeModel;
+    await expect(generateNarrative(input, model)).rejects.toThrow(/shape/);
+  });
+
+  it('treats a negative maxRetries as zero (one attempt)', async () => {
+    let calls = 0;
+    const model: NarrativeModel = async () => {
+      calls++;
+      return fabricated;
+    };
+    const result = await generateNarrative(input, model, { maxRetries: -3 });
+    expect(calls).toBe(1);
+    expect(result.attempts).toBe(1);
+    expect(result.verification.ok).toBe(false);
+  });
+
+  it('parseModelText includes stop_reason when the body is not JSON', () => {
+    expect(() => parseModelText('{"headline": "cut off', 'max_tokens')).toThrow(/stop_reason: max_tokens/);
+    expect(() => parseModelText('not json', null)).toThrow(/did not return valid JSON/);
+  });
+
+  it('parseModelText returns a valid narrative and shape-checks it', () => {
+    expect(parseModelText(JSON.stringify(clean), 'end_turn')).toEqual(clean);
+    expect(() => parseModelText('{"headline":"x"}', 'end_turn')).toThrow(/shape/);
   });
 });
