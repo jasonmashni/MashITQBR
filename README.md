@@ -234,9 +234,10 @@ per MTok; `claude-sonnet-5` runs ~40% cheaper) and `NARRATIVE_EFFORT`
 regenerates narratives on next view (the model id is part of the cache key).
 
 For HIPAA clients, ticket subjects and samples are withheld from the model by
-default. Set `NARRATIVE_ALLOW_PHI=1` only when a BAA covering the model
-provider is in place; it lets ticket samples reach the prompt for every
-client.
+default, for the narrative and for the Meeting tab's agenda suggestions alike,
+and the recurring-theme insight drops its clustering word as well. Set
+`NARRATIVE_ALLOW_PHI=1` only when a BAA covering the model provider is in
+place; it lets ticket samples reach both prompts for every client.
 
 Persistence is a local JSON store + secret file in dev (`.data/`, gitignored;
 override the dir with `QBR_DATA_DIR`); in Azure it uses **Azure Table Storage**
@@ -306,13 +307,37 @@ Insights, a Storage account (TLS 1.2, HTTPS only, no public blob access, the
 protection), a Linux Consumption (Y1) plan, the Function App on Node 22 with a
 system identity scoped to **Key Vault Secrets Officer** on the vault,
 `authsettingsV2` with the four booking paths excluded, and diagnostic
-settings for the app, blob, table and vault. Parameters: `namePrefix`, `env`,
-`location`, `aadClientId`, `aadTenantId`.
+settings for the app, blob, table and vault. Parameters: `namePrefix` (9
+characters at most), `env`, `location`, `aadClientId`, `aadTenantId`,
+`aadClientSecretSettingName` and `loginParameters`.
 
-The Deploy workflow (`.github/workflows/deploy.yml`) needs an `AAD_CLIENT_ID`
-repository variable (the Easy Auth app registration's client id) alongside the
-existing `AZURE_RESOURCE_GROUP` and `FUNCTION_APP_NAME` variables and the
-`AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` secrets.
+Read this before running the template against anything that already exists:
+
+- **It is for provisioning a fresh environment.** `siteConfig.appSettings`
+  replaces every app setting on the Function App, so `ANTHROPIC_API_KEY`,
+  `REPORTS_*`, `NARRATIVE_*`, `RESEARCH_MODEL` and any `QBR_*` setting you
+  added in the portal must be re-applied after an IaC deploy.
+- **The Key Vault name carries a unique suffix** (like the storage account), so
+  deploying the template over an environment created with the old
+  `<prefix>-<env>-kv` name creates a second, empty vault and points
+  `KEY_VAULT_URL` at it. Migrate the connection secrets first, or keep using
+  the portal-managed app and skip the infra job.
+- **Create Teams meeting and server-side send need the token store**, which
+  needs the Easy Auth client secret and the Graph login scopes. Put the secret
+  in an app setting (a Key Vault reference works), pass its name as
+  `aadClientSecretSettingName`, and leave `loginParameters` at its default
+  unless your scopes differ. Without them Easy Auth still signs people in; only
+  those two features stay off.
+
+The Deploy workflow (`.github/workflows/deploy.yml`) ships code on every manual
+run and only provisions infrastructure when its `provision_infra` input is
+ticked. It needs an `AAD_CLIENT_ID` repository variable (the Easy Auth app
+registration's client id) alongside the existing `AZURE_RESOURCE_GROUP` and
+`FUNCTION_APP_NAME` variables and the `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and
+`AZURE_SUBSCRIPTION_ID` secrets. When provisioning, `FUNCTION_APP_NAME` must
+equal the template's app name (`mashqbr-prod-func`); the job refuses to run
+otherwise, so the infra job and the deploy job can never target two different
+apps.
 
 ### Microsoft 365 Teams scheduling (one-time)
 

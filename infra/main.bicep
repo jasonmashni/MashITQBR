@@ -16,7 +16,8 @@
 //                         az deployment group what-if -g <rg> -f infra/main.bicep -p aadClientId=<id> aadTenantId=<id>
 // ─────────────────────────────────────────────────────────────────────────
 
-@description('Short name prefix for all resources, e.g. "mashqbr"')
+@description('Short name prefix for all resources, e.g. "mashqbr" (9 chars max so storage and vault names stay under 24)')
+@maxLength(9)
 param namePrefix string = 'mashqbr'
 
 @description('Deployment environment tag')
@@ -31,6 +32,14 @@ param aadClientId string
 
 @description('Entra tenant id that issues sign-in tokens')
 param aadTenantId string = tenant().tenantId
+
+@description('Name of the app setting that holds the Easy Auth client secret (needed for the token store that powers Create Teams meeting and server-side send). Empty disables it.')
+param aadClientSecretSettingName string = ''
+
+@description('Login parameters requested at sign-in: the Graph scopes the token store must carry for Teams scheduling and mail send.')
+param loginParameters array = [
+  'scope=openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Calendars.ReadWrite'
+]
 
 var suffix = uniqueString(resourceGroup().id, env)
 var saName = toLower('${namePrefix}${env}${take(suffix, 6)}')
@@ -125,6 +134,9 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       linuxFxVersion: 'Node|22'
       minTlsVersion: '1.2'
       ftpsState: 'Disabled'
+      // NOTE: this list REPLACES every app setting on the Function App. Settings
+      // managed outside this template (ANTHROPIC_API_KEY, REPORTS_*, NARRATIVE_*,
+      // RESEARCH_MODEL, QBR_*) must be re-applied after an IaC deploy; see README.
       appSettings: [
         { name: 'AzureWebJobsStorage', value: storageConnection }
         { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'node' }
@@ -165,13 +177,16 @@ resource authSettings 'Microsoft.Web/sites/config@2024-04-01' = {
     identityProviders: {
       azureActiveDirectory: {
         enabled: true
-        registration: {
-          clientId: aadClientId
-          openIdIssuer: '${environment().authentication.loginEndpoint}${aadTenantId}/v2.0'
-        }
+        registration: union(
+          {
+            clientId: aadClientId
+            openIdIssuer: '${environment().authentication.loginEndpoint}${aadTenantId}/v2.0'
+          },
+          empty(aadClientSecretSettingName) ? {} : { clientSecretSettingName: aadClientSecretSettingName }
+        )
       }
     }
-    login: { tokenStore: { enabled: true } }
+    login: { tokenStore: { enabled: true }, loginParameters: loginParameters }
   }
 }
 
