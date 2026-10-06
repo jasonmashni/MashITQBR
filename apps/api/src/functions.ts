@@ -3,6 +3,7 @@ import { SECURITY_HEADERS } from './static.js';
 import { actorFrom, principalFrom } from './auth.js';
 import { runWithActor } from './requestContext.js';
 import { gate } from './gate.js';
+import { INVALID_BODY, InvalidBodyError, parseBody } from './body.js';
 import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
@@ -34,7 +35,20 @@ function toResponse(r: ApiResult): HttpResponseInit {
 }
 
 const ai = (req: HttpRequest) => req.query.get('ai');
-const body = async (req: HttpRequest) => ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
+/** Parsed JSON object body; a malformed body throws and the route answers 400. */
+const body = async (req: HttpRequest) => {
+  const parsed = parseBody(await req.text().catch(() => ''));
+  if (parsed === null) throw new InvalidBodyError();
+  return parsed;
+};
+const guarded = async (fn: () => Promise<ApiResult> | ApiResult): Promise<ApiResult> => {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof InvalidBodyError) return INVALID_BODY;
+    throw e;
+  }
+};
 const headerGet = (req: HttpRequest) => (name: string) => req.headers.get(name);
 const route = (name: string, method: HttpMethod, r: string, fn: (req: HttpRequest) => Promise<ApiResult> | ApiResult) =>
   app.http(name, {
@@ -45,7 +59,7 @@ const route = (name: string, method: HttpMethod, r: string, fn: (req: HttpReques
     // auth is required (Azure, or QBR_AUTH_REQUIRED=1). Actor context lets
     // handlers attribute audit entries to the Easy Auth user.
     handler: async (req) =>
-      runWithActor(actorFrom(headerGet(req)), async () => toResponse(await gate(new URL(req.url).pathname, headerGet(req), () => fn(req)))),
+      runWithActor(actorFrom(headerGet(req)), async () => toResponse(await gate(new URL(req.url).pathname, headerGet(req), () => guarded(() => fn(req))))),
   });
 
 // Clients + report

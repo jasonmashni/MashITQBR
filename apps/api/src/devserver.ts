@@ -16,6 +16,7 @@ import type { PushInput } from './actions.js';
 import { actorFrom, principalFrom } from './auth.js';
 import { runWithActor } from './requestContext.js';
 import { gate } from './gate.js';
+import { INVALID_BODY, parseBody } from './body.js';
 import { resolveStaticFile, SECURITY_HEADERS } from './static.js';
 
 const PORT = Number(process.env['PORT'] ?? 7071);
@@ -28,16 +29,11 @@ const WWW = [resolve(HERE, '..', 'www'), resolve(process.cwd(), 'apps/web/dist')
   (d) => existsSync(join(d, 'index.html')),
 );
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+/** Parsed JSON object body, or null when it is malformed (the route answers 400). */
+async function readJson(req: IncomingMessage): Promise<Record<string, unknown> | null> {
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
-  const text = Buffer.concat(chunks).toString('utf8');
-  if (!text) return {};
-  try {
-    return JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
+  return parseBody(Buffer.concat(chunks).toString('utf8'));
 }
 
 type HeaderGet = (name: string) => string | undefined;
@@ -139,8 +135,10 @@ const server = createServer(async (req, res) => {
       if (req.method !== rt.method) continue;
       const m = path.match(rt.re);
       if (!m) continue;
-      const b = req.method === 'PUT' || req.method === 'POST' ? await readJson(req) : {};
-      const result = await runWithActor(actorFrom(header), async () => gate(path, header, () => rt.run(m, b, url, header)));
+      const b = req.method === 'PUT' || req.method === 'POST' || req.method === 'PATCH' ? await readJson(req) : {};
+      const result = await runWithActor(actorFrom(header), async () =>
+        gate(path, header, () => (b === null ? INVALID_BODY : rt.run(m, b, url, header))),
+      );
       if (result.html !== undefined) { res.writeHead(result.status, { 'Content-Type': 'text/html; charset=utf-8', ...cors }); return res.end(result.html); }
       if (result.pdf !== undefined) { res.writeHead(result.status, { 'Content-Type': 'application/pdf', ...cors }); return res.end(result.pdf); }
       if (result.pptx !== undefined) {

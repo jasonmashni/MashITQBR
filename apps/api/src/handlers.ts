@@ -81,6 +81,9 @@ export interface ApiResult {
 }
 const ok = (json: unknown): ApiResult => ({ status: 200, json });
 const err = (status: number, message: string): ApiResult => ({ status, json: { error: message } });
+/** A write with nothing in it is a client bug (or a failed parse upstream), never a reset. */
+const isEmptyBody = (body: Record<string, unknown> | null | undefined) => !body || Object.keys(body).length === 0;
+const EMPTY_BODY = 'Request body is empty';
 
 /** Map a report-build failure: 404 for a missing client/snapshot, 500 otherwise. */
 export function mapBuildError(e: unknown): ApiResult {
@@ -211,6 +214,8 @@ export async function getClientRecord(id: string): Promise<ApiResult> {
  * minted. Kept qualitative — no figures.
  */
 export async function putClientGoals(id: string, body: Record<string, unknown>): Promise<ApiResult> {
+  if (isEmptyBody(body)) return err(400, EMPTY_BODY);
+  if (!Array.isArray(body['goals'])) return err(400, 'goals must be a list');
   const store = getDataStore();
   const existing = await store.getClient(id);
   if (!existing) return err(404, 'Unknown client');
@@ -300,6 +305,7 @@ export async function getOrgSettings(): Promise<ApiResult> {
 }
 
 export async function putOrgSettings(body: Record<string, unknown>): Promise<ApiResult> {
+  if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const raw = (body['brand'] ?? {}) as Record<string, unknown>;
   const str = (k: string) => (typeof raw[k] === 'string' && raw[k] ? (raw[k] as string) : undefined);
   const logo = str('logoDataUri');
@@ -345,6 +351,7 @@ export async function getConfig(clientId: string): Promise<ApiResult> {
   return ok((await getDataStore().getReportConfig(clientId)) ?? { clientId });
 }
 export async function putConfig(clientId: string, body: Record<string, unknown>): Promise<ApiResult> {
+  if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const saved = await getDataStore().putReportConfig({ ...body, clientId } as never);
   audit('config.save', `client:${clientId}`);
   return ok(saved);
@@ -353,6 +360,7 @@ export async function getDiscussion(clientId: string, period: string): Promise<A
   return ok((await getDataStore().getDiscussion(clientId, period)) ?? { clientId, period, items: [] });
 }
 export async function putDiscussion(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const store = getDataStore();
   const items = Array.isArray(body['items']) ? (body['items'] as never[]) : [];
   const saved = await store.putDiscussion({ clientId, period, items, notes: body['notes'] as string | undefined });
