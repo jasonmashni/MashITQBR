@@ -977,10 +977,14 @@ export async function pollInbox(log?: (message: string) => void): Promise<ApiRes
     _lastInboxPoll = {
       at: new Date().toISOString(),
       ok: true,
-      detail: `${result.filed} attachment(s) filed, ${result.unrouted} unrouted of ${result.processed} unread message(s)${folderNote ? ` — ${folderNote}` : ''}`,
+      detail: `${result.filed} attachment(s) filed, ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed} unread message(s)${folderNote ? `; ${folderNote}` : ''}`,
     };
-    if (result.filed > 0 || result.unrouted > 0) {
-      audit('inbox.poll', `mailbox:${cfg.mailbox}`, `${result.filed} filed, ${result.unrouted} unrouted of ${result.processed}`);
+    if (result.filed > 0 || result.unrouted > 0 || (result.untrusted ?? 0) > 0 || (result.failed?.length ?? 0) > 0) {
+      audit(
+        'inbox.poll',
+        `mailbox:${cfg.mailbox}`,
+        `${result.filed} filed, ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed}`,
+      );
     }
     if (result.filed > 0) {
       notify('report', `${result.filed} report(s) filed from the email inbox`, {
@@ -1221,7 +1225,7 @@ export async function syncQbr(clientId: string, period: string): Promise<ApiResu
     if (allFailed) {
       audit('qbr.sync', `qbr:${clientId}/${period}`, 'every collector failed; previous data kept');
       await patchQbr(clientId, period, { lastSyncAttempt: { at: new Date().toISOString(), warnings } });
-      return err(409, 'Every connected tool failed; previous data kept. ' + warnings.join(' '));
+      return err(409, 'No connected tool returned data for this quarter; previous data kept. ' + warnings.join(' '));
     }
     // Vendor-published report files (e.g. the Huntress quarterly PDF) attach automatically.
     await attachSyncDocuments(clientId, period, documents, warnings);

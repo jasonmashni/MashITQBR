@@ -116,7 +116,16 @@ export const api = {
   /** Drain the shared report mailbox now (the timer does this every 5 min). */
   pollInbox: () =>
     send('POST', '/api/inbox/poll').then(
-      json<{ processed: number; filed: number; unrouted: number; folders?: Array<{ folder: string; total: number; unread: number }> }>,
+      json<{
+        processed: number;
+        filed: number;
+        unrouted: number;
+        /** Senders outside the mailbox domain or the allowlist, or mail from Junk (not filed). */
+        untrusted?: number;
+        /** Messages whose processing threw (categorized "QBR: failed"). */
+        failed?: Array<{ id: string; subject?: string; error: string }>;
+        folders?: Array<{ folder: string; total: number; unread: number }>;
+      }>,
     ),
   me: () => send('GET', '/api/me').then(json<Me>),
   audit: (limit = 100) => send('GET', `/api/audit?limit=${limit}`).then(json<{ events: AuditEvent[] }>),

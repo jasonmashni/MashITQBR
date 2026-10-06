@@ -79,15 +79,23 @@ export function Settings() {
     setPolling(true);
     try {
       const r = await api.pollInbox();
-      const folders = r.folders?.map((f) => `${f.folder}: ${f.unread} unread of ${f.total}`).join(' · ');
+      const folders = r.folders?.map((f) => `${f.folder}: ${f.unread} unread of ${f.total}`).join(', ');
+      const untrusted = r.untrusted ?? 0;
+      const failed = r.failed?.length ?? 0;
+      const problems = [
+        untrusted > 0 ? `${untrusted} untrusted (sender outside the mailbox domain or the REPORTS_ALLOWED_SENDERS list, or in Junk; not filed)` : '',
+        failed > 0 ? `${failed} failed: ${r.failed!.map((f) => f.error).slice(0, 2).join('; ')}` : '',
+      ].filter(Boolean);
       notifications.show({
-        color: 'teal',
+        color: problems.length ? 'watch' : 'good',
         title: 'Inbox checked',
-        message: `${r.filed} attachment(s) filed, ${r.unrouted} unrouted, ${r.processed} unread message(s) seen.${folders ? ` ${folders}.` : ''}`,
-        autoClose: 10000,
+        message: `${r.filed} attachment${r.filed === 1 ? '' : 's'} filed, ${r.unrouted} unrouted of ${r.processed} unread message${r.processed === 1 ? '' : 's'}.${
+          problems.length ? ` ${problems.join('. ')}.` : ''
+        }${folders ? ` ${folders}.` : ''}`,
+        autoClose: problems.length ? 15000 : 10000,
       });
     } catch (e) {
-      notifications.show({ color: 'red', title: 'Inbox check failed', message: e instanceof Error ? e.message : 'Unknown error', autoClose: 12000 });
+      notifications.show({ color: 'act', title: 'Inbox check failed', message: e instanceof Error ? e.message : 'Unknown error', autoClose: 12000 });
     } finally {
       setPolling(false);
       api.systemFresh().then(setSystem).catch(() => {});
@@ -126,13 +134,13 @@ export function Settings() {
   async function pickLogo(file: File | null) {
     if (!file) return;
     if (file.size > MAX_LOGO_BYTES) {
-      notifications.show({ color: 'red', message: 'Keep the logo under 500 KB (PNG/JPEG/SVG).' });
+      notifications.show({ color: 'act', message: 'Keep the logo under 500 KB (PNG/JPEG/SVG).' });
       return;
     }
     try {
       setLogo(await readAsDataUri(file));
     } catch (e) {
-      notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Could not read the file.' });
+      notifications.show({ color: 'act', message: e instanceof Error ? e.message : 'Could not read the file.' });
     }
   }
 
@@ -142,9 +150,9 @@ export function Settings() {
     setSaving(true);
     try {
       await api.putOrgSettings(brandBody(), booking);
-      notifications.show({ color: 'teal', message: 'Branding saved — every report, PDF and deck now carries it.' });
+      notifications.show({ color: 'good', message: 'Branding saved, every report, PDF and deck now carries it.' });
     } catch (e) {
-      notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
+      notifications.show({ color: 'act', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
     } finally {
       setSaving(false);
     }
@@ -154,9 +162,9 @@ export function Settings() {
     setSavingBooking(true);
     try {
       await api.putOrgSettings(brandBody(), booking);
-      notifications.show({ color: 'teal', message: 'Booking rules saved — every scheduling link uses them immediately.' });
+      notifications.show({ color: 'good', message: 'Booking rules saved, every scheduling link uses them immediately.' });
     } catch (e) {
-      notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
+      notifications.show({ color: 'act', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
     } finally {
       setSavingBooking(false);
     }
@@ -193,7 +201,7 @@ export function Settings() {
           {logo ? (
             <Image src={logo} alt="Company logo" h={72} w="auto" fit="contain" style={{ alignSelf: 'flex-start' }} />
           ) : (
-            <Text size="sm" c="dimmed">No logo uploaded — the built-in wordmark is used on reports.</Text>
+            <Text size="sm" c="dimmed">No logo uploaded, the built-in wordmark is used on reports.</Text>
           )}
           <Group>
             <FileButton onChange={pickLogo} accept="image/png,image/jpeg,image/svg+xml,image/webp">
@@ -204,7 +212,7 @@ export function Settings() {
               )}
             </FileButton>
             {logo && (
-              <Button variant="subtle" color="red" leftSection={<IconTrash size={16} />} onClick={() => setLogo(undefined)}>
+              <Button variant="subtle" color="act" leftSection={<IconTrash size={16} />} onClick={() => setLogo(undefined)}>
                 Remove
               </Button>
             )}
@@ -227,9 +235,9 @@ export function Settings() {
         <Group justify="space-between" mb={4}>
           <Text fw={600}>QBR self-scheduling (booking page)</Text>
           {system?.bookingGraphReady ? (
-            <Badge color="teal" variant="light">calendar connected</Badge>
+            <Badge color="good" variant="light">calendar connected</Badge>
           ) : (
-            <Badge color="gray" variant="light">calendar not connected</Badge>
+            <Badge color="slate" variant="light">calendar not connected</Badge>
           )}
         </Group>
         <Text size="sm" c="dimmed" mb="sm">
@@ -340,7 +348,7 @@ export function Settings() {
           </List.Item>
           <List.Item>
             Function App → Authentication → your identity provider → <b>Edit</b> → add <Code>/book/*</Code> and{' '}
-            <Code>/api/book/*</Code> to <b>Excluded paths</b> — clients open the booking page without signing in.
+            <Code>/api/book/*</Code> to <b>Excluded paths</b>, clients open the booking page without signing in.
           </List.Item>
           <List.Item>Set the organizer email above and save. Without the Graph permission the page still works, but shows configured windows only and you send the invite yourself.</List.Item>
         </List>
@@ -351,9 +359,9 @@ export function Settings() {
           <Text fw={600}>Report inbox (email ingestion)</Text>
           <Group gap="xs">
             {system?.reportsMailbox ? (
-              <Badge color="teal" variant="light">active · {system.reportsMailbox}</Badge>
+              <Badge color="good" variant="light">active, {system.reportsMailbox}</Badge>
             ) : (
-              <Badge color="gray" variant="light">not configured</Badge>
+              <Badge color="slate" variant="light">not configured</Badge>
             )}
             <Button size="compact-xs" variant="light" loading={polling} onClick={checkInbox}>
               Check now
@@ -362,7 +370,7 @@ export function Settings() {
         </Group>
         {system?.inboxLastPoll && (
           <Text size="xs" c={system.inboxLastPoll.ok ? 'dimmed' : 'red.7'} mb={6}>
-            Last check {new Date(system.inboxLastPoll.at).toLocaleString()} — {system.inboxLastPoll.detail}
+            Last check {new Date(system.inboxLastPoll.at).toLocaleString()}, {system.inboxLastPoll.detail}
           </Text>
         )}
         {!system?.reportsMailbox && system?.inboxEnvSeen && (
@@ -371,12 +379,12 @@ export function Settings() {
             {Object.entries(system.inboxEnvSeen)
               .filter(([, seen]) => !seen)
               .map(([k]) => k)
-              .join(', ') || 'none — all four are visible; restart the app and refresh this page'}
+              .join(', ') || 'none, all four are visible; restart the app and refresh this page'}
             . (Set them under Function App → Environment variables and press <b>Apply</b>.)
           </Text>
         )}
         <Text size="sm" c="dimmed" mb="sm">
-          Every client gets its own address on one shared mailbox — <Code>qbr-reports+&#123;client-id&#125;@yourdomain</Code>.
+          Every client gets its own address on one shared mailbox, <Code>qbr-reports+&#123;client-id&#125;@yourdomain</Code>.
           Schedule vendor reports (Check Point, NinjaOne, Dropsuite…) to send there, or forward them yourself, and the
           attachments file onto that client's QBR automatically (checked every 5 minutes). This builds the per-client
           repository of quarterly reports; each client's exact address shows on its workspace <b>Data</b> tab.
