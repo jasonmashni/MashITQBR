@@ -1071,6 +1071,10 @@ export async function listIntegrations(): Promise<ApiResult> {
 export async function saveIntegration(body: ConnectionInput): Promise<ApiResult> {
   if (!body.type || !body.label) return err(400, 'type and label are required');
   if (!isConnectionType(body.type)) return err(400, `Unknown integration type: ${String(body.type)}`);
+  const hasSecretValues = Object.values(body.secrets ?? {}).some((v) => typeof v === 'string' && v !== '');
+  if (hasSecretValues && secretStoreKind() === 'local-insecure') {
+    return err(400, 'Key Vault is not configured: set KEY_VAULT_URL on the Function App before saving credentials.');
+  }
   const conn = await saveConnection(getDataStore(), getSecretStore(), body);
   audit('integration.save', `integration:${conn.type}/${conn.id}`, conn.label);
   return ok(toConnectionView(conn));

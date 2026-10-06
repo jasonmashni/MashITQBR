@@ -51,3 +51,40 @@ describe('saveConnection', () => {
     expect(await secrets.get(conn.secretRefs['token']!)).toBeUndefined();
   });
 });
+
+describe('secret store safety in Azure', () => {
+  const saved = { site: process.env['WEBSITE_INSTANCE_ID'], kv: process.env['KEY_VAULT_URL'], data: process.env['QBR_DATA_DIR'] };
+  let hdir: string;
+  beforeAll(() => {
+    hdir = mkdtempSync(join(tmpdir(), 'qbr-conn-h-'));
+    process.env['QBR_DATA_DIR'] = hdir;
+    delete process.env['AzureWebJobsStorage'];
+    delete process.env['KEY_VAULT_URL'];
+  });
+  afterAll(() => {
+    rmSync(hdir, { recursive: true, force: true });
+    for (const [k, v] of [['WEBSITE_INSTANCE_ID', saved.site], ['KEY_VAULT_URL', saved.kv], ['QBR_DATA_DIR', saved.data]] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('behaves as before outside Azure', async () => {
+    delete process.env['WEBSITE_INSTANCE_ID'];
+    const h = await import('../src/handlers.js');
+    expect(((await h.getSystem()).json as { secretStore: string }).secretStore).toBe('local');
+    const res = await h.saveIntegration({ type: 'huntress', label: 'H', secrets: { apiKey: 'k', apiSecret: 's' } });
+    expect(res.status).toBe(200);
+  });
+
+  it('in Azure without Key Vault: reports local-insecure and refuses to store secrets', async () => {
+    process.env['WEBSITE_INSTANCE_ID'] = 'abc';
+    const h = await import('../src/handlers.js');
+    expect(((await h.getSystem()).json as { secretStore: string }).secretStore).toBe('local-insecure');
+    const res = await h.saveIntegration({ type: 'huntress', label: 'H2', secrets: { apiKey: 'k', apiSecret: 's' } });
+    expect(res.status).toBe(400);
+    expect((res.json as { error: string }).error).toMatch(/Key Vault/);
+    // A save that carries no secret values (label/config edit) is still allowed.
+    expect((await h.saveIntegration({ type: 'huntress', label: 'H3', secrets: { apiKey: '' } })).status).toBe(200);
+  });
+});
