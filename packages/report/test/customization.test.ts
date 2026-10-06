@@ -43,6 +43,17 @@ describe('resolveBrand', () => {
   it('returns defaults when no brand supplied', () => {
     expect(resolveBrand()).toEqual(MASH_IT_BRAND);
   });
+  it('drops org colors that are not six-digit hex (they are interpolated into CSS)', () => {
+    const b = resolveBrand(undefined, { primary: '#000}</style><script>alert(1)</script>', accent: 'red', ink: '#12' });
+    expect(b.primary).toBe(MASH_IT_BRAND.primary);
+    expect(b.accent).toBe(MASH_IT_BRAND.accent);
+    expect(b.ink).toBe(MASH_IT_BRAND.ink);
+    expect(resolveBrand(undefined, { primary: '#1A2B3C' }).primary).toBe('#1A2B3C');
+  });
+  it('drops an org font that is not a plain family list', () => {
+    expect(resolveBrand(undefined, { font: 'Arial; } body { display:none' }).font).toBe(MASH_IT_BRAND.font);
+    expect(resolveBrand(undefined, { font: "'Public Sans', Arial, sans-serif" }).font).toBe("'Public Sans', Arial, sans-serif");
+  });
 });
 
 describe('buildReportModel customization', () => {

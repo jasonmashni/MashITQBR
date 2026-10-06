@@ -53,16 +53,29 @@ export const MASH_IT_BRAND: BrandTokens = {
  * the real Mash IT logo + house colors) ← per-client overrides. The client
  * logo never replaces the org logo — deliverables carry both.
  */
+/** Six-digit hex only: these tokens are interpolated straight into CSS and PPTX color XML. */
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+/** A font-family list: names, quotes, commas, hyphens and spaces; nothing that can close a declaration. */
+const FONT_FAMILY = /^[A-Za-z0-9 ,'"\-]{1,120}$/;
+
+function safeColor(value: string | undefined, fallback: string): string {
+  return value && HEX_COLOR.test(value) ? value : fallback;
+}
+
+function safeFont(value: string | undefined, fallback: string): string {
+  return value && FONT_FAMILY.test(value) ? value : fallback;
+}
+
 export function resolveBrand(brand?: Brand, orgBrand?: Brand): BrandTokens {
   const org: BrandTokens = {
     ...MASH_IT_BRAND,
     orgName: orgBrand?.name ?? MASH_IT_BRAND.orgName,
     name: orgBrand?.name ?? MASH_IT_BRAND.name,
     orgLogoDataUri: orgBrand?.logoDataUri ?? MASH_IT_BRAND.orgLogoDataUri,
-    primary: orgBrand?.primary ?? MASH_IT_BRAND.primary,
-    accent: orgBrand?.accent ?? MASH_IT_BRAND.accent,
-    ink: orgBrand?.ink ?? MASH_IT_BRAND.ink,
-    font: orgBrand?.font ?? MASH_IT_BRAND.font,
+    primary: safeColor(orgBrand?.primary, MASH_IT_BRAND.primary),
+    accent: safeColor(orgBrand?.accent, MASH_IT_BRAND.accent),
+    ink: safeColor(orgBrand?.ink, MASH_IT_BRAND.ink),
+    font: safeFont(orgBrand?.font, MASH_IT_BRAND.font),
   };
   if (!brand) return org;
   // Deliverables ALWAYS wear the Mash IT theme (colors/fonts from Settings) —
