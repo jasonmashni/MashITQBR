@@ -116,7 +116,10 @@ export function buildReportModel(args: {
   // insights). With no narrative recommendations at all, fall back to the
   // ticket-history talking points first, then generic scorecard remediations —
   // the specific beats the generic.
-  const insightRecs = ticketInsightRecommendations(computeTicketInsights(current.metrics, trends));
+  // Example ticket subjects never reach a HIPAA client's report: a helpdesk
+  // subject line can carry a patient name, and an executive summary is no
+  // place for it even when the reader is the covered entity.
+  const insightRecs = ticketInsightRecommendations(computeTicketInsights(current.metrics, trends, 6, { examples: client.hipaa !== true }));
   const recommendations = narrative?.recommendations?.length
     ? narrative.recommendations
     : [...insightRecs, ...scorecard.remediations.map((r) => `${r.title}: ${r.evidence}`)].slice(0, 6);

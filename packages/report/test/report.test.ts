@@ -75,6 +75,37 @@ describe('renderReportHtml', () => {
   });
 });
 
+describe('fallback recommendations and HIPAA', () => {
+  const row = (id: string, subject: string) => ({ id, subject, status: 'Open' });
+  const snapshot = (period: string) => ({
+    clientId: 'x',
+    period,
+    capturedAt: '2026-06-30T00:00:00Z',
+    metrics: [
+      {
+        key: 'tickets.incidents',
+        label: 'Incidents',
+        value: 4,
+        source: 'halo' as const,
+        category: 'operations' as const,
+        details: [row('1', 'VPN drop for patient Smith'), row('2', 'VPN down again Smith'), row('3', 'VPN failing Smith office'), row('4', 'VPN slow Smith')],
+      },
+    ],
+  });
+  const base = { current: snapshot('2026-Q2'), previous: snapshot('2026-Q1') };
+
+  it('quotes example subjects for a non-HIPAA client', () => {
+    const m = buildReportModel({ ...base, client: { ...anp, hipaa: false } });
+    expect(m.recommendations.join(' ')).toContain('Smith');
+  });
+
+  it('never quotes a ticket subject for a HIPAA client', () => {
+    const m = buildReportModel({ ...base, client: { ...anp, hipaa: true } });
+    expect(m.recommendations.length).toBeGreaterThan(0);
+    expect(m.recommendations.join(' ')).not.toContain('Smith');
+  });
+});
+
 describe('data confidence', () => {
   const warned = buildReportModel({
     client: anp,
