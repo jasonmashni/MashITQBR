@@ -176,7 +176,10 @@ export async function fetchTicketTypeMap(http: HttpTransport, cfg: HaloCfg): Pro
       if (id !== undefined && id !== null && name) map.set(String(id), name);
     }
   } catch {
-    // Tolerated — a ticket row's own tickettype_name (when present) still classifies it.
+    // Tolerated — a ticket row's own tickettype_name (when present) still
+    // classifies it. Not cached: a transient failure must not blank type
+    // resolution for every client synced in the next hour.
+    return map;
   }
   ticketTypeCache.set(cfg.baseUrl, { at: Date.now(), map });
   return map;
@@ -1027,6 +1030,23 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
         if (alertRows.length > 0) metrics.push({ ...op('tickets.alerts', 'Automated alerts', alertRows.length, false), details: toDetail(alertRows) });
 
         metrics.push({ ...op('tickets.closed', 'Tickets closed', closedSvc.length, true), details: toDetail(closedSvc, TICKET_CLOSED_FIELDS, 'closed') });
+
+        // Opened tickets whose type fits neither a service-desk class nor an
+        // alert (e.g. "Onboarding", "Maintenance - Patching") are in no headline
+        // number. Surface them so the gap is visible instead of silently dropped.
+        if (!allowed && classifiable) {
+          const unclassifiedRows = openedRows.filter((r) => {
+            const c = classOf(r);
+            return c === 'other' || c === 'maintenance';
+          });
+          if (unclassifiedRows.length > 0) {
+            metrics.push({ ...op('tickets.unclassified', 'Unclassified tickets', unclassifiedRows.length), details: toDetail(unclassifiedRows) });
+            const names = [...new Set(unclassifiedRows.map((r) => ticketTypeName(r, typeMap) ?? 'no type'))].slice(0, 5);
+            warnings.push(
+              `Halo: ${unclassifiedRows.length} opened ticket(s) are unclassified (types: ${names.join(', ')}) — not counted as service-desk work or alerts; rename the ticket types or set a ticket-type allowlist to include them.`,
+            );
+          }
+        }
 
         if (openedRows.length < openedTotal) {
           warnings.push(`Ticket tallies sampled from the first ${openedRows.length} of ${openedTotal} opened tickets — the ITIL breakdown may be partial.`);

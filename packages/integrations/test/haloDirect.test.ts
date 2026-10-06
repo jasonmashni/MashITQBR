@@ -4,6 +4,7 @@ import {
   classifyTicketType,
   collectHaloDirect,
   createHaloTicket,
+  fetchTicketTypeMap,
   fetchHaloMeta,
   haloToken,
   listHaloClients,
@@ -876,5 +877,57 @@ describe('ticket tallies require a successful period pull', () => {
     expect(by['tickets.incidents']).toBe(2);
     expect(by['tickets.closed']).toBe(0);
     expect(by['tickets.open']).toBe(0);
+  });
+});
+
+describe('ticket-type map caching and unclassified tickets', () => {
+  it('does not cache a failed /api/TicketType lookup', async () => {
+    let calls = 0;
+    const { http } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => r.url.includes('/api/TicketType'),
+        respond: () => (++calls === 1 ? { status: 500, json: {} } : { status: 200, json: { tickettypes: [{ id: 1, name: 'Incident' }] } }),
+      },
+    ]);
+    // One baseUrl for both calls: the second must refetch, not reuse an empty cached map.
+    const cfg = { baseUrl: 'https://typemap-retry.halopsa.com', clientId: 'tm-1', clientSecret: 's' };
+    expect((await fetchTicketTypeMap(http, cfg)).size).toBe(0);
+    const second = await fetchTicketTypeMap(http, cfg);
+    expect(calls).toBe(2);
+    expect(second.get('1')).toBe('Incident');
+  });
+
+  it('surfaces tickets that fit no ITIL class as tickets.unclassified', async () => {
+    const period = makePeriod(2026, 2);
+    const opened = [
+      { id: 1, tickettype_name: 'Incident', dateoccurred: '2026-05-01T10:00:00Z' },
+      { id: 2, tickettype_name: 'Onboarding', dateoccurred: '2026-05-02T10:00:00Z' },
+    ];
+    const { http } = fakeHttp([
+      tokenRoute(),
+      { match: (r) => r.url.includes('/api/TicketType'), respond: () => ({ status: 200, json: { tickettypes: [] } }) },
+      {
+        match: (r) => r.url.includes('/api/Tickets'),
+        respond: (r) => {
+          const u = new URL(r.url);
+          if (u.searchParams.get('datesearch') === 'dateoccurred') return { status: 200, json: { record_count: opened.length, tickets: opened } };
+          return { status: 200, json: { record_count: 0, tickets: [] } };
+        },
+      },
+      { match: (r) => r.url.includes('/api/ClientContract'), respond: () => ({ status: 200, json: { contracts: [] } }) },
+      { match: (r) => r.url.includes('/api/Invoice'), respond: () => ({ status: 200, json: { invoices: [] } }) },
+      { match: (r) => r.url.includes('/api/Asset'), respond: () => ({ status: 200, json: { assets: [] } }) },
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'anp', period, externalRef: '35' },
+      http,
+      { baseUrl: 'https://unclassified.halopsa.com', clientId: 'uc-1', clientSecret: 's' },
+    );
+    const un = out.metrics.find((m) => m.key === 'tickets.unclassified');
+    expect(un?.value).toBe(1);
+    expect(un?.details?.map((d) => d['id'])).toEqual(['2']);
+    expect(out.metrics.find((m) => m.key === 'tickets.total')?.value).toBe(1);
+    expect(out.warnings.some((w) => /unclassified/.test(w))).toBe(true);
   });
 });
