@@ -233,6 +233,13 @@ async function haloPageAll(
 const MRR_FIELDS = ['monthlyvalue', 'monthly_value', 'periodicbillingamount', 'periodic_billing_amount', 'monthlycharge', 'recurringvalue'];
 /** Contract end/renewal date fields (varies by Halo instance). */
 const END_DATE_FIELDS = ['enddate', 'end_date', 'expirydate', 'expiry_date', 'contractenddate', 'contract_end_date', 'renewaldate', 'renewal_date'];
+/**
+ * Billing-period fields on contract rows. UNVERIFIED against Halo docs: the
+ * field name and its value set (string vs numeric code) are not confirmed, so
+ * only string values are interpreted and a non-monthly one is flagged, never
+ * converted.
+ */
+const BILLING_PERIOD_FIELDS = ['billingperiod', 'billing_period'];
 /** Contracts ending within this many days of the quarter close are "up for renewal". */
 const RENEWAL_WINDOW_DAYS = 90;
 
@@ -532,6 +539,15 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
   const spend = (k: string, l: string, v: number, higherIsBetter?: boolean) =>
     metric(k, l, Math.round(v * 100) / 100, { category: 'spend', source: 'halo', unit: 'USD', higherIsBetter });
 
+  // Contracts that ended before the quarter: out of MRR AND out of the
+  // recurring breakdown, so the two agree.
+  const endedIds = new Set<string>();
+  const periodStartMs = Date.parse(`${input.periodStart}T00:00:00Z`);
+  const endedBeforePeriod = (row: Json) => {
+    const ends = firstDate(row, END_DATE_FIELDS);
+    return ends !== undefined && Date.parse(`${ends}T12:00:00Z`) < periodStartMs;
+  };
+
   if (input.contracts.length > 0) {
     let mrr = 0;
     let recognized = 0;
@@ -543,10 +559,21 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
     const windowEnd = Date.parse(`${input.periodEnd}T23:59:59Z`) + RENEWAL_WINDOW_DAYS * 86_400_000;
     let expiring = 0;
     const expiringRows: DetailRow[] = [];
+    let active = 0;
+    const nonMonthly: string[] = [];
     for (const c of input.contracts) {
       const name = firstStr(c, ['ref', 'reference', 'name']) ?? String(c['id'] ?? '');
       const v = firstNum(c, MRR_FIELDS);
       const ends = firstDate(c, END_DATE_FIELDS);
+      // A contract that ended before the quarter began is not recurring revenue
+      // for this quarter (and can't be up for renewal in it either).
+      if (endedBeforePeriod(c)) {
+        if (c['id'] !== undefined && c['id'] !== null) endedIds.add(String(c['id']));
+        continue;
+      }
+      active++;
+      const billing = firstStr(c, BILLING_PERIOD_FIELDS);
+      if (v !== undefined && billing && !/month/i.test(billing)) nonMonthly.push(`${name} (${billing})`);
       if (v !== undefined) {
         mrr += v;
         recognized++;
@@ -560,10 +587,17 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
         }
       }
     }
-    if (recognized > 0) {
+    if (active === 0) {
+      warnings.push(`All ${input.contracts.length} Halo contract(s) ended before the quarter started — MRR not reported.`);
+    } else if (recognized > 0) {
       metrics.push({ ...spend('finance.mrr', 'Monthly recurring revenue', mrr), details: contractRows });
-      if (recognized < input.contracts.length) {
-        warnings.push(`${input.contracts.length - recognized} Halo contract(s) had no recognizable monthly value field — MRR may be understated.`);
+      if (recognized < active) {
+        warnings.push(`${active - recognized} Halo contract(s) had no recognizable monthly value field — MRR may be understated.`);
+      }
+      if (nonMonthly.length > 0) {
+        warnings.push(
+          `Halo contract billing period is not monthly for ${nonMonthly.join(', ')} — its amount is included in MRR as recorded, not converted; check whether it is a monthly figure.`,
+        );
       }
     } else {
       warnings.push('Halo contracts carry no recognizable recurring monthly value field — MRR not computed (check contract billing setup).');
@@ -620,6 +654,7 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
     let sampleDetailKeys: string | undefined;
     let sampleItemKeys: string | undefined;
     for (const detail of details) {
+      if ((detail['id'] !== undefined && detail['id'] !== null && endedIds.has(String(detail['id']))) || endedBeforePeriod(detail)) continue;
       const items = extractContractItems(detail);
       if (items.length === 0) {
         sampleDetailKeys ??= Object.keys(detail).join(', ');
@@ -876,7 +911,15 @@ async function collectHaloForId(ctx: CollectorContext, http: HttpTransport, cfg:
     warnings.push(`Halo${tag} contracts unavailable (MRR skipped): ${e instanceof Error ? e.message : 'error'}`);
   }
   try {
-    invoices = (await haloPageAll(http, cfg, 'Invoice', { client_id: haloId, includelines: true }, 'invoices')).rows;
+    // Newest first, so a capped pull drops the oldest invoices (outside the
+    // quarter) rather than an arbitrary slice.
+    const pull = await haloPageAll(http, cfg, 'Invoice', { client_id: haloId, includelines: true, order: 'invoicedate', orderdesc: true }, 'invoices', 10);
+    invoices = pull.rows;
+    if (pull.rows.length < pull.total) {
+      warnings.push(
+        `Halo${tag}: spend read from the first ${pull.rows.length} of ${pull.total} invoices (newest first) — quarterly spend may be understated if the quarter reaches past them.`,
+      );
+    }
   } catch (e) {
     warnings.push(`Halo${tag} invoices unavailable (quarterly spend skipped): ${e instanceof Error ? e.message : 'error'}`);
   }

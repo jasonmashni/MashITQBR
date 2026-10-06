@@ -659,6 +659,7 @@ describe('normalizeHaloFinance', () => {
         { id: 2, ref: 'Cybersecurity', monthlyvalue: 1500, end_date: '2026-06-20' }, // expired during the quarter → renewing
         { id: 3, ref: 'vCISO', monthlyvalue: 800, enddate: '2027-03-01' }, // far out → not renewing
         { id: 4, ref: 'BDR', monthlyvalue: 500 }, // no end date → ignored for renewal
+        { id: 5, ref: 'Legacy Backup', monthlyvalue: 900, enddate: '2026-02-28' }, // ended before the quarter → out of MRR
       ],
       invoices: [],
       periodStart: '2026-04-01',
@@ -669,8 +670,47 @@ describe('normalizeHaloFinance', () => {
     // Drill-down lists the two renewing agreements, soonest first, with dates.
     expect(renew?.details?.map((d) => d['contract'])).toEqual(['Cybersecurity', 'Managed Services']);
     expect(renew?.details?.[0]).toMatchObject({ ends: '2026-06-20', monthly: 1500 });
-    // MRR still totals every recognized contract.
-    expect(metrics.find((m) => m.key === 'finance.mrr')?.value).toBe(6800);
+    // MRR totals contracts still live in the quarter; the one that ended before
+    // the quarter started (Legacy Backup, 900) is excluded.
+    const mrr = metrics.find((m) => m.key === 'finance.mrr');
+    expect(mrr?.value).toBe(6800);
+    expect(mrr?.details?.map((d) => d['contract'])).not.toContain('Legacy Backup');
+  });
+
+  it('excludes a contract that ended before the period start from MRR', () => {
+    const { metrics } = normalizeHaloFinance({
+      contracts: [
+        { id: 1, ref: 'Managed Services', monthlyvalue: 4000 },
+        { id: 2, ref: 'Old AV', monthlyvalue: 300, enddate: '2026-03-31' },
+      ],
+      contractDetails: [
+        { id: 1, ref: 'Managed Services', items: [{ monthlyprice: 4000, item_group_name: 'Managed Services' }] },
+        { id: 2, ref: 'Old AV', items: [{ monthlyprice: 300, item_group_name: 'Antivirus' }] },
+      ],
+      invoices: [],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    expect(metrics.find((m) => m.key === 'finance.mrr')?.value).toBe(4000);
+    // The recurring breakdown agrees with MRR: the ended contract's items are out too.
+    expect(metrics.some((m) => m.key === 'finance.recurring.antivirus')).toBe(false);
+    expect(metrics.find((m) => m.key === 'finance.recurring.managed_services')?.value).toBe(4000);
+  });
+
+  it('warns, naming the contract, when its billing period is not monthly', () => {
+    const { metrics, warnings } = normalizeHaloFinance({
+      contracts: [
+        { id: 1, ref: 'Managed Services', monthlyvalue: 4000, billingperiod: 'Monthly' },
+        { id: 2, ref: 'Firewall Subscription', monthlyvalue: 1200, billingperiod: 'Annual' },
+      ],
+      invoices: [],
+      periodStart: '2026-04-01',
+      periodEnd: '2026-06-30',
+    });
+    // Not divided: the amount is reported as read, with the caveat attached.
+    expect(metrics.find((m) => m.key === 'finance.mrr')?.value).toBe(5200);
+    expect(warnings.some((w) => /billing period/.test(w) && w.includes('Firewall Subscription') && w.includes('Annual'))).toBe(true);
+    expect(warnings.some((w) => w.includes('Managed Services'))).toBe(false);
   });
 
   it('says which contract fields it saw when no recurring items are recognizable', () => {
@@ -877,6 +917,38 @@ describe('ticket tallies require a successful period pull', () => {
     expect(by['tickets.incidents']).toBe(2);
     expect(by['tickets.closed']).toBe(0);
     expect(by['tickets.open']).toBe(0);
+  });
+});
+
+describe('invoice pull ordering and truncation', () => {
+  it('orders invoices newest first and warns when the pull is truncated', async () => {
+    const period = makePeriod(2026, 2);
+    const page = (n: number) =>
+      Array.from({ length: 200 }, (_, i) => ({ id: n * 1000 + i, invoicedate: '2026-05-01', nettotal: 1 }));
+    const { http, requests } = fakeHttp([
+      tokenRoute(),
+      { match: (r) => r.url.includes('/api/Tickets'), respond: () => ({ status: 200, json: { record_count: 0, tickets: [] } }) },
+      { match: (r) => r.url.includes('/api/ClientContract'), respond: () => ({ status: 200, json: { contracts: [] } }) },
+      {
+        match: (r) => r.url.includes('/api/Invoice'),
+        respond: (r) => {
+          const n = Number(new URL(r.url).searchParams.get('page_no'));
+          // 1200 on record but the server only ever yields 5 pages (1000 rows).
+          return { status: 200, json: { record_count: 1200, invoices: n <= 5 ? page(n) : [] } };
+        },
+      },
+      { match: (r) => r.url.includes('/api/Item'), respond: () => ({ status: 200, json: { items: [] } }) },
+      { match: (r) => r.url.includes('/api/Asset'), respond: () => ({ status: 200, json: { assets: [] } }) },
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'anp', period, externalRef: '35' },
+      http,
+      { baseUrl: 'https://invoice-trunc.halopsa.com', clientId: 'it-1', clientSecret: 's' },
+    );
+    const invoiceReqs = requests.filter((r) => r.url.includes('/api/Invoice'));
+    expect(invoiceReqs.length).toBeGreaterThan(0);
+    for (const r of invoiceReqs) expect(r.url).toContain('order=invoicedate&orderdesc=true');
+    expect(out.warnings.some((w) => /first 1000 of 1200 invoices/.test(w))).toBe(true);
   });
 });
 
