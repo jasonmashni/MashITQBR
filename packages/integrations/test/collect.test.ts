@@ -41,9 +41,12 @@ describe('assembleSnapshot', () => {
     ];
     const { snapshot } = assembleSnapshot('mp', '2026-Q1', results, '2026-03-31T00:00:00.000Z');
     const card = computeScorecard(snapshot);
-    expect(card.overall.score).not.toBeNull();
     const patching = card.safeguards.find((s) => s.id === 'patching')!;
     expect(patching.score).toBe(92);
+    // Two measured safeguards is too little coverage for an overall grade.
+    expect(card.overall.confidence).toBe('low');
+    expect(card.overall.score).toBeNull();
+    expect(card.overall.rating).toBe('unknown');
   });
 });
 

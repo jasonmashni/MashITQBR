@@ -133,11 +133,41 @@ describe('NinjaOne direct', () => {
     const { http } = ninjaRoutes((req) => {
       if (!req.url.includes('os-patches')) return undefined;
       page++;
-      // Every page, including the last one the client is allowed to read, hands back a cursor.
-      return { status: 200, json: { results: [{ deviceId: 17, id: page }], cursor: { name: `c${page}` } } };
+      // Every page is full and, including the last one the client is allowed to read, hands back a cursor.
+      const rows = Array.from({ length: 1000 }, (_, i) => ({ deviceId: 17, id: page * 1000 + i }));
+      return { status: 200, json: { results: rows, cursor: { name: `c${page}` } } };
     });
     const out = await collectNinjaDirect({ clientId: 'anp', period: P, externalRef: '3' }, http, { clientId: 'ninja-trunc-1', clientSecret: 's' });
     expect(out.warnings.some((w) => /truncated/.test(w) && /pending/i.test(w))).toBe(true);
+  });
+
+  it('withholds the patch success rate when an install-history pull was truncated', async () => {
+    const { http } = ninjaRoutes((req) => {
+      if (!req.url.includes('os-patch-installs')) return undefined;
+      const status = new URL(req.url).searchParams.get('status');
+      if (status === 'FAILED') return { status: 200, json: { results: [{ id: 900 }, { id: 901 }] } };
+      // INSTALLED: full pages that always offer a next cursor -> truncated at the page cap.
+      const n = Number(new URL(req.url).searchParams.get('cursor')?.slice(1) ?? '0');
+      const rows = Array.from({ length: 1000 }, (_, i) => ({ id: n * 1000 + i }));
+      return { status: 200, json: { results: rows, cursor: { name: `c${n + 1}` } } };
+    });
+    const out = await collectNinjaDirect({ clientId: 'anp', period: P, externalRef: '3' }, http, { clientId: 'ninja-ptrunc-1', clientSecret: 's' });
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['patch.compliance_pct']).toBeUndefined();
+    expect(by['patch.installed_quarter']).toBe(5000);
+    expect(by['patch.failed_quarter']).toBe(2);
+    expect(out.warnings.some((w) => /success rate not reported/.test(w) && /truncated/.test(w))).toBe(true);
+  });
+
+  it('treats a short page as the end of the list even when it carries a cursor', async () => {
+    const { http } = ninjaRoutes((req) => {
+      if (!req.url.includes('os-patches')) return undefined;
+      // One short page with a (stale) cursor: the list is complete.
+      return { status: 200, json: { results: [{ deviceId: 17, id: 1 }], cursor: { name: 'c1' } } };
+    });
+    const out = await collectNinjaDirect({ clientId: 'anp', period: P, externalRef: '3' }, http, { clientId: 'ninja-short-1', clientSecret: 's' });
+    expect(out.warnings.some((w) => /truncated/.test(w))).toBe(false);
+    expect(out.metrics.find((m) => m.key === 'patch.pending')?.value).toBe(1);
   });
 
   it('normalizers handle empty input', () => {

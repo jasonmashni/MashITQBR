@@ -970,6 +970,22 @@ describe('ticket-type map caching and unclassified tickets', () => {
     expect(second.get('1')).toBe('Incident');
   });
 
+  it('does not cache an empty map from a 200 with an unexpected shape', async () => {
+    let calls = 0;
+    const { http } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => r.url.includes('/api/TicketType'),
+        respond: () => (++calls === 1 ? { status: 200, json: {} } : { status: 200, json: { tickettypes: [{ id: 1, name: 'Incident' }] } }),
+      },
+    ]);
+    const cfg = { baseUrl: 'https://typemap-empty200.halopsa.com', clientId: 'tm-2', clientSecret: 's' };
+    expect((await fetchTicketTypeMap(http, cfg)).size).toBe(0);
+    const second = await fetchTicketTypeMap(http, cfg);
+    expect(calls).toBe(2);
+    expect(second.get('1')).toBe('Incident');
+  });
+
   it('surfaces tickets that fit no ITIL class as tickets.unclassified', async () => {
     const period = makePeriod(2026, 2);
     const opened = [
