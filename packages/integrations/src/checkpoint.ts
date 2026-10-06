@@ -106,25 +106,53 @@ export async function collectCheckpoint(
   cfg: CheckpointCfg,
 ): Promise<CollectResult> {
   const token = await checkpointToken(http, cfg);
+  // Scope to the mapped tenant. The API layer falls back to the internal QBR
+  // client id when no tenant is mapped; that is not a Check Point scope, so it
+  // is not sent. UNVERIFIED: the `scopes` field name/shape is not confirmed
+  // against Check Point's SMART API docs.
+  const scope = ctx.externalRef && ctx.externalRef !== ctx.clientId ? ctx.externalRef : undefined;
   const res = await http.request({
     method: 'POST',
     url: `${cfg.baseUrl}/event/query`,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ startDate: ctx.period.start, endDate: ctx.period.end, saas: 'office365_emails' }),
+    body: JSON.stringify({
+      startDate: ctx.period.start,
+      endDate: ctx.period.end,
+      saas: 'office365_emails',
+      ...(scope ? { scopes: [scope] } : {}),
+    }),
   });
   if (res.status < 200 || res.status >= 300) {
     return { source: 'checkpoint', metrics: [], warnings: [`Check Point responded ${res.status} to event/query.`] };
   }
   const events = extractEvents(res.json);
+  // An unrecognized payload or an empty list both mean "nothing measured":
+  // eight zero counters would read as a perfectly clean quarter.
+  if (events === undefined) {
+    const keys = res.json && typeof res.json === 'object' ? Object.keys(res.json as object).slice(0, 10).join(', ') : typeof res.json;
+    return {
+      source: 'checkpoint',
+      metrics: [],
+      warnings: [`Check Point returned no email events in a recognized format (response fields: ${keys || 'none'}) — email security metrics not reported.`],
+    };
+  }
+  if (events.length === 0) {
+    return {
+      source: 'checkpoint',
+      metrics: [],
+      warnings: [`Check Point returned no email events for ${ctx.period.start} to ${ctx.period.end}${scope ? ` (scope ${scope})` : ''} — email security metrics not reported; confirm the tenant mapping.`],
+    };
+  }
   return { source: 'checkpoint', metrics: normalizeCheckpointEvents(events), warnings: [] };
 }
 
-function extractEvents(json: unknown): CheckpointEvent[] {
+/** The event array from a response, or undefined when the payload shape is not recognized. */
+function extractEvents(json: unknown): CheckpointEvent[] | undefined {
   if (Array.isArray(json)) return json as CheckpointEvent[];
   if (json && typeof json === 'object') {
     const obj = json as Record<string, unknown>;
     const data = obj['responseData'] ?? obj['events'] ?? obj['data'];
     if (Array.isArray(data)) return data as CheckpointEvent[];
   }
-  return [];
+  return undefined;
 }
