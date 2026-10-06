@@ -297,6 +297,11 @@ system identity scoped to **Key Vault Secrets Officer** on the vault,
 settings for the app, blob, table and vault. Parameters: `namePrefix`, `env`,
 `location`, `aadClientId`, `aadTenantId`.
 
+The Deploy workflow (`.github/workflows/deploy.yml`) needs an `AAD_CLIENT_ID`
+repository variable (the Easy Auth app registration's client id) alongside the
+existing `AZURE_RESOURCE_GROUP` and `FUNCTION_APP_NAME` variables and the
+`AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` secrets.
+
 ### Microsoft 365 Teams scheduling (one-time)
 
 QBR emails need **no setup**: the Email draft button downloads an `.eml` that

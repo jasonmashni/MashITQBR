@@ -129,7 +129,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
         // The app reads KEY_VAULT_URL (must match apps/api/src/store/index.ts).
         { name: 'KEY_VAULT_URL', value: keyVault.properties.vaultUri }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
-        { name: 'WEBSITE_RUN_FROM_PACKAGE', value: '1' }
+        // No WEBSITE_RUN_FROM_PACKAGE: on Linux Consumption zip deploy sets it to the package URL; a literal 1 is invalid there.
         // Container NAME; the doc store resolves the account from AzureWebJobsStorage.
         { name: 'QBR_DOCS_CONTAINER', value: 'qbr-documents' }
       ]
