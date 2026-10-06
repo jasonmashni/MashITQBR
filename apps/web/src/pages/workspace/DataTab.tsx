@@ -178,7 +178,7 @@ export function DataTab({
     <Stack gap="lg">
       {warnings.length > 0 && (
         <Alert color="watch" variant="light" icon={<IconAlertTriangle size={18} />} title="Data confidence">
-          <Text size="xs" c="dimmed" mb={4}>These notes travel with the data and print on the report.</Text>
+          <Text size="xs" c="dimmed" mb={4}>Caveats about counts print on the report; setup and connection notes stay here.</Text>
           <List size="sm" spacing={2}>{warnings.map((w, i) => <List.Item key={i}>{w}</List.Item>)}</List>
         </Alert>
       )}

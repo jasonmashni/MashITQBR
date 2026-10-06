@@ -232,6 +232,7 @@ export async function buildQbrReport(
     discussion: opts.discussion,
     notes: opts.notes,
     documents: opts.documents,
+    excludedLabels: currentRaw.metrics.filter((m) => excluded.has(m.key)).map((m) => m.label),
   });
 
   const warnings: string[] = [];
