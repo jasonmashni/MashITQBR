@@ -89,6 +89,34 @@ describe('CIPP', () => {
     }
   });
 
+  const posture = (over: Record<string, HttpResponse> = {}) =>
+    fakeHttp((req) => {
+      if (req.url.includes('login')) return { status: 200, json: { access_token: 'ct', expires_in: 3600 } };
+      for (const [k, v] of Object.entries(over)) if (req.url.includes(k)) return v;
+      if (req.url.includes('ListMFAUsers')) return { status: 200, json: [{ UPN: 'a@x.com', AccountEnabled: true, MFARegistration: true }] };
+      if (req.url.includes('ListUserCounts')) return { status: 200, json: { Users: '25' } };
+      if (req.url.includes('ListDevices')) return { status: 200, json: [{ complianceState: 'compliant' }] };
+      if (req.url.includes('ListConditionalAccessPolicies')) return { status: 200, json: [{ state: 'enabled' }] };
+      if (req.url.includes('ListLicenses')) return { status: 200, json: [{ License: 'BP', CountUsed: 20, CountAvailable: 5 }] };
+      return { status: 404, json: {} };
+    });
+
+  it('reports no CA metric (with a warning) when the policy list is empty', async () => {
+    const { http } = posture({ ListConditionalAccessPolicies: { status: 200, json: [] } });
+    const out = await collectCipp({ clientId: 'mp', period: P, externalRef: 'ca-empty.com' }, http, cfg);
+    expect(out.metrics.some((m) => m.key === 'identity.ca_policies')).toBe(false);
+    expect(out.warnings.some((w) => /Conditional Access/.test(w))).toBe(true);
+  });
+
+  it('treats a string Results payload as an endpoint error', async () => {
+    const { http } = posture({ ListDevices: { status: 200, json: { Results: 'Error: GDAP relationship missing for this tenant' } } });
+    const out = await collectCipp({ clientId: 'mp', period: P, externalRef: 'gdap.com' }, http, cfg);
+    expect(out.metrics.some((m) => m.key.startsWith('devices.'))).toBe(false);
+    expect(out.warnings.some((w) => w.includes('ListDevices') && w.includes('GDAP'))).toBe(true);
+    // Other endpoints are unaffected.
+    expect(out.metrics.some((m) => m.key === 'identity.users')).toBe(true);
+  });
+
   it('scopes MFA to licensed users on the dominant domain (guests/services excluded)', () => {
     const rows = [
       { UPN: 'a@mp.com', AccountEnabled: true, MFARegistration: true, IsLicensed: true },

@@ -69,6 +69,18 @@ async function cippGet(http: HttpTransport, cfg: CippCfg, endpoint: string, para
         : '';
     throw new Error(`CIPP responded ${res.status} for /api/${endpoint}${hint}`);
   }
+  // CIPP reports per-tenant failures (missing GDAP role, consent, throttling)
+  // as a 200 whose body or `Results` is a message string, not a row list.
+  // Read as rows, that string becomes an empty list and every count a zero.
+  const message =
+    typeof res.json === 'string'
+      ? res.json
+      : res.json && typeof res.json === 'object' && typeof (res.json as Json)['Results'] === 'string'
+        ? ((res.json as Json)['Results'] as string)
+        : undefined;
+  if (message !== undefined) {
+    throw new Error(`CIPP /api/${endpoint} returned a message instead of data: ${message.slice(0, 300)}`);
+  }
   return res.json;
 }
 
@@ -175,8 +187,13 @@ export function normalizeCippDevices(rows: Json[]): MetricValue[] {
   return out;
 }
 
-/** Conditional Access posture (enabled policy count). */
+/**
+ * Conditional Access posture (enabled policy count). An empty list is not
+ * reported: a tenant with no policies and a CIPP app that cannot read them
+ * look the same, so the collector warns instead of emitting a zero.
+ */
 export function normalizeCippCa(rows: Json[]): MetricValue[] {
+  if (rows.length === 0) return [];
   const enabled = rows.filter((r) => String(r['state'] ?? r['State'] ?? '').toLowerCase() === 'enabled').length;
   return [
     metric('identity.ca_policies', 'Conditional Access policies (enabled)', enabled, { category: 'identity', source: 'cipp', unit: 'count', higherIsBetter: true }),
@@ -287,7 +304,15 @@ export async function collectCipp(ctx: CollectorContext, http: HttpTransport, cf
   }
   await pull('ListUserCounts', normalizeCippUserCounts);
   await pull('ListDevices', (j) => normalizeCippDevices(toArray<Json>(j, ['Results'])));
-  await pull('ListConditionalAccessPolicies', (j) => normalizeCippCa(toArray<Json>(j, ['Results'])));
+  await pull('ListConditionalAccessPolicies', (j) => {
+    const rows = toArray<Json>(j, ['Results']);
+    if (rows.length === 0) {
+      warnings.push(
+        'CIPP returned no Conditional Access policies for this tenant — CA policy count not reported (confirm in Entra whether the tenant has none or CIPP lacks read access).',
+      );
+    }
+    return normalizeCippCa(rows);
+  });
   await pull('ListLicenses', (j) => normalizeCippLicenses(toArray<Json>(j, ['Results'])));
 
   if (metrics.length === 0) warnings.push('CIPP returned no usable data for this tenant.');
