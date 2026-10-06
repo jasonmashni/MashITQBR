@@ -69,6 +69,7 @@ import { buildAgendaContext, createClaudeAgendaSuggester, offlineAgenda, type Ag
 import { createClaudeResearcher, type ResearchModel } from './research.js';
 import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
+import { computeTriage } from './triage.js';
 
 export interface ApiResult {
   status: number;
@@ -1927,6 +1928,7 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
   await ensureSeeded(store);
   const ds = storeDataSource(store);
   const current = resolveCurrent(currentOverride);
+  const now = Date.now();
   const candidates = lastPeriods(current, 4);
   const clients = (await store.listClients()).filter((c) => c.qbrEnabled !== false);
 
@@ -1946,6 +1948,33 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
       const prevScorecard = previous ? computeScorecard(previous) : undefined;
       const qbr = period ? await store.getQbr(client.id, period) : undefined;
       const opportunities = await store.listOpportunities(client.id).catch(() => []);
+
+      // Current-quarter workflow state drives triage; the row's `period` stays
+      // the newest quarter with data so existing dashboard fields keep working.
+      const currentQbr = period === current ? qbr : await store.getQbr(client.id, current);
+      const currentState = {
+        hasData: period === current,
+        status: currentQbr?.status ?? ('draft' as QbrStatus),
+        meetingAt: currentQbr?.meeting?.scheduledAt ?? null,
+        packageSentAt: currentQbr?.packageSentAt ?? null,
+        meetingSkipped: !!currentQbr?.meetingSkipped,
+      };
+      const triage = computeTriage({
+        hasData: currentState.hasData,
+        status: currentQbr?.status,
+        meetingAt: currentState.meetingAt ?? undefined,
+        packageSentAt: currentState.packageSentAt ?? undefined,
+        meetingSkipped: currentState.meetingSkipped,
+        now,
+      });
+      let lastCompletedPeriod: string | null = null;
+      for (const p of lastPeriods(current, 8)) {
+        const rec = p === current ? currentQbr : p === period ? qbr : await store.getQbr(client.id, p);
+        if (statusAtLeast(rec?.status, 'completed')) {
+          lastCompletedPeriod = p;
+          break;
+        }
+      }
 
       const mrr = snapshotNum(snapshot, 'finance.mrr');
       const spendNow = snapshotNum(snapshot, 'finance.quarter_invoiced');
@@ -1991,10 +2020,17 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
         roadmapValue: roadmap.annualValue,
         roadmapCount: roadmap.count,
         health: { score: health.score, rating: health.rating, drivers: health.drivers },
+        confidence: scorecard?.overall.confidence ?? 'low',
+        currentPeriod: current,
+        current: currentState,
+        lastCompletedPeriod,
+        triage,
       };
     }),
   );
-  return ok({ currentPeriod: current, clients: rows });
+  const quarterEnd = Date.parse(`${parsePeriod(current).end}T23:59:59.999Z`);
+  const quarterEndsInDays = Math.max(0, Math.ceil((quarterEnd - now) / 86_400_000));
+  return ok({ currentPeriod: current, quarterEndsInDays, clients: rows });
 }
 
 /** Which of the last 8 quarters have data for this client (store or seed). */
