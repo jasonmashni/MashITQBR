@@ -79,4 +79,18 @@ describe('verifyNarrative', () => {
     };
     expect(verifyNarrative(out, []).ok).toBe(true);
   });
+
+  it('catches a number that appears only in summary_paragraphs', () => {
+    const out: NarrativeOutput = {
+      headline: 'A steady quarter',
+      summary_paragraphs: ['We closed 141 tickets.', 'Response times improved by 37%.'],
+      highlights: [],
+      recommendations: [],
+      figures_referenced: [{ label: 'tickets', value: '141' }],
+    };
+    const r = verifyNarrative(out, [141]);
+    expect(r.ok).toBe(false);
+    expect(r.failures.map((f) => f.label)).toEqual(['summary_paragraphs[1]']);
+    expect(r.failures[0]!.unmatched).toEqual([37]);
+  });
 });

@@ -76,4 +76,32 @@ describe('draftOfflineNarrative', () => {
     expect(draft.headline).toMatch(/not enough data/i);
     expect(draft.section_summaries!.find((s) => s.category === 'security')!.summary).toMatch(/not enough data/i);
   });
+
+  it('passes prose verification when ticket subjects contain digits (non-HIPAA)', () => {
+    const client = { ...SEED_CLIENTS[0]!, hipaa: false };
+    const subjects = ['Windows 11 upgrade on front desk PC', 'Windows 11 upgrade for exam room 3', 'Windows driver fault Ticket #48213'];
+    const current: MetricSnapshot = {
+      clientId: client.id,
+      period: '2026-Q3',
+      capturedAt: '2026-09-30T00:00:00Z',
+      metrics: [
+        {
+          key: 'tickets.incidents',
+          label: 'Incidents',
+          value: subjects.length,
+          source: 'halo',
+          category: 'operations',
+          details: subjects.map((summary, i) => ({ id: String(i + 1), summary })),
+        },
+      ],
+    };
+    const input = buildNarrativeInput({ client, current });
+    const draft = draftOfflineNarrative(input);
+    // The recommendation really does quote the subjects...
+    expect(draft.recommendations.join(' ')).toContain('Windows 11');
+    // ...and the deterministic draft still verifies.
+    const r = verifyNarrative(draft, buildAllowedNumbers(input));
+    expect(r.failures).toEqual([]);
+    expect(r.ok).toBe(true);
+  });
 });
