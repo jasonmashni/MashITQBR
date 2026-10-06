@@ -101,14 +101,14 @@ export function ReportsTab({
         const fresh = documents.filter((d) => !known.has(`${d.period}:${d.id}`));
         if (fresh.length > 0) {
           notifications.show({
-            color: 'teal',
+            color: 'good',
             title: `New report${fresh.length > 1 ? 's' : ''} arrived`,
             message: fresh.map((f) => f.name).join(', '),
           });
         }
         setDocs(documents);
       } catch {
-        // Background refresh never nags — the next tick retries.
+        // Background refresh never nags, the next tick retries.
       }
     };
     const t = window.setInterval(tick, 45_000);
@@ -122,7 +122,7 @@ export function ReportsTab({
       const r = await api.pollInbox();
       notifications.show({
         color: r.filed > 0 ? 'teal' : 'gray',
-        message: r.filed > 0 ? `${r.filed} report(s) filed from the inbox.` : `Inbox checked — nothing new (${r.processed} unread message(s) seen).`,
+        message: r.filed > 0 ? `${r.filed} report(s) filed from the inbox.` : `Inbox checked, nothing new (${r.processed} unread message(s) seen).`,
       });
       if (r.filed > 0) {
         await reload();
@@ -138,7 +138,7 @@ export function ReportsTab({
   async function upload(file: File | null) {
     if (!file) return;
     if (file.size > 15 * 1024 * 1024) {
-      notifications.show({ color: 'red', message: 'Files up to 15 MB.' });
+      notifications.show({ color: 'act', message: 'Files up to 15 MB.' });
       return;
     }
     setUploading(true);
@@ -151,7 +151,7 @@ export function ReportsTab({
       });
       const dataBase64 = dataUri.split(',')[1] ?? '';
       await api.uploadDocument(clientId, period, { name: file.name, contentType: file.type || 'application/octet-stream', dataBase64 });
-      notifications.show({ color: 'teal', message: `${file.name} filed under ${period}.` });
+      notifications.show({ color: 'good', message: `${file.name} filed under ${period}.` });
       await reload();
       onChanged();
     } catch (e) {
@@ -164,7 +164,7 @@ export function ReportsTab({
   async function patch(doc: DocumentInfo, body: { name?: string; category?: string; period?: string }, note: string) {
     try {
       await api.updateDocument(clientId, doc.period, doc.id, body);
-      notifications.show({ color: 'teal', message: note });
+      notifications.show({ color: 'good', message: note });
       await reload();
       onChanged();
     } catch (e) {
@@ -176,7 +176,7 @@ export function ReportsTab({
     if (!window.confirm(`Permanently delete “${doc.name}”? It also disappears from the ${doc.period} report appendix.`)) return;
     try {
       await api.deleteDocument(clientId, doc.period, doc.id);
-      notifications.show({ color: 'gray', message: `Removed ${doc.name}.` });
+      notifications.show({ color: 'slate', message: `Removed ${doc.name}.` });
       await reload();
       onChanged();
     } catch (e) {
@@ -203,7 +203,7 @@ export function ReportsTab({
     }
   }
 
-  /** Analyze every PDF that doesn't have a suggestion yet (sequential — each is a model call). */
+  /** Analyze every PDF that doesn't have a suggestion yet (sequential, each is a model call). */
   async function analyzeAll() {
     setBulkMatching(true);
     try {
@@ -236,7 +236,7 @@ export function ReportsTab({
     try {
       const { extraction, source } = await api.extractDocument(clientId, d.period, d.id);
       if (extraction.metrics.length === 0) {
-        notifications.show({ color: 'yellow', message: `No importable metrics found in ${d.name}.` });
+        notifications.show({ color: 'watch', message: `No importable metrics found in ${d.name}.` });
       } else {
         // Default the target quarter to what the CONTENT covers (a previous
         // QBR filed under this quarter should trend, not pollute it).
@@ -256,7 +256,7 @@ export function ReportsTab({
     try {
       const metrics = review.extraction.metrics.filter((_, i) => review.checked.has(i));
       const r = await api.importDocMetrics(clientId, review.target, { source: review.source, metrics });
-      notifications.show({ color: 'teal', message: `${r.imported} metric(s) added to ${review.target} — review them on the Data tab.` });
+      notifications.show({ color: 'good', message: `${r.imported} metric(s) added to ${review.target}, review them on the Data tab.` });
       setReview(null);
       onChanged();
     } catch (e) {
@@ -306,7 +306,7 @@ export function ReportsTab({
             <Title order={5}>Reports</Title>
             <Popover width={340} withArrow position="bottom-start" shadow="md">
               <Popover.Target>
-                <ActionIcon variant="subtle" color="gray" size="sm" aria-label="How reports work">
+                <ActionIcon variant="subtle" color="slate" size="sm" aria-label="How reports work">
                   <IconInfoCircle size={17} />
                 </ActionIcon>
               </Popover.Target>
@@ -314,12 +314,12 @@ export function ReportsTab({
                 <Text size="xs">
                   Every vendor report and upload for this client, across all quarters (Huntress attaches on Sync, forwarded
                   email files itself, uploads land in the selected quarter). Rename, categorize, or move any to the right
-                  quarter — or <b>AI match</b> fills all three. The <b>table-import</b> icon (
+                  quarter, or <b>AI match</b> fills all three. The <b>table-import</b> icon (
                   <IconTableImport size={12} style={{ verticalAlign: 'middle' }} />) reads a PDF's numbers into that quarter's data.
                 </Text>
                 <Text size="xs" mt="xs">
                   <b>Add a previous QBR:</b> upload it, click <IconTableImport size={12} style={{ verticalAlign: 'middle' }} />,
-                  confirm the auto-detected <b>target quarter</b> in the review, and accept — those figures become that quarter's
+                  confirm the auto-detected <b>target quarter</b> in the review, and accept, those figures become that quarter's
                   snapshot, so this report shows real quarter-over-quarter trends.
                 </Text>
               </Popover.Dropdown>
@@ -344,7 +344,7 @@ export function ReportsTab({
           <Group gap="xs" wrap="nowrap" mt="sm">
             <IconMail size={15} style={{ color: 'var(--mantine-color-dimmed)', flexShrink: 0 }} />
             <Text size="xs" c="dimmed" style={{ flex: 1 }} lineClamp={1}>
-              Inbox <Text span fw={600} c="brand.8" style={{ userSelect: 'all' }}>{inboxAddress}</Text> — forward or schedule vendor reports here (tag the subject “2026-Q2” to aim a quarter).
+              Inbox <Text span fw={600} c="brand.8" style={{ userSelect: 'all' }}>{inboxAddress}</Text>, forward or schedule vendor reports here (tag the subject “2026-Q2” to aim a quarter).
             </Text>
             <CopyButton value={inboxAddress}>
               {({ copied, copy }) => (
@@ -355,7 +355,7 @@ export function ReportsTab({
           </Group>
         ) : (
           <Text size="xs" c="dimmed" mt="sm">
-            Report inbox not set up — give this client its own forwarding address via the{' '}
+            Report inbox not set up, give this client its own forwarding address via the{' '}
             <Anchor component={RouterLink} to="/settings" size="xs">Settings page</Anchor>.
           </Text>
         )}
@@ -388,7 +388,7 @@ export function ReportsTab({
                   <Table.Th>Filed</Table.Th>
                   <Table.Th w={110}>
                     {selected.size > 0 && (
-                      <Button size="compact-xs" color="red" variant="light" loading={bulkDeleting} onClick={removeSelected}>
+                      <Button size="compact-xs" color="act" variant="light" loading={bulkDeleting} onClick={removeSelected}>
                         Delete {selected.size}
                       </Button>
                     )}
@@ -442,7 +442,7 @@ export function ReportsTab({
                           <Tooltip label="AI match: read the PDF and suggest name / quarter / category">
                             <ActionIcon
                               variant="subtle"
-                              color="teal"
+                              color="good"
                               aria-label={`AI match ${d.name}`}
                               loading={ai[aiKey(d)]?.loading}
                               onClick={() => analyze(d)}
@@ -469,7 +469,7 @@ export function ReportsTab({
                             <IconPencil size={15} />
                           </ActionIcon>
                         </Tooltip>
-                        <ActionIcon color="red" variant="subtle" aria-label={`Remove ${d.name}`} onClick={() => remove(d)}>
+                        <ActionIcon color="act" variant="subtle" aria-label={`Remove ${d.name}`} onClick={() => remove(d)}>
                           <IconTrash size={15} />
                         </ActionIcon>
                       </Group>
@@ -481,25 +481,25 @@ export function ReportsTab({
                     return (
                       <Table.Tr>
                         <Table.Td colSpan={8} p={0} style={{ borderTop: 'none' }}>
-                          <Alert color="teal" variant="light" p="xs" m={4} icon={<IconSparkles size={16} />}>
+                          <Alert color="good" variant="light" p="xs" m={4} icon={<IconSparkles size={16} />}>
                             <Group gap="sm" wrap="wrap" align="center">
                               <div style={{ flex: 1, minWidth: 260 }}>
                                 <Group gap={6}>
                                   <Text size="sm" fw={600}>{s.suggestedName}</Text>
                                   <Badge size="sm" variant="light" color="navy">{s.suggestedPeriod}</Badge>
-                                  <Badge size="sm" variant="light" color="gray">{s.suggestedCategory}</Badge>
+                                  <Badge size="sm" variant="light" color="slate">{s.suggestedCategory}</Badge>
                                   <Badge size="sm" variant="dot" color={conf}>{s.confidence} confidence</Badge>
                                 </Group>
-                                <Text size="xs" c="dimmed" mt={2}>{s.vendor ? `${s.vendor} — ` : ''}{s.rationale}</Text>
+                                <Text size="xs" c="dimmed" mt={2}>{s.vendor ? `${s.vendor}, ` : ''}{s.rationale}</Text>
                                 {s.clientMatch === 'no' && (
                                   <Text size="xs" c="red" fw={600} mt={2}>
-                                    ⚠ This document looks like it belongs to a different client — check before matching.
+                                    ⚠ This document looks like it belongs to a different client, check before matching.
                                   </Text>
                                 )}
                               </div>
                               <Group gap="xs" wrap="nowrap">
-                                <Button size="compact-sm" color="teal" onClick={() => acceptMatch(d, s)}>Match</Button>
-                                <Button size="compact-sm" variant="subtle" color="gray" onClick={() => dismissMatch(d)}>Dismiss</Button>
+                                <Button size="compact-sm" color="good" onClick={() => acceptMatch(d, s)}>Match</Button>
+                                <Button size="compact-sm" variant="subtle" color="slate" onClick={() => dismissMatch(d)}>Dismiss</Button>
                               </Group>
                             </Group>
                           </Alert>
@@ -539,7 +539,7 @@ export function ReportsTab({
             <Group gap="sm" align="flex-end">
               <Select
                 label="Import into quarter"
-                description="Where these numbers belong — a previous QBR should land in ITS quarter so trends compare against it."
+                description="Where these numbers belong, a previous QBR should land in ITS quarter so trends compare against it."
                 data={[...new Set([review.target, review.doc.period, ...periods.map((p) => p.value)])].sort().reverse()}
                 value={review.target}
                 onChange={(v) => v && setReview({ ...review, target: v })}
@@ -547,7 +547,7 @@ export function ReportsTab({
                 allowDeselect={false}
               />
               {review.extraction.periodHint && review.extraction.periodHint === review.target && review.target !== review.doc.period && (
-                <Badge color="teal" variant="light" mb={6}>AI: content covers {review.extraction.periodHint}</Badge>
+                <Badge color="good" variant="light" mb={6}>AI: content covers {review.extraction.periodHint}</Badge>
               )}
             </Group>
             <Table.ScrollContainer minWidth={560}>
@@ -616,12 +616,12 @@ export function ReportsTab({
               </Table>
             </Table.ScrollContainer>
             <Text size="xs" c="dimmed">
-              Imported metrics appear on the Data tab under source “{review.source}” — include/exclude them there like any synced
+              Imported metrics appear on the Data tab under source “{review.source}”, include/exclude them there like any synced
               metric. The Category picks which report section each lands in. Re-importing the same document replaces its previous import.
             </Text>
             <Group justify="flex-end">
               <Button variant="default" onClick={() => setReview(null)}>Cancel</Button>
-              <Button color="teal" loading={importing} disabled={review.checked.size === 0} onClick={importReviewed}>
+              <Button color="good" loading={importing} disabled={review.checked.size === 0} onClick={importReviewed}>
                 Import {review.checked.size} into {review.target}
               </Button>
             </Group>

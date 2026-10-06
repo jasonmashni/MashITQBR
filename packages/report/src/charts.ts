@@ -153,12 +153,12 @@ const KPI_CANDIDATES: Array<{ key: string; label: string }> = [
 ];
 
 /** Trend note for a tile: "up from 47" / "down from 60" / "0 to 3"; blank with no prior quarter. */
-function tileNote(t: MetricTrend | undefined): Pick<KpiTile, 'note' | 'noteTone'> {
+function tileNote(t: MetricTrend | undefined, unit: string | undefined): Pick<KpiTile, 'note' | 'noteTone'> {
   if (!t || t.previous === null || t.current === null || t.direction === 'na') return {};
   if (t.direction === 'flat') return { note: 'unchanged from last quarter', noteTone: 'neutral' };
   const tone: KpiTile['noteTone'] = t.sentiment === 'positive' ? 'good' : t.sentiment === 'negative' ? 'bad' : 'neutral';
   if (t.previous === 0) return { note: safeDelta(t), noteTone: tone };
-  const prev = formatValue({ value: t.previous, unit: undefined });
+  const prev = formatValue({ value: t.previous, unit });
   return { note: `${t.direction === 'up' ? 'up' : 'down'} from ${prev}`, noteTone: tone };
 }
 
@@ -192,7 +192,7 @@ export function selectKpiTiles(m: ReportModel): KpiTile[] {
     if (tiles.length >= 4) break;
     const row = byKey.get(c.key);
     if (row && row.metric.value !== null) {
-      tiles.push({ value: formatValue(row.metric), label: c.label, color: m.brand.primary, ...tileNote(row.trend) });
+      tiles.push({ value: formatValue(row.metric), label: c.label, color: m.brand.primary, ...tileNote(row.trend, row.metric.unit) });
     }
   }
   return tiles;

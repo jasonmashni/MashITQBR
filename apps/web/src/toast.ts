@@ -1,11 +1,11 @@
 import { notifications } from '@mantine/notifications';
 
-/** Red toast for a failed action; the error's message, or "Unknown error". */
+/** Toast for a failed action: the error's message, or "Unknown error". Uses the semantic "act" red. */
 export function toastError(title: string, e: unknown): void {
-  notifications.show({ color: 'red', title, message: e instanceof Error ? e.message : 'Unknown error' });
+  notifications.show({ color: 'act', title, message: e instanceof Error ? e.message : 'Unknown error' });
 }
 
-/** Teal toast confirming an action went through. */
+/** Toast confirming an action went through. Uses the semantic "good" teal. */
 export function toastOk(message: string): void {
-  notifications.show({ color: 'teal', message });
+  notifications.show({ color: 'good', message });
 }

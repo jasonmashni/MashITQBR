@@ -35,7 +35,7 @@ const OPP_COLUMNS: Array<[Opportunity['status'], string, string]> = [
   ['closed', 'Closed', 'dark'],
 ];
 
-// Compact currency for pipeline sums/badges ($12K, $1.2M) — internal only.
+// Compact currency for pipeline sums/badges ($12K, $1.2M), internal only.
 const oppMoney = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 });
 /** A card's label for its value: "$12K" one-time, "$1.2K/mo" recurring. */
@@ -87,7 +87,7 @@ export function OpportunitiesTab({ clientId, period }: { clientId: string; perio
   async function save(o: Opportunity, patch: Omit<Partial<Opportunity>, 'value'> & { value?: number | null }, quiet = false) {
     // Optimistic: a dragged card lands in its column immediately; a failure
     // reloads the true state. Only touch `value` when the patch actually carries
-    // it (null clears, a number sets) — a status/owner-only patch (e.g. a drag)
+    // it (null clears, a number sets), a status/owner-only patch (e.g. a drag)
     // must NOT wipe an existing estimate. `value` is pulled out of the spread so
     // a stray null can't reach the Opportunity type.
     const { value: patchValue, ...rest } = patch;
@@ -97,7 +97,7 @@ export function OpportunitiesTab({ clientId, period }: { clientId: string; perio
     try {
       await api.saveOpportunity(clientId, { ...o, ...patch });
       await load();
-      if (!quiet) notifications.show({ color: 'teal', message: 'Saved.' });
+      if (!quiet) notifications.show({ color: 'good', message: 'Saved.' });
     } catch (e) {
       await load();
       toastError('Update failed', e);
@@ -108,7 +108,7 @@ export function OpportunitiesTab({ clientId, period }: { clientId: string; perio
     if (!window.confirm(`Delete “${o.title}” from the board?`)) return;
     try {
       await api.deleteOpportunity(clientId, o.id);
-      notifications.show({ color: 'gray', message: `Removed “${o.title}”.` });
+      notifications.show({ color: 'slate', message: `Removed “${o.title}”.` });
     } catch (e) {
       toastError('Delete failed', e);
     }
@@ -117,7 +117,7 @@ export function OpportunitiesTab({ clientId, period }: { clientId: string; perio
 
   if (loading) return <Center h={160}><Loader /></Center>;
 
-  // Annualized value of every open (non-closed) opportunity — the roadmap figure.
+  // Annualized value of every open (non-closed) opportunity, the roadmap figure.
   const openPipeline = items.reduce(
     (s, o) =>
       o.status !== 'closed' && typeof o.value === 'number' && o.value > 0
@@ -132,20 +132,20 @@ export function OpportunitiesTab({ clientId, period }: { clientId: string; perio
         <Group justify="space-between" align="flex-start" mb={4}>
           <Title order={5}>Opportunity board</Title>
           {openPipeline > 0 && (
-            <Badge size="lg" variant="light" color="teal" title="Annualized value of open opportunities (internal only)">
+            <Badge size="lg" variant="light" color="good" title="Annualized value of open opportunities (internal only)">
               {oppMoney(openPipeline)}/yr open pipeline
             </Badge>
           )}
         </Group>
         <Text size="xs" c="dimmed" mb="sm">
-          Everything the client mentions that could become work — a new location, a refresh, a project — flagged from the
+          Everything the client mentions that could become work, a new location, a refresh, a project, flagged from the
           Meeting tab's agenda (the bulb icon) or added here. Drag cards between columns; push the real ones to Halo. Add a
           value (internal only) to build the roadmap pipeline on the dashboard.
         </Text>
         <Group wrap="nowrap" align="flex-start">
           <Stack gap="xs" style={{ flex: 1 }}>
             <TextInput
-              placeholder="Title — e.g. New location opening in the fall"
+              placeholder="Title, e.g. New location opening in the fall"
               value={title}
               onChange={(e) => setTitle(e.currentTarget.value)}
               onKeyDown={(e) => {
@@ -213,10 +213,10 @@ export function OpportunitiesTab({ clientId, period }: { clientId: string; perio
                   </Group>
                   {o.detail && <Text size="xs" c="dimmed" lineClamp={3}>{o.detail}</Text>}
                   <Group gap={4} mt={6}>
-                    {oppValueLabel(o) && <Badge size="xs" variant="filled" color="teal">{oppValueLabel(o)}</Badge>}
-                    {o.sourcePeriod && <Badge size="xs" variant="outline" color="gray">{o.sourcePeriod} QBR</Badge>}
+                    {oppValueLabel(o) && <Badge size="xs" variant="filled" color="good">{oppValueLabel(o)}</Badge>}
+                    {o.sourcePeriod && <Badge size="xs" variant="outline" color="slate">{o.sourcePeriod} QBR</Badge>}
                     {o.owner && <Badge size="xs" variant="light" color="navy">{o.owner}</Badge>}
-                    {o.externalRef && <Badge size="xs" color="green" variant="light">halo #{o.externalRef}</Badge>}
+                    {o.externalRef && <Badge size="xs" color="good" variant="light">halo #{o.externalRef}</Badge>}
                   </Group>
                   <Group gap={2} mt={8} justify="flex-end" wrap="nowrap">
                     {!o.externalRef && (
@@ -226,7 +226,7 @@ export function OpportunitiesTab({ clientId, period }: { clientId: string; perio
                         </Button>
                       </Tooltip>
                     )}
-                    <ActionIcon color="red" variant="subtle" aria-label={`Delete ${o.title}`} onClick={() => remove(o)}>
+                    <ActionIcon color="act" variant="subtle" aria-label={`Delete ${o.title}`} onClick={() => remove(o)}>
                       <IconTrash size={15} />
                     </ActionIcon>
                   </Group>
@@ -288,11 +288,11 @@ function OpportunityEditModal({
       <Stack gap="sm">
         <TextInput label="Title" value={title} onChange={(e) => setTitle(e.currentTarget.value)} />
         <Textarea label="Details" autosize minRows={3} value={detail} onChange={(e) => setDetail(e.currentTarget.value)} />
-        <TextInput label="Owner" placeholder="Who's driving this — e.g. Jason" value={owner} onChange={(e) => setOwner(e.currentTarget.value)} />
+        <TextInput label="Owner" placeholder="Who's driving this, e.g. Jason" value={owner} onChange={(e) => setOwner(e.currentTarget.value)} />
         <Group grow align="flex-end">
           <NumberInput
             label="Estimated value"
-            description="Internal only — never shown to the client."
+            description="Internal only, never shown to the client."
             placeholder="e.g. 12000"
             prefix="$"
             thousandSeparator=","
@@ -311,7 +311,7 @@ function OpportunityEditModal({
         </Group>
         <Select
           label="Column"
-          description="Same as dragging the card — handy on a touch screen."
+          description="Same as dragging the card, handy on a touch screen."
           data={OPP_COLUMNS.map(([value, label]) => ({ value, label }))}
           value={status}
           onChange={(v) => v && setStatus(v as Opportunity['status'])}
@@ -373,10 +373,10 @@ function OpportunityPushModal({
         team: halo.team ?? undefined,
         priorityId: halo.priorityId ?? undefined,
       });
-      notifications.show({ color: 'teal', message: `${r.pushed.system} #${r.pushed.id} created.` });
+      notifications.show({ color: 'good', message: `${r.pushed.system} #${r.pushed.id} created.` });
       await onPushed();
     } catch (e) {
-      notifications.show({ color: 'red', title: 'Push failed', message: e instanceof Error ? e.message : 'Unknown error', autoClose: 10000 });
+      notifications.show({ color: 'act', title: 'Push failed', message: e instanceof Error ? e.message : 'Unknown error', autoClose: 10000 });
     } finally {
       setBusy(false);
     }

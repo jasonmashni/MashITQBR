@@ -192,4 +192,18 @@ describe('syncQbr (handler) over fake integrations', () => {
     expect(meta.lastSyncAttempt?.warnings.length).toBeGreaterThan(0);
     expect(Date.parse(meta.lastSyncAttempt!.at)).not.toBeNaN();
   });
+
+  it('a later successful sync clears lastSyncAttempt', async () => {
+    const unauthorized = { async request(): Promise<HttpResponse> { return { status: 401, json: { error: 'Unauthorized' } }; } };
+    const refused = await wire(memSecrets(), unauthorized);
+    expect((await refused.syncQbr('anp', '2025-Q4')).status).toBe(409);
+    const stamped = ((await refused.getQbr('anp', '2025-Q4', null)).json as { meta: { lastSyncAttempt?: unknown } }).meta;
+    expect(stamped.lastSyncAttempt).toBeDefined();
+
+    const working = await wire(memSecrets());
+    const res = await working.syncQbr('anp', '2025-Q4');
+    expect(res.status).toBe(200);
+    const cleared = ((await working.getQbr('anp', '2025-Q4', null)).json as { meta: { lastSyncAttempt?: unknown } }).meta;
+    expect(cleared.lastSyncAttempt).toBeUndefined();
+  });
 });

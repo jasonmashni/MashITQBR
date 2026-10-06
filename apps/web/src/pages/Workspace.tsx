@@ -404,6 +404,7 @@ export function Workspace() {
                 config={config}
                 setConfig={setConfig}
                 refresh={refresh}
+                lastSyncAttempt={meta?.lastSyncAttempt}
                 onDirty={(d) => (dataDirty.current = d)}
                 onSaved={() => setRefresh((n) => n + 1)}
               />

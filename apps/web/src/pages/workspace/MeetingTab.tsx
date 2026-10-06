@@ -84,8 +84,8 @@ export function MeetingTab({
       setSuggestSource(r.source);
       if (r.suggestions.length === 0) {
         notifications.show({
-          color: 'yellow',
-          message: r.note ?? (suggested ? 'No further talking points to suggest — you\'ve covered the standouts.' : 'No standout talking points from this quarter\'s data yet.'),
+          color: 'watch',
+          message: r.note ?? (suggested ? 'No further talking points to suggest, you\'ve covered the standouts.' : 'No standout talking points from this quarter\'s data yet.'),
         });
         // Keep the current suggestions on a no-op refresh rather than clearing them.
         if (!suggested) setSuggested([]);
@@ -105,7 +105,7 @@ export function MeetingTab({
       items: [...disc.items, { id: uid(), topic: s.topic, status: 'planned', includeInReport: true, disposition: 'pending' }],
     });
     setSuggested((cur) => cur?.filter((x) => x.topic !== s.topic) ?? null);
-    notifications.show({ color: 'teal', message: 'Added to the agenda — expand on it below, then Save agenda.' });
+    notifications.show({ color: 'good', message: 'Added to the agenda, expand on it below, then Save agenda.' });
   }
 
   function update(i: number, patch: Partial<DiscussionItem>) {
@@ -126,7 +126,7 @@ export function MeetingTab({
   async function flagOpportunity(it: DiscussionItem) {
     try {
       await api.saveOpportunity(clientId, { title: it.topic || 'QBR opportunity', detail: it.response, sourcePeriod: period });
-      notifications.show({ color: 'teal', message: 'Added to the Opportunities board.' });
+      notifications.show({ color: 'good', message: 'Added to the Opportunities board.' });
     } catch (e) {
       toastError('Could not flag', e);
     }
@@ -139,7 +139,7 @@ export function MeetingTab({
       const items = disc.items.map((it, i) => ({ ...it, sortOrder: i }));
       await api.putDiscussion(clientId, period, { ...disc, items });
       setDisc({ ...disc, items });
-      notifications.show({ color: 'teal', message: 'Agenda saved — answered items flow onto the final report.' });
+      notifications.show({ color: 'good', message: 'Agenda saved, answered items flow onto the final report.' });
       onSavedDiscussion?.();
       onChanged();
     } catch (e) {
@@ -163,7 +163,7 @@ export function MeetingTab({
             </Text>
           </div>
           <Group gap="xs">
-            {planned > 0 && <Badge variant="light" color="grape">{planned} to discuss</Badge>}
+            {planned > 0 && <Badge variant="light" color="navy">{planned} to discuss</Badge>}
             <Button loading={saving} onClick={save}>Save agenda</Button>
           </Group>
         </Group>
@@ -176,11 +176,11 @@ export function MeetingTab({
                 <Text size="sm" fw={600}>Suggested talking points</Text>
               </Group>
               <Text size="xs" c="dimmed">
-                A few consultative starters from this quarter's tickets, trends, and posture — accept the ones worth raising,
+                A few consultative starters from this quarter's tickets, trends, and posture, accept the ones worth raising,
                 then expand on them.
               </Text>
             </div>
-            <Button size="compact-sm" variant="light" color="teal" loading={suggesting} leftSection={<IconSparkles size={14} />} onClick={suggestAgenda}>
+            <Button size="compact-sm" variant="light" color="good" loading={suggesting} leftSection={<IconSparkles size={14} />} onClick={suggestAgenda}>
               {suggested ? 'Refresh' : 'Suggest'}
             </Button>
           </Group>
@@ -193,8 +193,8 @@ export function MeetingTab({
                     <Text size="xs" c="dimmed">{s.rationale}</Text>
                   </div>
                   <Group gap={4} wrap="nowrap">
-                    <Button size="compact-xs" variant="light" color="teal" onClick={() => acceptSuggestion(s)}>Add</Button>
-                    <ActionIcon size="sm" variant="subtle" color="gray" aria-label="Dismiss suggestion" onClick={() => setSuggested((cur) => cur?.filter((x) => x.topic !== s.topic) ?? null)}>
+                    <Button size="compact-xs" variant="light" color="good" onClick={() => acceptSuggestion(s)}>Add</Button>
+                    <ActionIcon size="sm" variant="subtle" color="slate" aria-label="Dismiss suggestion" onClick={() => setSuggested((cur) => cur?.filter((x) => x.topic !== s.topic) ?? null)}>
                       <IconTrash size={14} />
                     </ActionIcon>
                   </Group>
@@ -210,7 +210,7 @@ export function MeetingTab({
         <Group mb="md" wrap="nowrap">
           <TextInput
             style={{ flex: 1 }}
-            placeholder="Add a topic to discuss — e.g. Budget for the hardware refresh"
+            placeholder="Add a topic to discuss, e.g. Budget for the hardware refresh"
             value={newTopic}
             onChange={(e) => setNewTopic(e.currentTarget.value)}
             onKeyDown={(e) => {
@@ -221,18 +221,18 @@ export function MeetingTab({
         </Group>
 
         <Stack>
-          {disc.items.length === 0 && <Text size="sm" c="dimmed">No topics yet — add the questions and decisions you want to walk through.</Text>}
+          {disc.items.length === 0 && <Text size="sm" c="dimmed">No topics yet, add the questions and decisions you want to walk through.</Text>}
           {disc.items.map((it, i) => (
             <Fieldset key={it.id} p="sm">
               <Group justify="space-between" align="flex-start" wrap="nowrap">
                 <TextInput style={{ flex: 1 }} placeholder="Topic / question / decision" value={it.topic} onChange={(e) => update(i, { topic: e.currentTarget.value })} />
                 <Group gap={4} wrap="nowrap">
                   <Tooltip label="Flag as opportunity (adds to the board)">
-                    <ActionIcon variant="subtle" color="yellow" aria-label={`Flag "${it.topic || 'topic'}" as opportunity`} onClick={() => flagOpportunity(it)}><IconBulb size={16} /></ActionIcon>
+                    <ActionIcon variant="subtle" color="watch" aria-label={`Flag "${it.topic || 'topic'}" as opportunity`} onClick={() => flagOpportunity(it)}><IconBulb size={16} /></ActionIcon>
                   </Tooltip>
                   <ActionIcon variant="subtle" aria-label={`Move "${it.topic || 'topic'}" up`} disabled={i === 0} onClick={() => move(i, -1)}><IconArrowUp size={16} /></ActionIcon>
                   <ActionIcon variant="subtle" aria-label={`Move "${it.topic || 'topic'}" down`} disabled={i === disc.items.length - 1} onClick={() => move(i, 1)}><IconArrowDown size={16} /></ActionIcon>
-                  <ActionIcon color="red" variant="subtle" aria-label={`Remove "${it.topic || 'topic'}"`} onClick={() => setDisc({ ...disc, items: disc.items.filter((x) => x.id !== it.id) })}><IconTrash size={16} /></ActionIcon>
+                  <ActionIcon color="act" variant="subtle" aria-label={`Remove "${it.topic || 'topic'}"`} onClick={() => setDisc({ ...disc, items: disc.items.filter((x) => x.id !== it.id) })}><IconTrash size={16} /></ActionIcon>
                 </Group>
               </Group>
               <Textarea
@@ -263,7 +263,7 @@ export function MeetingTab({
                 />
                 <TextInput size="xs" placeholder="Owner" value={it.owner ?? ''} onChange={(e) => update(i, { owner: e.currentTarget.value })} />
                 <Checkbox size="xs" label="On report" checked={it.includeInReport !== false} onChange={(e) => update(i, { includeInReport: e.currentTarget.checked })} />
-                {it.externalRef && <Badge color="green" variant="light">{it.externalRef.system} #{it.externalRef.id}</Badge>}
+                {it.externalRef && <Badge color="good" variant="light">{it.externalRef.system} #{it.externalRef.id}</Badge>}
               </Group>
             </Fieldset>
           ))}
@@ -315,7 +315,7 @@ function BookingLinkCard({
     try {
       await api.createBookingLink(clientId, period);
       setState(await api.getBooking(clientId, period));
-      notifications.show({ color: 'teal', message: 'Booking link ready — copy it or just send the email draft (it includes the link automatically).' });
+      notifications.show({ color: 'good', message: 'Booking link ready, copy it or just send the email draft (it includes the link automatically).' });
     } catch (e) {
       toastError('Could not create the link', e);
     } finally {
@@ -329,7 +329,7 @@ function BookingLinkCard({
     try {
       await api.cancelMeeting(clientId, period);
       setState(await api.getBooking(clientId, period));
-      notifications.show({ color: 'teal', message: 'Meeting cancelled — create a fresh booking link or set a new time below.' });
+      notifications.show({ color: 'good', message: 'Meeting cancelled, create a fresh booking link or set a new time below.' });
       onChanged();
     } catch (e) {
       toastError('Could not cancel', e);
@@ -348,29 +348,29 @@ function BookingLinkCard({
         <div>
           <Title order={5}>Client self-scheduling</Title>
           <Text size="xs" c="dimmed">
-            A private booking page for this QBR — the client picks a time that's open on your calendar and the Teams
+            A private booking page for this QBR, the client picks a time that's open on your calendar and the Teams
             invite goes out automatically. The link also rides inside the email draft until a meeting is booked.
           </Text>
         </div>
         {booking?.status === 'booked' ? (
-          <Badge color="teal">booked</Badge>
+          <Badge color="good">booked</Badge>
         ) : booking?.status === 'open' ? (
-          <Badge color="blue" variant="light">link active</Badge>
+          <Badge color="brand" variant="light">link active</Badge>
         ) : null}
       </Group>
 
       {state && !state.configured && (
-        <Alert color="yellow" p="xs" mb="xs">
+        <Alert color="watch" p="xs" mb="xs">
           <Text size="xs">
-            Set the <b>organizer email</b> under Settings → QBR self-scheduling first — that's whose calendar drives
+            Set the <b>organizer email</b> under Settings → QBR self-scheduling first, that's whose calendar drives
             availability and hosts the invite.
           </Text>
         </Alert>
       )}
       {state && state.configured && !state.calendarConnected && (
-        <Alert color="yellow" p="xs" mb="xs">
+        <Alert color="watch" p="xs" mb="xs">
           <Text size="xs">
-            Calendar not connected — the page will offer your configured windows without checking for conflicts, and
+            Calendar not connected, the page will offer your configured windows without checking for conflicts, and
             you'll send the invite yourself. Grant <b>Calendars.ReadWrite</b> (application) to the report-inbox app
             registration to automate it (see Settings).
           </Text>
@@ -382,9 +382,9 @@ function BookingLinkCard({
           <Text size="sm">
             <b>{booking.attendeeName}</b> ({booking.attendeeEmail}) booked{' '}
             <b>{booking.start?.replace('T', ' at ')}</b> ({booking.timezone})
-            {booking.eventId ? ' — Teams invite sent to everyone.' : ' — calendar not connected, send the invite manually.'}
+            {booking.eventId ? ', Teams invite sent to everyone.' : ', calendar not connected, send the invite manually.'}
           </Text>
-          <Button size="compact-sm" variant="light" color="red" loading={cancelling} onClick={cancelMeeting}>
+          <Button size="compact-sm" variant="light" color="act" loading={cancelling} onClick={cancelMeeting}>
             Cancel / reschedule
           </Button>
         </Group>
@@ -393,7 +393,7 @@ function BookingLinkCard({
           <TextInput readOnly value={url} style={{ flex: 1 }} onFocus={(e) => e.currentTarget.select()} aria-label="Booking link" />
           <CopyButton value={url}>
             {({ copied, copy }) => (
-              <Button variant={copied ? 'filled' : 'light'} color="teal" onClick={copy}>
+              <Button variant={copied ? 'filled' : 'light'} color="good" onClick={copy}>
                 {copied ? 'Copied' : 'Copy link'}
               </Button>
             )}
@@ -404,7 +404,7 @@ function BookingLinkCard({
           <Text size="sm" c="dimmed">
             A meeting is on the calendar for {new Date(meta!.meeting!.scheduledAt!).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}.
           </Text>
-          <Button size="compact-sm" variant="light" color="red" loading={cancelling} onClick={cancelMeeting}>
+          <Button size="compact-sm" variant="light" color="act" loading={cancelling} onClick={cancelMeeting}>
             Cancel / reschedule
           </Button>
         </Group>
@@ -453,7 +453,7 @@ function ScheduleCard({
     setSavingSched(true);
     try {
       await api.putSchedule(clientId, period, { scheduledAt: scheduledAt ? scheduledAt.toISOString() : undefined, joinUrl: joinUrl || undefined });
-      notifications.show({ color: 'teal', message: 'Schedule saved.' });
+      notifications.show({ color: 'good', message: 'Schedule saved.' });
       onChanged();
     } catch (e) {
       toastError('Save failed', e);
@@ -466,7 +466,7 @@ function ScheduleCard({
     setOverriding(true);
     try {
       await api.putStatus(clientId, period, backwards ? { status: overrideStatus, force: true, reason: overrideReason.trim() } : { status: overrideStatus });
-      notifications.show({ color: 'teal', message: `Status set to ${qbrStatusLabel(overrideStatus)}.` });
+      notifications.show({ color: 'good', message: `Status set to ${qbrStatusLabel(overrideStatus)}.` });
       setOverrideOpen(false);
       setOverrideReason('');
       onChanged();
@@ -486,16 +486,16 @@ function ScheduleCard({
         attendees: attendees.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean),
       });
       if (r.joinUrl) setJoinUrl(r.joinUrl);
-      notifications.show({ color: 'teal', title: 'Meeting created', message: 'Booked on your calendar with a Teams link — invites are on the way.' });
+      notifications.show({ color: 'good', title: 'Meeting created', message: 'Booked on your calendar with a Teams link, invites are on the way.' });
       onChanged();
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unknown error';
       notifications.show({
-        color: 'red',
+        color: 'act',
         title: 'Could not create the meeting',
         message:
           msg === 'graph_token_missing'
-            ? 'Microsoft 365 scheduling isn’t configured yet — the app needs the Graph calendar permission + token store (see the setup steps in the README).'
+            ? 'Microsoft 365 scheduling isn’t configured yet, the app needs the Graph calendar permission + token store (see the setup steps in the README).'
             : msg,
         autoClose: 8000,
       });
@@ -580,7 +580,7 @@ function ScheduleCard({
           <Button loading={savingSched} onClick={saveSchedule}>Save schedule</Button>
           <Button
             variant="light"
-            color="grape"
+            color="navy"
             leftSection={<IconVideo size={16} />}
             loading={creatingMeeting}
             disabled={!scheduledAt}

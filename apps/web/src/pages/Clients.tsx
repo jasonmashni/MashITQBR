@@ -87,10 +87,10 @@ export function Clients() {
     setImporting(true);
     try {
       const { imported } = await api.importHalo();
-      notifications.show({ color: 'teal', title: 'Import complete', message: `${imported} client(s) imported from Halo.` });
+      notifications.show({ color: 'good', title: 'Import complete', message: `${imported} client(s) imported from Halo.` });
       await load();
     } catch (e) {
-      notifications.show({ color: 'red', title: 'Import failed', message: e instanceof Error ? e.message : 'Unknown error' });
+      notifications.show({ color: 'act', title: 'Import failed', message: e instanceof Error ? e.message : 'Unknown error' });
     } finally {
       setImporting(false);
     }
@@ -111,7 +111,7 @@ export function Clients() {
     if (!draft) return;
     const id = isNew ? slug(draft.name) : draft.id;
     if (!draft.name.trim()) {
-      notifications.show({ color: 'red', message: 'Client name is required.' });
+      notifications.show({ color: 'act', message: 'Client name is required.' });
       return;
     }
     // Drop empty ref values.
@@ -124,11 +124,11 @@ export function Clients() {
         complianceStandard: draft.complianceStandard?.trim() || undefined,
         integrationRefs: refs,
       });
-      notifications.show({ color: 'teal', message: `Saved ${draft.name}.` });
+      notifications.show({ color: 'good', message: `Saved ${draft.name}.` });
       close();
       await load();
     } catch (e) {
-      notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
+      notifications.show({ color: 'act', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
     }
   }
 
@@ -137,7 +137,7 @@ export function Clients() {
       <Group justify="space-between">
         <div>
           <Title order={2}>Clients</Title>
-          <Text c="dimmed" size="sm">Flip <b>QBR</b> on for the clients you review — only those appear on the dashboard. Imports start off.</Text>
+          <Text c="dimmed" size="sm">Flip <b>QBR</b> on for the clients you review, only those appear on the dashboard. Imports start off.</Text>
         </div>
         <Group>
           {syncPeriod && (
@@ -202,7 +202,7 @@ export function Clients() {
                   <Table.Td>
                     <Group gap={6}>
                       <Anchor component={Link} to={`/clients/${c.id}`} fw={600}>{c.name}</Anchor>
-                      {c.hipaa && <Badge size="xs" color="grape" variant="light">HIPAA</Badge>}
+                      {c.hipaa && <Badge size="xs" color="navy" variant="light">HIPAA</Badge>}
                       {c.complianceStandard && c.complianceStandard.toUpperCase() !== 'HIPAA' && (
                         <Badge size="xs" color="navy" variant="light">{c.complianceStandard}</Badge>
                       )}
@@ -211,7 +211,7 @@ export function Clients() {
                   <Table.Td>
                     <Switch
                       size="sm"
-                      color="teal"
+                      color="good"
                       aria-label={`QBRs for ${c.name}`}
                       checked={c.qbrEnabled !== false}
                       onChange={async (e) => {
@@ -220,7 +220,7 @@ export function Clients() {
                         try {
                           await api.updateClient(c.id, { name: c.name, qbrEnabled });
                         } catch {
-                          notifications.show({ color: 'red', message: 'Could not update the QBR flag.' });
+                          notifications.show({ color: 'act', message: 'Could not update the QBR flag.' });
                           await load();
                         }
                       }}
@@ -233,7 +233,7 @@ export function Clients() {
                         <Text size="sm" c="dimmed">none</Text>
                       ) : (
                         Object.keys(c.integrationRefs ?? {}).map((k) => (
-                          <Badge key={k} size="sm" variant="dot" color="teal">{k}</Badge>
+                          <Badge key={k} size="sm" variant="dot" color="good">{k}</Badge>
                         ))
                       )}
                     </Group>
@@ -241,7 +241,7 @@ export function Clients() {
                   <Table.Td ta="right">
                     <Group gap={4} justify="flex-end">
                       <Tooltip label="Edit mappings">
-                        <ActionIcon variant="subtle" color="gray" aria-label={`Edit ${c.name}`} onClick={() => edit(c)}><IconPencil size={16} /></ActionIcon>
+                        <ActionIcon variant="subtle" color="slate" aria-label={`Edit ${c.name}`} onClick={() => edit(c)}><IconPencil size={16} /></ActionIcon>
                       </Tooltip>
                       <Tooltip label="Open workspace">
                         <ActionIcon variant="subtle" component={Link} to={`/clients/${c.id}`} aria-label={`Open ${c.name} workspace`}><IconExternalLink size={16} /></ActionIcon>
@@ -263,7 +263,7 @@ export function Clients() {
             <TextInput label="Industry" value={draft.industry ?? ''} onChange={(e) => setDraft({ ...draft, industry: e.currentTarget.value })} />
             <Autocomplete
               label="Compliance standard"
-              description="The framework this client answers to — the QBR narrative and scorecard framing reflect it with a light touch."
+              description="The framework this client answers to, the QBR narrative and scorecard framing reflect it with a light touch."
               placeholder="e.g. HIPAA, TISAX, SOC 2, CMMC, PCI DSS"
               data={['HIPAA', 'TISAX', 'SOC 2', 'CMMC', 'PCI DSS', 'NIST 800-171', 'ISO 27001', 'FTC Safeguards']}
               value={draft.complianceStandard ?? ''}

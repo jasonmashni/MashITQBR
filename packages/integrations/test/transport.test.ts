@@ -76,3 +76,25 @@ describe('FetchHttpTransport', () => {
     expect(() => new FetchHttpTransport()).not.toThrow();
   });
 });
+
+describe('FetchHttpTransport retry budget', () => {
+  it('caps the total wait at 20 s even when the server asks for a minute, and stops retrying once the budget is spent', async () => {
+    const waits: number[] = [];
+    let n = 0;
+    const t = new FetchHttpTransport({
+      fetchImpl: async () => {
+        n++;
+        return new Response('slow', { status: 429, headers: { 'Retry-After': '60' } });
+      },
+      retries: 5,
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    });
+    const r = await t.request({ method: 'GET', url: 'https://x/y' });
+    expect(r.status).toBe(429);
+    // One retry after a budget-capped 20 s wait, then the budget is spent.
+    expect(waits).toEqual([20_000]);
+    expect(n).toBe(2);
+  });
+});

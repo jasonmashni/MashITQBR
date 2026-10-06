@@ -53,6 +53,7 @@ export function DataTab({
   config,
   setConfig,
   refresh,
+  lastSyncAttempt,
   onDirty,
   onSaved,
 }: {
@@ -60,6 +61,8 @@ export function DataTab({
   period: string;
   config: ReportConfig;
   setConfig: (c: ReportConfig) => void;
+  /** Set when the last sync was refused because no tool returned data; cleared by the next successful sync. */
+  lastSyncAttempt?: { at: string; warnings: string[] };
   refresh: number;
   /** Reports staged-but-unsaved review changes so the parent can guard tab switches. */
   onDirty?: (dirty: boolean) => void;
@@ -176,6 +179,17 @@ export function DataTab({
 
   return (
     <Stack gap="lg">
+      {lastSyncAttempt && (
+        <Alert color="act" variant="light" icon={<IconAlertTriangle size={18} />} title="The last sync was refused">
+          <Text size="sm">
+            On {new Date(lastSyncAttempt.at).toLocaleString()} no connected tool returned data for {period}, so the previous data was kept. Check the
+            connections on the Integrations page, then sync again.
+          </Text>
+          {lastSyncAttempt.warnings.length > 0 && (
+            <List size="sm" spacing={2} mt={4}>{lastSyncAttempt.warnings.map((w, i) => <List.Item key={i}>{w}</List.Item>)}</List>
+          )}
+        </Alert>
+      )}
       {warnings.length > 0 && (
         <Alert color="watch" variant="light" icon={<IconAlertTriangle size={18} />} title="Data confidence">
           <Text size="xs" c="dimmed" mb={4}>Caveats about counts print on the report; setup and connection notes stay here.</Text>

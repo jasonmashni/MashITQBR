@@ -39,7 +39,7 @@ export function ActionsTab({
     setPushing(actionId + target);
     try {
       const r = await api.pushAction(clientId, period, { actionId, target });
-      notifications.show({ color: 'teal', title: 'Pushed', message: `${r.system} #${r.id || '(created)'}` });
+      notifications.show({ color: 'good', title: 'Pushed', message: `${r.system} #${r.id || '(created)'}` });
       onChanged();
     } catch (e) {
       toastError('Push failed', e);
@@ -58,7 +58,7 @@ export function ActionsTab({
           Turn discussion outcomes into work: Halo tickets open a form where you set the type, agent, team and priority before pushing.
         </Text>
         {items.length === 0 ? (
-          <Text size="sm" c="dimmed">No discussion items — capture them on the Meeting tab first.</Text>
+          <Text size="sm" c="dimmed">No discussion items, capture them on the Meeting tab first.</Text>
         ) : (
           <Stack>
             {items.map((it) => (
@@ -69,9 +69,9 @@ export function ActionsTab({
                     {it.response && <Text size="xs" c="dimmed" lineClamp={2}>{it.response}</Text>}
                   </div>
                   {it.externalRef && (
-                    <Badge color="green" variant="light">
+                    <Badge color="good" variant="light">
                       {it.externalRef.system} #{it.externalRef.id}
-                      {it.externalRef.status ? ` · ${it.externalRef.status}` : ''}
+                      {it.externalRef.status ? `, ${it.externalRef.status}` : ''}
                     </Badge>
                   )}
                 </Group>
@@ -137,7 +137,7 @@ export function ActionsTab({
   );
 }
 
-/** Halo ticket push with full field control — type, agent, team, priority. */
+/** Halo ticket push with full field control, type, agent, team, priority. */
 function HaloTicketModal({
   item,
   clientId,
@@ -163,7 +163,7 @@ function HaloTicketModal({
     api
       .haloMeta()
       .then((m) => live && setMeta(m))
-      .catch((e) => live && setMetaNote(e instanceof Error ? e.message : 'Halo lookup lists unavailable — the ticket still pushes with summary + details.'));
+      .catch((e) => live && setMetaNote(e instanceof Error ? e.message : 'Halo lookup lists unavailable, the ticket still pushes with summary + details.'));
     return () => {
       live = false;
     };
@@ -171,7 +171,7 @@ function HaloTicketModal({
 
   async function push() {
     if (!summary.trim()) {
-      notifications.show({ color: 'red', message: 'A summary is required.' });
+      notifications.show({ color: 'act', message: 'A summary is required.' });
       return;
     }
     setPushing(true);
@@ -186,7 +186,7 @@ function HaloTicketModal({
         team: halo.team ?? undefined,
         priorityId: halo.priorityId ?? undefined,
       });
-      notifications.show({ color: 'teal', title: 'Ticket created', message: `Halo #${r.id}${r.status ? ` · ${r.status}` : ''}` });
+      notifications.show({ color: 'good', title: 'Ticket created', message: `Halo #${r.id}${r.status ? `, ${r.status}` : ''}` });
       onPushed();
     } catch (e) {
       toastError('Push failed', e);

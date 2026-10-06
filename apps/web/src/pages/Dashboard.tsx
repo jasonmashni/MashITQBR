@@ -246,13 +246,18 @@ export function Dashboard() {
                       <ThisQuarterCell r={r} />
                     </Table.Td>
                     <Table.Td>
-                      {r.period ? (
+                      {r.lastCompletedPeriod ? (
                         <Box>
-                          <Text size="sm" fw={500} data-num>{r.period}</Text>
-                          <Text size="xs" c="dimmed">{qbrStatusLabel(r.status)}</Text>
+                          <Text size="sm" fw={500} data-num>{r.lastCompletedPeriod}</Text>
+                          <Text size="xs" c="dimmed">Review complete</Text>
                         </Box>
                       ) : (
-                        <Text size="sm" c="dimmed">None yet</Text>
+                        <Box>
+                          <Text size="sm" c="dimmed">None completed</Text>
+                          {r.period && r.period !== r.currentPeriod && (
+                            <Text size="xs" c="dimmed" data-num>{r.period} {qbrStatusLabel(r.status).toLowerCase()}</Text>
+                          )}
+                        </Box>
                       )}
                     </Table.Td>
                     <Table.Td>

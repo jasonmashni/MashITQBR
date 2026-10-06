@@ -31,15 +31,31 @@ export function DeliverMenu({
   const open = (url: string) => window.open(url, '_blank', 'noopener');
   const download = (url: string) => window.location.assign(url);
 
+  /**
+   * Build the draft first, then stamp: a failed .eml build must not leave the
+   * quarter marked as sent (that stamp is what lets a quarter close without a
+   * meeting).
+   */
   async function sendPackage() {
     setSending(true);
     try {
-      download(urls.email);
+      const res = await fetch(urls.email);
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+      }
+      const blob = await res.blob();
+      const name = res.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/)?.[1] ?? `QBR-${clientId}-${period}.eml`;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
       await api.markPackageSent(clientId, period);
       toastOk('Package sent. The email draft is in your downloads; the quarter is stamped as sent.');
       onPackageSent();
     } catch (e) {
-      toastError('Could not record the send', e);
+      toastError('Could not send the package', e);
     } finally {
       setSending(false);
     }

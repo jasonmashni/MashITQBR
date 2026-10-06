@@ -59,7 +59,7 @@ const TYPES: TypeDef[] = [
     config: [
       { key: 'baseUrl', label: 'Instance URL', placeholder: 'https://mashit.halopsa.com' },
       { key: 'clientId', label: 'Client ID' },
-      { key: 'tenant', label: 'Tenant (optional — hosted instances only)', placeholder: 'mashit' },
+      { key: 'tenant', label: 'Tenant (optional, hosted instances only)', placeholder: 'mashit' },
     ],
     secrets: [{ key: 'clientSecret', label: 'Client Secret' }],
   },
@@ -93,12 +93,12 @@ const TYPES: TypeDef[] = [
   {
     value: 'checkpoint',
     label: 'Check Point HEC',
-    hint: 'Email security & DLP. Infinity Portal API keys are per-tenant — create the key inside the client\'s tenant and dedicate this connection to that client below. (For the richer report data, forward the emailed Check Point report to the client\'s report inbox instead.)',
+    hint: 'Email security & DLP. Infinity Portal API keys are per-tenant, create the key inside the client\'s tenant and dedicate this connection to that client below. (For the richer report data, forward the emailed Check Point report to the client\'s report inbox instead.)',
     perClient: 'optional',
     config: [
       { key: 'baseUrl', label: 'SMART API base URL', placeholder: 'https://smart-api-production-1-us.avanan.net' },
       { key: 'clientId', label: 'Infinity Portal Client ID' },
-      { key: 'authUrl', label: 'Auth gateway (optional — region override)', placeholder: 'https://cloudinfra-gw-us.portal.checkpoint.com/auth/external' },
+      { key: 'authUrl', label: 'Auth gateway (optional, region override)', placeholder: 'https://cloudinfra-gw-us.portal.checkpoint.com/auth/external' },
     ],
     secrets: [{ key: 'accessKey', label: 'Access Key' }],
   },
@@ -120,15 +120,15 @@ const TYPES: TypeDef[] = [
     perClient: 'required',
     setupSteps: [
       'In Google Cloud Console (console.cloud.google.com), create (or pick) a project, then APIs & Services → Library → enable the "Admin SDK API".',
-      'IAM & Admin → Service Accounts → Create service account (no roles needed). Open it → Keys → Add key → JSON — download the key file.',
+      'IAM & Admin → Service Accounts → Create service account (no roles needed). Open it → Keys → Add key → JSON, download the key file.',
       'Copy the service account\'s "Unique ID" (client ID) from its details page.',
-      'In the CLIENT\'s Google Admin console (admin.google.com): Security → Access and data control → API controls → Manage domain-wide delegation → Add new — paste the client ID and the scope: https://www.googleapis.com/auth/admin.directory.user.readonly',
+      'In the CLIENT\'s Google Admin console (admin.google.com): Security → Access and data control → API controls → Manage domain-wide delegation → Add new, paste the client ID and the scope: https://www.googleapis.com/auth/admin.directory.user.readonly',
       'Enter a super-admin email from the client\'s domain below (the account the service impersonates, read-only), and paste the whole JSON key file into the secret field.',
     ],
     setupLink: { label: 'Google\'s domain-wide delegation guide', href: 'https://developers.google.com/workspace/guides/create-credentials#service-account' },
     config: [
       { key: 'adminEmail', label: 'Workspace admin email (impersonated)', placeholder: 'admin@client.com' },
-      { key: 'customer', label: 'Customer ID (optional — defaults to the admin\'s domain)', placeholder: 'my_customer' },
+      { key: 'customer', label: 'Customer ID (optional, defaults to the admin\'s domain)', placeholder: 'my_customer' },
     ],
     secrets: [{ key: 'serviceAccountJson', label: 'Service-account JSON key (paste the whole file)' }],
     multilineSecrets: ['serviceAccountJson'],
@@ -146,7 +146,7 @@ const TYPES: TypeDef[] = [
   {
     value: 'printix',
     label: 'Printix',
-    hint: 'Print fleet size & health. Each client has their OWN Printix tenant — register an API client in THAT tenant\'s admin portal and dedicate this connection to the QBR client (add one connection per client).',
+    hint: 'Print fleet size & health. Each client has their OWN Printix tenant, register an API client in THAT tenant\'s admin portal and dedicate this connection to the QBR client (add one connection per client).',
     config: [
       { key: 'tenantId', label: 'Tenant ID (GUID)' },
       { key: 'clientId', label: 'Client ID' },
@@ -182,17 +182,17 @@ const TYPES: TypeDef[] = [
   {
     value: 'mcp',
     label: 'MASH MCP (legacy)',
-    hint: 'Legacy path — replaced by the direct HaloPSA/NinjaOne/Hudu connections above. Existing MCP connections keep working until deleted.',
+    hint: 'Legacy path, replaced by the direct HaloPSA/NinjaOne/Hudu connections above. Existing MCP connections keep working until deleted.',
     legacy: true,
     config: [
       { key: 'url', label: 'MCP HTTPS URL', placeholder: 'https://mcpserver.mashit.net/mcp' },
       { key: 'clientId', label: 'Client ID', placeholder: 'mcp-…' },
-      { key: 'tokenUrl', label: 'Token URL (optional — auto-discovered when blank)', placeholder: 'https://mcpserver.mashit.net/token' },
+      { key: 'tokenUrl', label: 'Token URL (optional, auto-discovered when blank)', placeholder: 'https://mcpserver.mashit.net/token' },
       { key: 'tokenAuthMethod', label: "Token auth method (optional: 'basic' or 'post')", placeholder: 'basic' },
     ],
     secrets: [
       { key: 'clientSecret', label: 'Client Secret' },
-      { key: 'token', label: 'Static bearer token (legacy — leave blank when using Client ID/Secret)' },
+      { key: 'token', label: 'Static bearer token (legacy, leave blank when using Client ID/Secret)' },
     ],
   },
 ];
@@ -225,11 +225,11 @@ function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved
         if (!live) return;
         const qbrClients = c.clients.filter((x) => x.qbrEnabled !== false);
         setClients(qbrClients);
-        // An empty org list means the tool answered but nothing was readable —
+        // An empty org list means the tool answered but nothing was readable.
         // fall back to free-text ids rather than show unusable empty dropdowns.
         if (o.orgs && o.orgs.length === 0) {
           setOrgs(null);
-          setOrgError('The tool responded but no organizations could be read — enter each client’s id manually.');
+          setOrgError('The tool responded but no organizations could be read, enter each client’s id manually.');
         } else {
           setOrgs(o.orgs);
         }
@@ -245,10 +245,10 @@ function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved
     setSaving(true);
     try {
       const { updated } = await api.putMappings(conn.id, Object.entries(refs).map(([clientId, externalRef]) => ({ clientId, externalRef })));
-      notifications.show({ color: 'teal', message: `Mapped ${updated} client(s) for ${conn.label}.` });
+      notifications.show({ color: 'good', message: `Mapped ${updated} client(s) for ${conn.label}.` });
       onClose(true);
     } catch (e) {
-      notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
+      notifications.show({ color: 'act', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
     } finally {
       setSaving(false);
     }
@@ -259,25 +259,25 @@ function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved
   for (const v of Object.values(refs).flatMap((s) => s.split(',').map((x) => x.trim()).filter(Boolean))) {
     if (!orgOptions.some((o) => o.value === v)) orgOptions.push({ value: v, label: `${v} (saved)` });
   }
-  // Halo clients sometimes split into service + billing entities — allow
+  // Halo clients sometimes split into service + billing entities, allow
   // mapping one QBR client to several Halo ids (tallies are summed on sync).
   const multi = conn.type === 'halo';
 
   return (
-    <Modal opened onClose={() => onClose(false)} title={`Map clients — ${conn.label}`} size="lg">
+    <Modal opened onClose={() => onClose(false)} title={`Map clients, ${conn.label}`} size="lg">
       <Stack>
         <Text size="sm" c="dimmed">
           Match each QBR client to its record in {typeDef(conn.type)?.label ?? conn.type}
           {orgs
-            ? ' — pick from the organizations found in the tool.'
-            : ` — the tool's organization list couldn't be loaded, so type each client's ${typeDef(conn.type)?.label ?? conn.type} id manually (or fix the connection and reopen).`}
-          {multi && ' You can pick multiple Halo entities per client (e.g. a service + a billing entity) — their numbers are combined.'}
+            ? ', pick from the organizations found in the tool.'
+            : `, the tool's organization list couldn't be loaded, so type each client's ${typeDef(conn.type)?.label ?? conn.type} id manually (or fix the connection and reopen).`}
+          {multi && ' You can pick multiple Halo entities per client (e.g. a service + a billing entity), their numbers are combined.'}
         </Text>
         {orgError && <Text size="sm" c="red.7">{orgError}</Text>}
         {loading ? (
           <Center h={120}><Loader /></Center>
         ) : clients.length === 0 ? (
-          <Text size="sm" c="dimmed">No QBR-enabled clients yet — enable some on the Clients page first.</Text>
+          <Text size="sm" c="dimmed">No QBR-enabled clients yet, enable some on the Clients page first.</Text>
         ) : (
           clients.map((c) => (
             <Group key={c.id} wrap="nowrap" align="center">
@@ -334,7 +334,12 @@ export function Integrations() {
   const [confirmDelete, setConfirmDelete] = useState<ConnectionView | null>(null);
   const [mapping, setMapping] = useState<ConnectionView | null>(null);
   const [qbrClients, setQbrClients] = useState<Client[]>([]);
-  const secretHome = system?.secretStore === 'keyvault' ? 'Azure Key Vault' : 'the local secret file (dev)';
+  const secretHome =
+    system?.secretStore === 'keyvault'
+      ? 'Azure Key Vault'
+      : system?.secretStore === 'local-insecure'
+        ? 'nowhere: Key Vault is not configured on this app, so connection secrets cannot be saved until KEY_VAULT_URL is set'
+        : 'the local secret file (dev)';
 
   const [editId, setEditId] = useState<string | undefined>();
   const [type, setType] = useState('halo');
@@ -406,11 +411,11 @@ export function Integrations() {
 
   async function save() {
     if (!label.trim()) {
-      notifications.show({ color: 'red', message: 'A label is required.' });
+      notifications.show({ color: 'act', message: 'A label is required.' });
       return;
     }
     if (typeDef(type)?.perClient === 'required' && !config['qbrClientId']) {
-      notifications.show({ color: 'red', message: 'Pick the QBR client this connection belongs to.' });
+      notifications.show({ color: 'act', message: 'Pick the QBR client this connection belongs to.' });
       return;
     }
     const input: ConnectionInput = { type, label, config, secrets };
@@ -422,21 +427,21 @@ export function Integrations() {
       } else {
         const created = await api.createIntegration(input);
         // Halo/Ninja scoping pickers (ticket types, device roles) need a saved
-        // connection to fetch against — flip straight into Edit so the user can
+        // connection to fetch against, flip straight into Edit so the user can
         // scope now instead of save → reopen.
         if (type === 'halo' || type === 'ninja') {
           setEditId(created.id);
           setSecrets({});
-          notifications.show({ color: 'teal', message: `Saved ${label} — pick the scoping below, then Save again.` });
+          notifications.show({ color: 'good', message: `Saved ${label}, pick the scoping below, then Save again.` });
           await load();
           return;
         }
         close();
       }
-      notifications.show({ color: 'teal', message: `Saved ${label}.${savedSecrets ? ` Secrets stored in ${secretHome}.` : ''}` });
+      notifications.show({ color: 'good', message: `Saved ${label}.${savedSecrets ? ` Secrets stored in ${secretHome}.` : ''}` });
       await load();
     } catch (e) {
-      notifications.show({ color: 'red', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
+      notifications.show({ color: 'act', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown error' });
     }
   }
 
@@ -449,9 +454,9 @@ export function Integrations() {
         title: r.ok ? 'Connection OK' : 'Connection failed',
         message: r.error ?? r.note ?? (r.ok ? 'Reachable.' : 'Unknown error'),
       });
-      await load(); // the test result is persisted on the connection — refresh the card
+      await load(); // the test result is persisted on the connection, refresh the card
     } catch (e) {
-      notifications.show({ color: 'red', title: 'Test failed', message: e instanceof Error ? e.message : 'Unknown error' });
+      notifications.show({ color: 'act', title: 'Test failed', message: e instanceof Error ? e.message : 'Unknown error' });
     } finally {
       setTesting(null);
     }
@@ -460,10 +465,10 @@ export function Integrations() {
   async function remove(c: ConnectionView) {
     try {
       await api.deleteIntegration(c.id);
-      notifications.show({ color: 'gray', message: `Deleted ${c.label} and purged its secrets.` });
+      notifications.show({ color: 'slate', message: `Deleted ${c.label} and purged its secrets.` });
       await load();
     } catch (e) {
-      notifications.show({ color: 'red', title: 'Delete failed', message: e instanceof Error ? e.message : 'Unknown error' });
+      notifications.show({ color: 'act', title: 'Delete failed', message: e instanceof Error ? e.message : 'Unknown error' });
     } finally {
       setConfirmDelete(null);
     }
@@ -510,19 +515,19 @@ export function Integrations() {
                   </Group>
                   <Menu withinPortal position="bottom-end">
                     <Menu.Target>
-                      <ActionIcon variant="subtle" color="gray" aria-label={`Actions for ${c.label}`}><IconDots size={18} /></ActionIcon>
+                      <ActionIcon variant="subtle" color="slate" aria-label={`Actions for ${c.label}`}><IconDots size={18} /></ActionIcon>
                     </Menu.Target>
                     <Menu.Dropdown>
                       <Menu.Item leftSection={<IconPlugConnectedX size={14} />} onClick={() => test(c)}>Test</Menu.Item>
                       <Menu.Item leftSection={<IconRoute size={14} />} onClick={() => setMapping(c)}>Map clients</Menu.Item>
                       <Menu.Item leftSection={<IconPencil size={14} />} onClick={() => openEdit(c)}>Edit / rotate</Menu.Item>
-                      <Menu.Item color="red" leftSection={<IconTrash size={14} />} onClick={() => setConfirmDelete(c)}>Delete</Menu.Item>
+                      <Menu.Item color="act" leftSection={<IconTrash size={14} />} onClick={() => setConfirmDelete(c)}>Delete</Menu.Item>
                     </Menu.Dropdown>
                   </Menu>
                 </Group>
                 <Group gap={6} mb="xs">
                   <Badge size="sm" color={STATUS_COLOR[c.status ?? 'unknown']} variant="light">{c.status ?? 'unknown'}</Badge>
-                  {c.secretFields.map((f) => <Badge key={f} size="sm" variant="outline" color="teal">🔑 {f}</Badge>)}
+                  {c.secretFields.map((f) => <Badge key={f} size="sm" variant="outline" color="good">🔑 {f}</Badge>)}
                 </Group>
                 {c.statusMessage && (
                   <Text size="xs" c={c.status === 'error' ? 'red.7' : 'dimmed'} mb={4}>{c.statusMessage}</Text>
@@ -574,7 +579,7 @@ export function Integrations() {
           ))}
           {def?.perClient && (
             <Select
-              label={def.perClient === 'required' ? 'Dedicated to QBR client' : 'Dedicated to QBR client (optional — blank = shared)'}
+              label={def.perClient === 'required' ? 'Dedicated to QBR client' : 'Dedicated to QBR client (optional, blank = shared)'}
               placeholder="Pick a client"
               data={qbrClients.map((c) => ({ value: c.id, label: c.name }))}
               value={config['qbrClientId'] || null}
@@ -601,7 +606,7 @@ export function Integrations() {
             ) : (
               <Text size="xs" c="dimmed">
                 {editId
-                  ? 'Ticket-type picker unavailable — check the connection credentials, then reopen Edit.'
+                  ? 'Ticket-type picker unavailable, check the connection credentials, then reopen Edit.'
                   : 'Save the connection first, then reopen Edit to choose which ticket types count toward the QBR.'}
               </Text>
             ))}
@@ -623,7 +628,7 @@ export function Integrations() {
             ) : (
               <Text size="xs" c="dimmed">
                 {editId
-                  ? 'Device-role picker unavailable — check the connection credentials, then reopen Edit.'
+                  ? 'Device-role picker unavailable, check the connection credentials, then reopen Edit.'
                   : 'Save the connection first, then reopen Edit to choose which device roles count toward the QBR.'}
               </Text>
             ))}
@@ -665,7 +670,7 @@ export function Integrations() {
           </Text>
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setConfirmDelete(null)}>Cancel</Button>
-            <Button color="red" onClick={() => confirmDelete && remove(confirmDelete)}>Delete</Button>
+            <Button color="act" onClick={() => confirmDelete && remove(confirmDelete)}>Delete</Button>
           </Group>
         </Stack>
       </Modal>

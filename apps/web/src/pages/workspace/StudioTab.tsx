@@ -29,15 +29,15 @@ import { SECTIONS } from './shared.js';
 
 // ── Studio tab: shape the report (branding + sections) ────────────────────────
 const GOAL_STATUS_OPTIONS: Array<{ value: ClientGoalStatus; label: string; color: string }> = [
-  { value: 'planned', label: 'Planned', color: 'gray' },
-  { value: 'on_track', label: 'On track', color: 'teal' },
-  { value: 'at_risk', label: 'At risk', color: 'yellow' },
+  { value: 'planned', label: 'Planned', color: 'slate' },
+  { value: 'on_track', label: 'On track', color: 'good' },
+  { value: 'at_risk', label: 'At risk', color: 'watch' },
   { value: 'achieved', label: 'Achieved', color: 'cyan' },
 ];
 
 /**
  * Strategic goals editor (Studio tab). Records the client's business objectives
- * and how IT supports them — these open the report and steer the AI narrative.
+ * and how IT supports them, these open the report and steer the AI narrative.
  * Loads/saves the whole list on the client record via a dedicated endpoint.
  */
 type ResearchResult = {
@@ -77,7 +77,7 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
   // Append a researched suggestion as an editable goal (user reviews, then Save).
   const addSuggestedGoal = (title: string, alignment?: string) => {
     setGoals((g) => [...g, { id: rid(), title, alignment, status: 'planned' }]);
-    notifications.show({ color: 'teal', message: 'Added below — review it, then Save goals.' });
+    notifications.show({ color: 'good', message: 'Added below, review it, then Save goals.' });
   };
 
   async function runResearch() {
@@ -90,7 +90,7 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
         setResearch(null);
       } else {
         setResearch(r.research);
-        if (!r.research.sourced) setResearchNote('Live web search was unavailable — this reflects the model\'s general knowledge, so verify before acting.');
+        if (!r.research.sourced) setResearchNote('Live web search was unavailable, this reflects the model\'s general knowledge, so verify before acting.');
       }
     } catch (e) {
       setResearchNote(e instanceof Error ? e.message : 'Research failed.');
@@ -106,7 +106,7 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
       const cleaned = goals.filter((g) => g.title.trim());
       const res = await api.putClientGoals(clientId, cleaned);
       setGoals(res.client.goals ?? []);
-      notifications.show({ color: 'teal', message: 'Goals saved — they open the report and steer the narrative.' });
+      notifications.show({ color: 'good', message: 'Goals saved, they open the report and steer the narrative.' });
       onSaved();
     } catch (e) {
       toastError('Save failed', e);
@@ -127,7 +127,7 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
       <Text size="xs" c="dimmed" mb="md">
         The client's business objectives and how Mash IT supports them. These open the QBR (a "Strategic Goals &amp; IT
         Alignment" section) and give the AI narrative context to frame the quarter around what the client is working toward.
-        Keep them qualitative — no figures.
+        Keep them qualitative, no figures.
       </Text>
       {loading ? (
         <Center h={80}><Loader size="sm" /></Center>
@@ -141,11 +141,11 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
                 <Group align="flex-start" wrap="nowrap">
                   <TextInput
                     style={{ flex: 1 }}
-                    placeholder="Goal — e.g. Open two new clinics by year-end"
+                    placeholder="Goal, e.g. Open two new clinics by year-end"
                     value={g.title}
                     onChange={(e) => patch(g.id, { title: e.currentTarget.value })}
                   />
-                  <ActionIcon color="red" variant="subtle" aria-label="Remove goal" onClick={() => remove(g.id)} mt={4}>
+                  <ActionIcon color="act" variant="subtle" aria-label="Remove goal" onClick={() => remove(g.id)} mt={4}>
                     <IconTrash size={16} />
                   </ActionIcon>
                 </Group>
@@ -187,7 +187,7 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
         <Button
           size="compact-sm"
           variant="light"
-          color="teal"
+          color="good"
           loading={researching}
           leftSection={<IconSparkles size={14} />}
           onClick={runResearch}
@@ -197,7 +197,7 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
       </Group>
       <Text size="xs" c="dimmed" mb="md">
         Recent, sourced developments in this client's industry and region that could shape their IT, security, or
-        compliance priorities — plus goals worth proposing. For your prep; nothing is added to the report automatically.
+        compliance priorities, plus goals worth proposing. For your prep; nothing is added to the report automatically.
       </Text>
       {researching ? (
         <Stack gap="xs" align="center" py="xl">
@@ -210,7 +210,7 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
           {researchNote && <Text size="xs" c="orange.7">{researchNote}</Text>}
           {research.trends.length > 0 && (
             <div>
-              <Text size="xs" fw={700} tt="uppercase" c="dimmed" mb={6}>Trends &amp; news</Text>
+              <Text size="xs" fw={700} c="dimmed" mb={6}>Trends &amp; news</Text>
               <Stack gap="sm">
                 {research.trends.map((t, i) => (
                   <Card key={i} withBorder radius="sm" padding="sm" bg="var(--mantine-color-gray-0)">
@@ -229,7 +229,7 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
           )}
           {research.suggestedGoals.length > 0 && (
             <div>
-              <Text size="xs" fw={700} tt="uppercase" c="dimmed" mb={6}>Suggested goals</Text>
+              <Text size="xs" fw={700} c="dimmed" mb={6}>Suggested goals</Text>
               <Stack gap="xs">
                 {research.suggestedGoals.map((g, i) => (
                   <Group key={i} justify="space-between" wrap="nowrap" align="flex-start" gap="sm">
@@ -247,7 +247,7 @@ function GoalsEditor({ clientId, onSaved }: { clientId: string; onSaved: () => v
           )}
           {research.recommendations.length > 0 && (
             <div>
-              <Text size="xs" fw={700} tt="uppercase" c="dimmed" mb={6}>Recommendations</Text>
+              <Text size="xs" fw={700} c="dimmed" mb={6}>Recommendations</Text>
               <Stack gap="xs">
                 {research.recommendations.map((r, i) => (
                   <Group key={i} justify="space-between" wrap="nowrap" align="flex-start" gap="sm">
@@ -299,7 +299,7 @@ export function StudioTab({
     setSaving(true);
     try {
       await api.putConfig(clientId, { ...config, clientId });
-      notifications.show({ color: 'teal', message: 'Saved. The report reflects it instantly — AI text is reused.' });
+      notifications.show({ color: 'good', message: 'Saved. The report reflects it instantly, AI text is reused.' });
       onSaved();
     } catch (e) {
       toastError('Save failed', e);
@@ -315,7 +315,7 @@ export function StudioTab({
       <Card withBorder radius="md" padding="lg">
         <Title order={5} mb={4}>Client branding</Title>
         <Text size="xs" c="dimmed" mb="md">
-          Reports always use the Mash IT theme (colors and logo from Settings) — the client's logo shows alongside it on the
+          Reports always use the Mash IT theme (colors and logo from Settings), the client's logo shows alongside it on the
           report, PDF and deck for the personal touch.
         </Text>
         <Stack>
@@ -326,7 +326,7 @@ export function StudioTab({
             </FileButton>
             {brand.logoDataUri && <Image src={brand.logoDataUri} h={40} w="auto" fit="contain" alt="logo" />}
             {brand.logoDataUri && (
-              <Button variant="subtle" color="red" onClick={() => setConfig({ ...config, brand: { ...brand, logoDataUri: undefined } })}>
+              <Button variant="subtle" color="act" onClick={() => setConfig({ ...config, brand: { ...brand, logoDataUri: undefined } })}>
                 Remove logo
               </Button>
             )}
@@ -373,7 +373,7 @@ export function StudioTab({
                   value={s.placement ?? 'in-body'}
                   onChange={(v) => { const cs = [...(config.customSections ?? [])]; cs[i] = { ...s, placement: v ?? 'in-body' }; setConfig({ ...config, customSections: cs }); }}
                 />
-                <ActionIcon color="red" variant="subtle" aria-label="Remove section" onClick={() => setConfig({ ...config, customSections: (config.customSections ?? []).filter((x) => x.id !== s.id) })}><IconTrash size={16} /></ActionIcon>
+                <ActionIcon color="act" variant="subtle" aria-label="Remove section" onClick={() => setConfig({ ...config, customSections: (config.customSections ?? []).filter((x) => x.id !== s.id) })}><IconTrash size={16} /></ActionIcon>
               </Group>
               <Textarea autosize minRows={2} placeholder="Body" value={s.body} onChange={(e) => { const cs = [...(config.customSections ?? [])]; cs[i] = { ...s, body: e.currentTarget.value }; setConfig({ ...config, customSections: cs }); }} />
             </Fieldset>
