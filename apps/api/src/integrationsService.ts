@@ -567,9 +567,10 @@ export async function syncClientMetrics(
   }
   snapshot.warnings = warnings;
 
-  // Every collector threw: keep whatever was there rather than overwrite it.
-  const allFailed =
-    runs.length > 0 && results.every((r) => r.metrics.length === 0 && r.warnings.some((w) => /Collection failed/.test(w)));
+  // Every collector came back empty-handed with a warning (it threw, or it
+  // caught its own HTTP error, as Huntress does): keep whatever was there
+  // rather than overwrite it.
+  const allFailed = runs.length > 0 && results.every((r) => r.metrics.length === 0 && r.warnings.length > 0);
   if (!allFailed) await intg.store.putSnapshot(snapshot);
   const documents = results.flatMap((r) =>
     (r.documents ?? []).map((d) => ({ source: r.source, name: d.name, url: d.url, key: d.key })),

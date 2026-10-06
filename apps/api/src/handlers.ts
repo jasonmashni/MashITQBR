@@ -966,13 +966,13 @@ export async function pushOpportunity(
 // so Settings shows whether ingestion is actually WORKING, not just configured.
 let _lastInboxPoll: { at: string; ok: boolean; detail: string } | undefined;
 
-export async function pollInbox(): Promise<ApiResult> {
+export async function pollInbox(log?: (message: string) => void): Promise<ApiResult> {
   const cfg = inboxConfigFromEnv();
   if (!cfg) {
     return err(501, 'Report inbox not configured — set REPORTS_MAILBOX, REPORTS_TENANT_ID, REPORTS_CLIENT_ID and REPORTS_CLIENT_SECRET.');
   }
   try {
-    const result = await pollReportInbox(cfg, getDataStore(), getDocStore());
+    const result = await pollReportInbox(cfg, getDataStore(), getDocStore(), fetch, new Date(), { log });
     const folderNote = result.folders?.map((f) => `${f.folder}: ${f.unread} unread of ${f.total}`).join(', ');
     _lastInboxPoll = {
       at: new Date().toISOString(),
@@ -1031,8 +1031,8 @@ export async function checkQbrDue(now: Date = new Date()): Promise<void> {
 }
 
 /** One 5-minute platform tick: drain the report inbox + due-date reminders. */
-export async function timerTick(): Promise<void> {
-  await pollInbox().catch(() => undefined);
+export async function timerTick(log?: (message: string) => void): Promise<void> {
+  await pollInbox(log).catch(() => undefined);
   await checkQbrDue().catch(() => undefined);
 }
 
@@ -1220,6 +1220,7 @@ export async function syncQbr(clientId: string, period: string): Promise<ApiResu
     const { snapshot, warnings, documents, allFailed } = await syncClientMetrics(await buildIntegrations(), clientId, period);
     if (allFailed) {
       audit('qbr.sync', `qbr:${clientId}/${period}`, 'every collector failed; previous data kept');
+      await patchQbr(clientId, period, { lastSyncAttempt: { at: new Date().toISOString(), warnings } });
       return err(409, 'Every connected tool failed; previous data kept. ' + warnings.join(' '));
     }
     // Vendor-published report files (e.g. the Huntress quarterly PDF) attach automatically.
@@ -1227,7 +1228,8 @@ export async function syncQbr(clientId: string, period: string): Promise<ApiResu
     const store = getDataStore();
     const existing = await store.getQbr(clientId, period);
     // Forward-only: a re-sync must not demote a scheduled/completed QBR.
-    await patchQbr(clientId, period, { status: advanceStatus(existing?.status, 'data_synced') });
+    // A successful sync clears any earlier refused attempt.
+    await patchQbr(clientId, period, { status: advanceStatus(existing?.status, 'data_synced'), lastSyncAttempt: undefined });
     audit('qbr.sync', `qbr:${clientId}/${period}`, `${snapshot.metrics.length} metric(s)`);
     return ok({ metrics: snapshot.metrics.length, warnings, documents: documents.length });
   } catch (e) {
@@ -1269,6 +1271,11 @@ export async function putStatus(
       const heldAt = sched && Date.parse(sched) <= Date.now() ? sched : new Date().toISOString();
       patch.meeting = { ...existing?.meeting, heldAt };
     }
+  } else if (!statusAtLeast(status, 'completed') && existing?.meeting?.heldAt) {
+    // An override back below completed means the review did not happen (yet):
+    // drop the held date so account health stops counting it.
+    const { heldAt: _dropped, ...meeting } = existing.meeting;
+    patch.meeting = meeting;
   }
   const saved = await patchQbr(clientId, period, patch);
   if (forward) audit('qbr.status', `qbr:${clientId}/${period}`, status);
@@ -1279,6 +1286,9 @@ export async function putStatus(
 /** Approve the narrative: advance-only, so a later-stage QBR keeps its status. */
 export async function approveNarrative(clientId: string, period: string): Promise<ApiResult> {
   const existing = await getDataStore().getQbr(clientId, period);
+  if (!statusAtLeast(existing?.status, 'data_synced')) {
+    return err(409, 'Sync the data before approving the narrative.');
+  }
   const status = advanceStatus(existing?.status, 'narrative_approved');
   if (existing && status === existing.status) return ok(existing);
   const saved = await patchQbr(clientId, period, { status });
@@ -1311,6 +1321,14 @@ export async function dispositionQbrSkipped(clientId: string, period: string, bo
 
 /** The account manager confirms the report package went to the client. */
 export async function markPackageSent(clientId: string, period: string): Promise<ApiResult> {
+  const store = getDataStore();
+  const ds = storeDataSource(store);
+  if (!(await ds.getClient(clientId))) return err(404, 'Unknown client');
+  if (!(await ds.getSnapshot(clientId, period))) return err(409, `No metric snapshot for ${clientId} ${period}; there is no report to send.`);
+  const existing = await store.getQbr(clientId, period);
+  if (existing?.status === 'archived') return err(409, 'This QBR is archived; un-archive it before marking the package sent.');
+  // Idempotent: the first send date is the one that counts.
+  if (existing?.packageSentAt) return ok(existing);
   const saved = await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() });
   audit('qbr.package_sent', `qbr:${clientId}/${period}`);
   return ok(saved);

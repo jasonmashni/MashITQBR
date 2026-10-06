@@ -73,6 +73,8 @@ export interface QbrRecord {
   meetingSkipped?: { at: string; reason?: string };
   /** When the "time to schedule" reminder fired — so it fires at most once. */
   dueRemindedAt?: string;
+  /** The last sync that was refused because every collector failed (shown on the Data tab). */
+  lastSyncAttempt?: { at: string; warnings: string[] };
   updatedAt: string;
 }
 

@@ -1,4 +1,4 @@
-import { app, type HttpMethod, type HttpRequest, type HttpResponseInit } from '@azure/functions';
+import { app, type HttpMethod, type HttpRequest, type HttpResponseInit, type InvocationContext } from '@azure/functions';
 import { contentDisposition } from './contentDisposition.js';
 import { SECURITY_HEADERS } from './static.js';
 import { actorFrom, principalFrom } from './auth.js';
@@ -51,7 +51,7 @@ const guarded = async (fn: () => Promise<ApiResult> | ApiResult): Promise<ApiRes
   }
 };
 const headerGet = (req: HttpRequest) => (name: string) => req.headers.get(name);
-const route = (name: string, method: HttpMethod, r: string, fn: (req: HttpRequest) => Promise<ApiResult> | ApiResult) =>
+const route = (name: string, method: HttpMethod, r: string, fn: (req: HttpRequest, ctx: InvocationContext) => Promise<ApiResult> | ApiResult) =>
   app.http(name, {
     route: r,
     methods: [method],
@@ -59,8 +59,8 @@ const route = (name: string, method: HttpMethod, r: string, fn: (req: HttpReques
     // The gate refuses non-public routes without an Easy Auth principal when
     // auth is required (Azure, or QBR_AUTH_REQUIRED=1). Actor context lets
     // handlers attribute audit entries to the Easy Auth user.
-    handler: async (req) =>
-      runWithActor(actorFrom(headerGet(req)), async () => toResponse(await gate(new URL(req.url).pathname, headerGet(req), () => guarded(() => fn(req))))),
+    handler: async (req, ctx) =>
+      runWithActor(actorFrom(headerGet(req)), async () => toResponse(await gate(new URL(req.url).pathname, headerGet(req), () => guarded(() => fn(req, ctx))))),
   });
 
 // Clients + report
@@ -168,14 +168,14 @@ route('overview', 'GET', 'api/overview', (req) => h.getOverview(req.query.get('c
 route('clientPeriods', 'GET', 'api/clients/{clientId}/periods', (req) => h.getPeriods(req.params['clientId']!, req.query.get('current')));
 route('me', 'GET', 'api/me', (req) => h.getMe(principalFrom(headerGet(req))));
 route('audit', 'GET', 'api/audit', (req) => h.getAudit(req.query.get('limit')));
-route('pollInbox', 'POST', 'api/inbox/poll', () => h.pollInbox());
+route('pollInbox', 'POST', 'api/inbox/poll', (_req, ctx) => h.pollInbox((m) => ctx.warn(m)));
 
 // Keeps a worker warm on the Consumption plan (softens cold starts; timers
 // ride the existing AzureWebJobsStorage and run singleton across instances).
 // The same tick drains the shared report mailbox and runs QBR-due reminders.
 app.timer('keepWarm', {
   schedule: '0 */5 * * * *',
-  handler: async () => {
-    await h.timerTick().catch(() => undefined);
+  handler: async (_timer, ctx) => {
+    await h.timerTick((m) => ctx.warn(m)).catch(() => undefined);
   },
 });

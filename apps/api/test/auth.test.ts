@@ -10,9 +10,15 @@ const headers = (h: Record<string, string>) => (name: string) => h[name.toLowerC
 describe('authRequired', () => {
   it('follows QBR_AUTH_REQUIRED when set, else whether we run in Azure', () => {
     expect(authRequired({ QBR_AUTH_REQUIRED: '1' })).toBe(true);
-    expect(authRequired({ QBR_AUTH_REQUIRED: '0', WEBSITE_INSTANCE_ID: 'abc' })).toBe(false);
+    expect(authRequired({ QBR_AUTH_REQUIRED: '0' })).toBe(false);
     expect(authRequired({ WEBSITE_INSTANCE_ID: 'abc' })).toBe(true);
     expect(authRequired({})).toBe(false);
+  });
+});
+
+describe('authRequired in Azure', () => {
+  it('ignores QBR_AUTH_REQUIRED=0 on App Service: the override is local-only', () => {
+    expect(authRequired({ QBR_AUTH_REQUIRED: '0', WEBSITE_INSTANCE_ID: 'abc' })).toBe(true);
   });
 });
 
@@ -76,5 +82,52 @@ describe('gate', () => {
   it('is open when auth is not required (local dev)', async () => {
     process.env['QBR_AUTH_REQUIRED'] = '0';
     expect((await gate('api/clients', headers({}), okFn)).status).toBe(200);
+  });
+
+  it('401s a forged empty principal ({} base64)', async () => {
+    process.env['QBR_AUTH_REQUIRED'] = '1';
+    expect((await gate('api/clients', headers({ 'x-ms-client-principal': 'e30=' }), okFn)).status).toBe(401);
+    const noClaims = Buffer.from(JSON.stringify({ auth_typ: 'aad', claims: [] })).toString('base64');
+    expect((await gate('api/clients', headers({ 'x-ms-client-principal': noClaims }), okFn)).status).toBe(401);
+    const noType = Buffer.from(JSON.stringify({ claims: [{ typ: 'name', val: 'x' }] })).toString('base64');
+    expect((await gate('api/clients', headers({ 'x-ms-client-principal': noType }), okFn)).status).toBe(401);
+  });
+
+  describe('on App Service', () => {
+    const keys = ['WEBSITE_INSTANCE_ID', 'WEBSITE_AUTH_ENABLED'] as const;
+    const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    afterEach(() => {
+      for (const k of keys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    });
+
+    it('passes a valid envelope when Easy Auth is on (WEBSITE_AUTH_ENABLED=True, any case)', async () => {
+      delete process.env['QBR_AUTH_REQUIRED'];
+      process.env['WEBSITE_INSTANCE_ID'] = 'abc';
+      for (const v of ['True', 'true', 'TRUE']) {
+        process.env['WEBSITE_AUTH_ENABLED'] = v;
+        expect((await gate('api/clients', headers({ 'x-ms-client-principal': principal }), okFn)).status).toBe(200);
+      }
+    });
+
+    it('fails closed without WEBSITE_AUTH_ENABLED, even with a valid header', async () => {
+      delete process.env['QBR_AUTH_REQUIRED'];
+      process.env['WEBSITE_INSTANCE_ID'] = 'abc';
+      delete process.env['WEBSITE_AUTH_ENABLED'];
+      expect((await gate('api/clients', headers({ 'x-ms-client-principal': principal }), okFn)).status).toBe(401);
+      process.env['WEBSITE_AUTH_ENABLED'] = 'False';
+      expect((await gate('api/system', headers({ 'x-ms-client-principal': principal }), okFn)).status).toBe(401);
+      // The public booking page keeps working.
+      expect((await gate('api/book/tok', headers({}), okFn)).status).toBe(200);
+    });
+
+    it('cannot be switched off with QBR_AUTH_REQUIRED=0', async () => {
+      process.env['QBR_AUTH_REQUIRED'] = '0';
+      process.env['WEBSITE_INSTANCE_ID'] = 'abc';
+      process.env['WEBSITE_AUTH_ENABLED'] = 'True';
+      expect((await gate('api/clients', headers({}), okFn)).status).toBe(401);
+    });
   });
 });

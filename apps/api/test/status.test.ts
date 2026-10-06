@@ -35,6 +35,46 @@ describe('approveNarrative', () => {
     expect(res.status).toBe(200);
     expect(await statusOf('2025-Q2')).toBe('completed');
   });
+
+  it('refuses to approve before the data is synced', async () => {
+    const h = await import('../src/handlers.js');
+    const res = await h.approveNarrative('anp', '2023-Q2');
+    expect(res.status).toBe(409);
+    expect(await statusOf('2023-Q2')).toBeUndefined();
+  });
+});
+
+describe('markPackageSent', () => {
+  it('404s an unknown client', async () => {
+    const h = await import('../src/handlers.js');
+    expect((await h.markPackageSent('nope', '2026-Q1')).status).toBe(404);
+  });
+
+  it('409s a period with no snapshot', async () => {
+    const h = await import('../src/handlers.js');
+    expect((await h.markPackageSent('anp', '2019-Q1')).status).toBe(409);
+  });
+
+  it('409s an archived QBR', async () => {
+    const h = await import('../src/handlers.js');
+    await h.putStatus('kpca', '2026-Q1', { status: 'archived' });
+    const res = await h.markPackageSent('kpca', '2026-Q1');
+    expect(res.status).toBe(409);
+    const store = (await import('../src/store/index.js')).getDataStore();
+    expect((await store.getQbr('kpca', '2026-Q1'))?.packageSentAt).toBeUndefined();
+  });
+
+  it('keeps the first packageSentAt on a repeat call', async () => {
+    const h = await import('../src/handlers.js');
+    const first = await h.markPackageSent('anp', '2026-Q1');
+    expect(first.status).toBe(200);
+    const stamped = (first.json as { packageSentAt?: string }).packageSentAt;
+    expect(stamped).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 5));
+    const again = await h.markPackageSent('anp', '2026-Q1');
+    expect(again.status).toBe(200);
+    expect((again.json as { packageSentAt?: string }).packageSentAt).toBe(stamped);
+  });
 });
 
 describe('putStatus', () => {
@@ -55,13 +95,26 @@ describe('putStatus', () => {
 
   it('applies a forced backwards move and audits the reason', async () => {
     const h = await import('../src/handlers.js');
-    const res = await h.putStatus('anp', '2025-Q3', { status: 'draft', force: true, reason: 'cleanup' });
+    const { runWithActor } = await import('../src/requestContext.js');
+    const res = await runWithActor('tech@mashit.net', () => h.putStatus('anp', '2025-Q3', { status: 'draft', force: true, reason: 'cleanup' }));
     expect(res.status).toBe(200);
     expect(await statusOf('2025-Q3')).toBe('draft');
-    const events = ((await h.getAudit('50')).json as { events: Array<{ action: string; target: string; detail?: string }> }).events;
+    const events = ((await h.getAudit('50')).json as { events: Array<{ action: string; target: string; actor: string; detail?: string }> }).events;
     const entry = events.find((e) => e.target === 'qbr:anp/2025-Q3' && e.detail?.includes('override'));
     expect(entry?.detail).toContain('cleanup');
     expect(entry?.detail).toContain('override');
+    expect(entry?.actor).toBe('tech@mashit.net');
+  });
+
+  it('a forced move below completed clears meeting.heldAt', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    await h.putStatus('anp', '2023-Q1', { status: 'completed' });
+    expect((await store.getQbr('anp', '2023-Q1'))?.meeting?.heldAt).toBeTruthy();
+    expect((await h.putStatus('anp', '2023-Q1', { status: 'scheduled', force: true, reason: 'meeting did not happen' })).status).toBe(200);
+    const rec = await store.getQbr('anp', '2023-Q1');
+    expect(rec?.status).toBe('scheduled');
+    expect(rec?.meeting?.heldAt).toBeUndefined();
   });
 
   it('advances on a forward move without force', async () => {

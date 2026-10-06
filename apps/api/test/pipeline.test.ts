@@ -124,7 +124,7 @@ describe('syncQbr (handler) over fake integrations', () => {
     },
   };
 
-  async function wire(secrets: Secrets) {
+  async function wire(secrets: Secrets, http: { request(req: HttpRequest): Promise<HttpResponse> } = huntressHttp) {
     const h = await import('../src/handlers.js');
     const { getDataStore } = await import('../src/store/index.js');
     const store = getDataStore();
@@ -132,7 +132,7 @@ describe('syncQbr (handler) over fake integrations', () => {
     await h.updateClient('anp', { integrationRefs: { huntress: 'org1' } });
     for (const c of await store.listConnections()) if (c.type === 'huntress') await store.deleteConnection(c.id);
     await saveConnection(store, secrets, { type: 'huntress', label: 'Huntress', config: { baseUrl: 'https://api.huntress.io/v1' }, secrets: { apiKey: 'k', apiSecret: 's' } });
-    h.__setIntegrationsForTests(async () => ({ store, secrets, http: huntressHttp }));
+    h.__setIntegrationsForTests(async () => ({ store, secrets, http }));
     return h;
   }
 
@@ -175,5 +175,21 @@ describe('syncQbr (handler) over fake integrations', () => {
     expect((res.json as { error: string }).error).toMatch(/previous data kept/);
     expect(await metricsOf()).toBe(before);
     expect(((await h.getQbr('anp', '2026-Q1', null)).json as { meta: { status: string } }).meta.status).not.toBe('data_synced');
+  });
+
+  it('collectors that catch their own HTTP errors (every call 401) count as a total failure', async () => {
+    const unauthorized = { async request(): Promise<HttpResponse> { return { status: 401, json: { error: 'Unauthorized' } }; } };
+    const h = await wire(memSecrets(), unauthorized);
+    const metricsOf = async () => ((await h.getMetrics('anp', '2025-Q4')).json as { snapshot: { metrics: unknown[] } }).snapshot.metrics.length;
+    const before = await metricsOf();
+    expect(before).toBeGreaterThan(0);
+    const res = await h.syncQbr('anp', '2025-Q4');
+    expect(res.status).toBe(409);
+    expect(await metricsOf()).toBe(before);
+    const meta = ((await h.getQbr('anp', '2025-Q4', null)).json as { meta: { status: string; lastSyncAttempt?: { at: string; warnings: string[] } } }).meta;
+    expect(meta.status).not.toBe('data_synced');
+    // The Data tab can show why the sync was refused.
+    expect(meta.lastSyncAttempt?.warnings.length).toBeGreaterThan(0);
+    expect(Date.parse(meta.lastSyncAttempt!.at)).not.toBeNaN();
   });
 });

@@ -26,8 +26,13 @@ export function principalFrom(get: HeaderGet): Principal | undefined {
   const b64 = get('x-ms-client-principal');
   if (!b64) return undefined;
   try {
-    const env = JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) as PrincipalEnvelope;
-    const claims = env.claims ?? [];
+    const env = JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) as PrincipalEnvelope | null;
+    // Easy Auth always sends an auth type and at least one claim. Anything
+    // thinner (e.g. a forged `e30=`, which is `{}`) is not a principal.
+    if (!env || typeof env !== 'object') return undefined;
+    if (typeof env.auth_typ !== 'string' || !env.auth_typ.trim()) return undefined;
+    if (!Array.isArray(env.claims) || env.claims.length === 0) return undefined;
+    const claims = env.claims;
     const claim = (typ: string) => claims.find((c) => c.typ === typ)?.val;
     const roleTyp = env.role_typ ?? 'roles';
     const headerName = get('x-ms-client-principal-name') ?? undefined;

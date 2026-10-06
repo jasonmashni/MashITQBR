@@ -130,7 +130,7 @@ describe('sender trust', () => {
 });
 
 describe('pollReportInbox trust + resilience', () => {
-  type Msg = { id: string; from?: string; subject?: string };
+  type Msg = { id: string; from?: string; subject?: string; folder?: 'inbox' | 'junkemail' };
   function fakeGraph(msgs: Msg[], opts: { failAttachmentsFor?: string } = {}) {
     const patched: Array<{ id: string; categories: string; isRead: boolean }> = [];
     const fetchFn = (async (url: string, init?: RequestInit) => {
@@ -147,9 +147,10 @@ describe('pollReportInbox trust + resilience', () => {
           value: [{ '@odata.type': '#microsoft.graph.fileAttachment', name: 'report.pdf', contentType: 'application/pdf', contentBytes: Buffer.from('%PDF x').toString('base64') }],
         });
       }
-      if (url.includes('/mailFolders/inbox/messages?')) {
+      const folderHit = url.match(/\/mailFolders\/(inbox|junkemail)\/messages\?/);
+      if (folderHit) {
         return body({
-          value: msgs.map((m) => ({
+          value: msgs.filter((m) => (m.folder ?? 'inbox') === folderHit[1]).map((m) => ({
             id: m.id,
             subject: m.subject ?? 'report 2026-Q2',
             hasAttachments: true,
@@ -198,13 +199,34 @@ describe('pollReportInbox trust + resilience', () => {
       ],
       { failAttachmentsFor: 'bad' },
     );
-    const result = await pollReportInbox(cfg, store, docs, fetchFn, new Date('2026-07-03T12:00:00Z'));
-    expect(result.failed).toBe(1);
+    const logged: string[] = [];
+    const result = await pollReportInbox(cfg, store, docs, fetchFn, new Date('2026-07-03T12:00:00Z'), { log: (m) => logged.push(m) });
+    expect(result.failed).toEqual([{ id: 'bad', subject: 'a 2026-Q2', error: 'socket hang up' }]);
+    expect(logged.some((l) => l.includes('bad') && l.includes('socket hang up'))).toBe(true);
     expect(result.filed).toBe(1);
     expect(patched).toContainEqual({ id: 'bad', categories: 'QBR: failed', isRead: true });
     expect(patched).toContainEqual({ id: 'good', categories: 'QBR: filed', isRead: true });
     const filed = await store.listDocuments('halo-62', '2026-Q2');
     expect(filed).toHaveLength(1);
     expect(filed[0]!.from).toBe('jason@mashit.net');
+  });
+
+  it('never trusts mail from the Junk folder, even from our own domain (DMARC-failing spoof)', async () => {
+    const store = new JsonDataStore(join(dir, 'trust-d'));
+    const docs = new LocalDocStore(join(dir, 'trust-d', 'docs'));
+    await store.upsertClient({ id: 'halo-62', name: 'Madison Pediatric Associates' });
+    const { fetchFn, patched } = fakeGraph([
+      { id: 'spoof', from: 'jason@mashit.net', folder: 'junkemail' },
+      { id: 'vendor', from: 'noreply@checkpoint.com', folder: 'junkemail' },
+      { id: 'real', from: 'jason@mashit.net', subject: 'c 2026-Q2' },
+    ]);
+    const result = await pollReportInbox({ ...cfg, allowedSenders: ['checkpoint.com'] }, store, docs, fetchFn, new Date('2026-07-03T12:00:00Z'));
+    expect(result.untrusted).toBe(2);
+    expect(result.filed).toBe(1);
+    expect(patched).toContainEqual({ id: 'spoof', categories: 'QBR: untrusted', isRead: true });
+    expect(patched).toContainEqual({ id: 'vendor', categories: 'QBR: untrusted', isRead: true });
+    expect(patched).toContainEqual({ id: 'real', categories: 'QBR: filed', isRead: true });
+    const filed = await store.listDocuments('halo-62', '2026-Q2');
+    expect(filed).toHaveLength(1);
   });
 });
