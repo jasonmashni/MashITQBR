@@ -1,7 +1,18 @@
 import type { DiscussionItem, FunctionScore, MetricTrend, Rating } from '@mashit/core';
 import type { BrandTokens } from './brand.js';
-import { formatPercent, formatValue, ratingColor, discussionOutcome, trendDeltaText, goalStatusLabel, goalStatusColor } from './format.js';
-import { moversBarChartSvg, selectKpiTiles } from './charts.js';
+import {
+  formatPercent,
+  formatValue,
+  ratingColor,
+  ratingWord,
+  discussionOutcome,
+  trendDeltaText,
+  goalStatusLabel,
+  goalStatusColor,
+  SEMANTIC,
+} from './format.js';
+import { moversBarChartSvg, moversCaption, selectKpiTiles } from './charts.js';
+import { isRenderableRaster } from './images.js';
 import type { ReportModel, ReportSection } from './model.js';
 
 /**
@@ -9,52 +20,77 @@ import type { ReportModel, ReportSection } from './model.js';
  * on the Azure Consumption plan). Uses the PDF standard Helvetica faces (no
  * font files to ship); score visuals are generated as inline SVG. pdfmake is
  * imported dynamically so the package still builds/tests without it installed.
+ *
+ * Same story as the HTML report: the opening page carries the headline, the
+ * narrative, the at-a-glance tiles with their movement, and a data-confidence
+ * note; the maturity page withholds the score on thin data and shows "Not
+ * measured" in slate; the "vs last" column exists only when something can be
+ * compared. Sentence case throughout; nothing is uppercased or letter-spaced.
  */
 
 type Node = Record<string, unknown> | string;
 
-const GRAY = '#5a6b7b';
-const RULE = '#dde3ea';
+const GRAY = SEMANTIC.muted;
+const TEXT = SEMANTIC.text;
+const RULE = SEMANTIC.hairline;
+const CANVAS = SEMANTIC.canvas;
 
-/** Donut gauge for the overall maturity score. */
+/** Human names for the NIST CSF 2.0 functions. */
+const FUNCTION_NAME: Record<string, string> = {
+  GOVERN: 'Govern',
+  IDENTIFY: 'Identify',
+  PROTECT: 'Protect',
+  DETECT: 'Detect',
+  RESPOND: 'Respond',
+  RECOVER: 'Recover',
+};
+
+/** Donut gauge for the overall maturity score; "Not scored" when withheld. */
 export function donutSvg(score: number | null, rating: Rating, size = 150): string {
   const c = size / 2;
   const r = size / 2 - 14;
   const circumference = 2 * Math.PI * r;
   const pct = score === null ? 0 : Math.max(0, Math.min(100, score)) / 100;
-  const color = ratingColor(rating);
-  const label = score === null ? '—' : String(Math.round(score));
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="#e9edf2" stroke-width="14"/>
-<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${color}" stroke-width="14"
+  const color = score === null ? SEMANTIC.unknownBg : ratingColor(rating);
+  const label = score === null ? 'Not scored' : String(Math.round(score));
+  const labelSize = score === null ? size / 10 : size / 4;
+  // pdfkit rejects a zero-length dash ("dash([0, n]) invalid"), so the
+  // progress arc is only drawn when there is a score to draw.
+  const arc =
+    pct > 0
+      ? `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${color}" stroke-width="14"
  stroke-linecap="round" stroke-dasharray="${(pct * circumference).toFixed(1)} ${circumference.toFixed(1)}"
- transform="rotate(-90 ${c} ${c})"/>
-<text x="${c}" y="${c + 2}" text-anchor="middle" font-family="Helvetica, Arial" font-size="${size / 4}" font-weight="bold" fill="#0b2545">${label}</text>
-<text x="${c}" y="${c + size / 5.4}" text-anchor="middle" font-family="Helvetica, Arial" font-size="${size / 12}" fill="${GRAY}">of 100</text>
+ transform="rotate(-90 ${c} ${c})"/>`
+      : '';
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${SEMANTIC.unknownBg}" stroke-width="14"/>
+${arc}
+<text x="${c}" y="${c + 2}" text-anchor="middle" font-family="Helvetica, Arial" font-size="${labelSize}" font-weight="bold" fill="${score === null ? GRAY : SEMANTIC.ink}">${label}</text>
+${score === null ? '' : `<text x="${c}" y="${c + size / 5.4}" text-anchor="middle" font-family="Helvetica, Arial" font-size="${size / 12}" fill="${GRAY}">of 100</text>`}
 </svg>`;
 }
 
-/** Horizontal score bars, one per NIST function. */
+/** Horizontal score bars, one per NIST function; unmeasured functions say so in slate. */
 export function functionBarsSvg(functions: FunctionScore[], width = 320): string {
   const rowH = 26;
-  const barX = 92;
-  const barW = width - barX - 44;
+  const barX = 72;
+  const barW = width - barX - 88;
   const rows = functions
     .map((f, i) => {
       const y = i * rowH + 6;
       const w = f.score === null ? 0 : Math.max(2, (barW * Math.max(0, Math.min(100, f.score))) / 100);
       const color = ratingColor(f.rating);
-      const label = f.score === null ? '—' : String(Math.round(f.score));
-      return `<text x="0" y="${y + 12}" font-family="Helvetica, Arial" font-size="10" fill="#0b2545" font-weight="bold">${f.function}</text>
-<rect x="${barX}" y="${y}" width="${barW}" height="14" rx="7" fill="#e9edf2"/>
-${f.score === null ? '' : `<rect x="${barX}" y="${y}" width="${w.toFixed(1)}" height="14" rx="7" fill="${color}"/>`}
-<text x="${barX + barW + 8}" y="${y + 12}" font-family="Helvetica, Arial" font-size="11" fill="#333">${label}</text>`;
+      const label = f.score === null ? 'Not measured' : `${Math.round(f.score)}  ${ratingWord(f.rating)}`;
+      return `<text x="0" y="${y + 12}" font-family="Helvetica, Arial" font-size="10" fill="${SEMANTIC.ink}" font-weight="bold">${FUNCTION_NAME[f.function] ?? f.function}</text>
+<rect x="${barX}" y="${y}" width="${barW}" height="14" rx="3" fill="${SEMANTIC.unknownBg}"/>
+${f.score === null ? '' : `<rect x="${barX}" y="${y}" width="${w.toFixed(1)}" height="14" rx="3" fill="${color}"/>`}
+<text x="${barX + barW + 8}" y="${y + 12}" font-family="Helvetica, Arial" font-size="9.5" fill="${f.score === null ? GRAY : TEXT}">${label}</text>`;
     })
     .join('\n');
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${functions.length * rowH + 8}" viewBox="0 0 ${width} ${functions.length * rowH + 8}">${rows}</svg>`;
 }
 
-/** A logo node: data-URI SVGs become svg nodes, rasters become image nodes. */
+/** A logo node: data-URI SVGs become svg nodes, verified rasters become image nodes. */
 function logoNode(dataUri: string | undefined, opts: { width?: number; height?: number; alignment?: string } = {}): Node | undefined {
   if (!dataUri) return undefined;
   if (dataUri.startsWith('data:image/svg')) {
@@ -66,33 +102,29 @@ function logoNode(dataUri: string | undefined, opts: { width?: number; height?: 
       return undefined;
     }
   }
-  // pdfmake throws on undecodable images; skip anything that can't be a real
-  // raster (truncated uploads) rather than let a bad logo kill the whole PDF.
-  if (!/^data:image\/(png|jpe?g);base64,[A-Za-z0-9+/=]{100,}/.test(dataUri)) return undefined;
+  // pdfmake throws on undecodable images; a truncated or mislabeled upload is
+  // skipped so a bad logo never kills the whole PDF.
+  if (!isRenderableRaster(dataUri)) return undefined;
   return { image: dataUri, fit: [opts.width ?? 170, opts.height ?? 44], alignment: opts.alignment };
 }
 
-
 /**
- * Trend text safe for the PDF standard fonts (no ▲/▼ — those glyphs aren't in
- * Helvetica's WinAnsi set). The sign + color carry the direction.
+ * Trend text safe for the PDF standard fonts (no ▲/▼/→ — those glyphs aren't
+ * in Helvetica's WinAnsi set). The sign + color carry the direction.
  */
 function pdfTrend(t: MetricTrend): string {
-  // Shared text minus glyphs outside Helvetica's WinAnsi set (▲/▼/→) — the
-  // sign + cell color carry direction, and the extreme-ratio fallback reads
-  // "3 to 62" instead of "3 → 62".
   return trendDeltaText(t).replace(' → ', ' to ');
 }
 
 /** Light callout block with an accent left bar (section takeaways, notes). */
-function calloutBlock(text: string, accent: string, margin: number[] = [0, 2, 0, 10]): Node {
+function calloutBlock(text: string, accent: string, margin: number[] = [0, 2, 0, 10], fill = CANVAS): Node {
   return {
     table: {
       widths: [3, '*'],
       body: [
         [
           { text: '', fillColor: accent, border: [false, false, false, false] },
-          { text, style: 'body', margin: [8, 6, 8, 6], fillColor: '#f4f7fa', border: [false, false, false, false], color: '#333333' },
+          { text, style: 'body', margin: [8, 6, 8, 6], fillColor: fill, border: [false, false, false, false], color: TEXT },
         ],
       ],
     },
@@ -101,20 +133,48 @@ function calloutBlock(text: string, accent: string, margin: number[] = [0, 2, 0,
   };
 }
 
+/** Sync caveats, so a sampled count is never read as a complete one. */
+function confidenceBlock(m: ReportModel): Node | undefined {
+  if (!m.dataConfidence.length) return undefined;
+  return {
+    table: {
+      widths: [3, '*'],
+      body: [
+        [
+          { text: '', fillColor: SEMANTIC.watch, border: [false, false, false, false] },
+          {
+            stack: [
+              { text: 'Data confidence', bold: true, fontSize: 9.5, color: SEMANTIC.watch, margin: [0, 0, 0, 3] },
+              { ul: m.dataConfidence.map((w) => ({ text: w, fontSize: 9, color: TEXT, margin: [0, 1, 0, 1] })) },
+            ],
+            margin: [8, 6, 8, 6],
+            fillColor: SEMANTIC.watchBg,
+            border: [false, false, false, false],
+          },
+        ],
+      ],
+    },
+    layout: { defaultBorder: false, paddingLeft: () => 0, paddingRight: () => 0, paddingTop: () => 0, paddingBottom: () => 0 },
+    margin: [0, 4, 0, 12],
+  };
+}
+
 function sectionTable(section: ReportSection, brand: BrandTokens): Node {
+  const hasPrior = section.rows.some(({ trend }) => trend && trend.previous !== null && trend.direction !== 'na');
+  const header: unknown[] = [
+    { text: 'Metric', style: 'th' },
+    { text: 'This quarter', style: 'th', alignment: 'right' },
+    ...(hasPrior ? [{ text: 'vs last', style: 'th', alignment: 'right' }] : []),
+  ];
   const body: unknown[][] = [
-    [
-      { text: 'Metric', style: 'th' },
-      { text: 'This quarter', style: 'th', alignment: 'right' },
-      { text: 'vs last', style: 'th', alignment: 'right' },
-    ],
+    header,
     ...section.rows.map(({ metric, trend }) => {
-      const t = trend ? pdfTrend(trend) : '';
-      const color = trend?.sentiment === 'negative' ? '#c62828' : trend?.sentiment === 'positive' ? '#2e7d32' : GRAY;
+      const t = hasPrior && trend ? pdfTrend(trend) : '';
+      const color = trend?.sentiment === 'negative' ? SEMANTIC.act : trend?.sentiment === 'positive' ? SEMANTIC.good : GRAY;
       return [
         { text: metric.label, style: 'td' },
         { text: formatValue(metric), style: 'td', alignment: 'right' },
-        { text: t, style: 'td', alignment: 'right', color },
+        ...(hasPrior ? [{ text: t, style: 'td', alignment: 'right', color }] : []),
       ];
     }),
   ];
@@ -123,12 +183,11 @@ function sectionTable(section: ReportSection, brand: BrandTokens): Node {
       { text: section.title, style: 'h2', color: brand.primary },
       ...(section.summary ? [calloutBlock(section.summary, brand.accent)] : []),
       {
-        table: { headerRows: 1, widths: ['*', 90, 70], body },
+        table: { headerRows: 1, widths: hasPrior ? ['*', 90, 70] : ['*', 110], body },
         layout: {
           hLineWidth: (i: number) => (i <= 1 ? 1 : 0.5),
           vLineWidth: () => 0,
           hLineColor: (i: number) => (i <= 1 ? brand.accent : RULE),
-          // Subtle zebra keeps long tables scannable.
           fillColor: (rowIndex: number) => (rowIndex > 0 && rowIndex % 2 === 0 ? '#f7f9fb' : null),
           paddingTop: () => 5,
           paddingBottom: () => 5,
@@ -142,32 +201,33 @@ function sectionTable(section: ReportSection, brand: BrandTokens): Node {
   };
 }
 
-/** The stat band under the executive summary — the quarter at a glance. */
+/** The stat band on the opening page: the quarter at a glance, each number with its movement or confidence. */
 function kpiBand(m: ReportModel): Node | undefined {
   const tiles = selectKpiTiles(m);
   if (tiles.length < 2) return undefined;
+  const toneColor = (tone: string | undefined) => (tone === 'good' ? SEMANTIC.good : tone === 'bad' ? SEMANTIC.act : GRAY);
   return {
     table: {
       widths: tiles.map(() => '*'),
       body: [
         tiles.map((t) => ({
           stack: [
-            { text: t.value, fontSize: 22, bold: true, color: t.color, alignment: 'center' },
-            { text: t.label.toUpperCase(), fontSize: 7.5, color: GRAY, alignment: 'center', characterSpacing: 0.5, margin: [0, 3, 0, 0] },
+            { text: t.value, fontSize: t.value.length > 6 ? 14 : 22, bold: true, color: t.color, alignment: 'left' },
+            { text: t.label, fontSize: 8.5, color: TEXT, alignment: 'left', margin: [0, 3, 0, 0] },
+            ...(t.note ? [{ text: t.note, fontSize: 8, color: toneColor(t.noteTone), alignment: 'left', margin: [0, 1, 0, 0] }] : []),
           ],
-          fillColor: '#f4f7fa',
-          margin: [4, 10, 4, 10],
+          fillColor: CANVAS,
+          margin: [8, 10, 8, 10],
         })),
       ],
     },
     layout: {
       defaultBorder: false,
-      // White gutters between tiles.
-      vLineWidth: () => 3,
+      vLineWidth: () => 4,
       vLineColor: () => '#ffffff',
       hLineWidth: () => 0,
     },
-    margin: [0, 4, 0, 14],
+    margin: [0, 6, 0, 10],
   };
 }
 
@@ -211,39 +271,36 @@ function coverPage(m: ReportModel): Node[] {
   const brand = m.brand;
   const logos: Node[] = [];
   const org = logoNode(brand.orgLogoDataUri, { width: 200, height: 54 });
-  // The client logo sits larger (often a small square beside a wide wordmark).
   const client = logoNode(brand.logoDataUri, { width: 160, height: 82, alignment: 'right' });
   const orgBlock: Node | undefined = org
-    ? { width: '*', stack: [org, ...(brand.tagline ? [{ text: brand.tagline, color: brand.accent, fontSize: 10, bold: true, margin: [0, 5, 0, 0] as number[] }] : [])] }
+    ? { width: '*', stack: [org, ...(brand.tagline ? [{ text: brand.tagline, color: GRAY, fontSize: 9.5, margin: [0, 5, 0, 0] as number[] }] : [])] }
     : undefined;
   if (orgBlock && client) logos.push({ columns: [orgBlock, { width: 'auto', stack: [client] }], columnGap: 16 });
   else if (orgBlock) logos.push(orgBlock);
+
+  const meta: Node[] = [];
+  if (m.client.primaryContact) meta.push({ text: [{ text: 'Prepared for  ', color: GRAY }, { text: m.client.primaryContact, bold: true }], margin: [0, 2, 0, 2] });
+  if (m.heldBy) meta.push({ text: [{ text: 'Presented by  ', color: GRAY }, { text: m.heldBy, bold: true }], margin: [0, 2, 0, 2] });
+  if (m.generatedLabel) meta.push({ text: [{ text: 'Date  ', color: GRAY }, { text: m.generatedLabel, bold: true }], margin: [0, 2, 0, 2] });
 
   return [
     ...logos,
     { text: '', margin: [0, 96, 0, 0] },
     { canvas: [{ type: 'rect', x: 0, y: 0, w: 90, h: 5, color: brand.accent }] },
-    { text: 'QUARTERLY BUSINESS REVIEW', color: brand.accent, fontSize: 14, bold: true, characterSpacing: 2, margin: [0, 14, 0, 6] },
+    { text: 'Quarterly business review', color: brand.accent, fontSize: 14, bold: true, margin: [0, 14, 0, 6] },
     { text: m.client.name, color: brand.primary, fontSize: 34, bold: true, margin: [0, 0, 0, 6] },
     { text: m.period.label, color: GRAY, fontSize: 17, margin: [0, 0, 0, 26] },
-    {
-      stack: [
-        ...(m.client.primaryContact ? [{ text: [{ text: 'Prepared for  ', color: GRAY }, { text: m.client.primaryContact, bold: true }], margin: [0, 2, 0, 2] as number[] }] : []),
-        ...(m.heldBy ? [{ text: [{ text: 'Presented by  ', color: GRAY }, { text: m.heldBy, bold: true }], margin: [0, 2, 0, 2] as number[] }] : []),
-        ...(m.generatedLabel ? [{ text: [{ text: 'Date  ', color: GRAY }, { text: m.generatedLabel, bold: true }], margin: [0, 2, 0, 2] as number[] }] : []),
-      ],
-      fontSize: 11,
-    },
+    { stack: meta, fontSize: 11 },
     // White text sits inside the brand band the background paints at the foot.
     {
-      text: `${m.client.name} · ${m.period.label}`,
+      text: `${m.client.name}, ${m.period.label}`,
       color: '#ffffff',
       fontSize: 13,
       bold: true,
       absolutePosition: { x: 52, y: PAGE.height - COVER_BAND_H + 40 },
     },
     {
-      text: `Prepared by ${brand.orgName}${m.client.hipaa ? ' · Contains confidential client information (HIPAA)' : ' · Confidential'}`,
+      text: `Prepared by ${brand.orgName}. ${m.client.hipaa ? 'Contains confidential client information (HIPAA).' : 'Confidential.'}`,
       color: '#ffffff',
       opacity: 0.85,
       fontSize: 9,
@@ -274,39 +331,75 @@ function pageBackground(brand: BrandTokens): (page: number) => unknown {
   };
 }
 
+/** The maturity block: honest about how much it measured. */
+function maturityBlock(m: ReportModel, brand: BrandTokens): Node[] {
+  const s = m.scorecard;
+  const { score, rating, coverage, confidence } = s.overall;
+  const coverageText = `${formatPercent(Math.round(coverage * 100))} of the controls we check could be measured this quarter`;
+  const unmeasured = s.functions.filter((f) => f.score === null).map((f) => FUNCTION_NAME[f.function] ?? f.function);
+  const withheld = score === null || confidence === 'low';
+  const left: Node = withheld
+    ? {
+        width: 170,
+        stack: [
+          { text: 'Not scored', fontSize: 20, bold: true, color: GRAY, margin: [0, 18, 0, 6] },
+          { text: 'Not enough security data to score this quarter.', bold: true, fontSize: 10, color: brand.primary },
+          {
+            text: `Only ${coverageText}. Connecting the remaining tools lets the score appear next quarter; nothing here should be read as a failing grade.`,
+            style: 'small',
+            margin: [0, 4, 0, 0],
+          },
+        ],
+      }
+    : { width: 170, stack: [{ svg: donutSvg(score, rating), width: 150 }] };
+  const right: Node = {
+    width: '*',
+    stack: [
+      { svg: functionBarsSvg(s.functions), width: 320 },
+      ...(withheld
+        ? []
+        : [
+            {
+              text: `${ratingWord(rating)}${confidence === 'medium' ? ', provisional' : ''}. ${coverageText}${
+                confidence === 'medium' ? '; the score firms up as more tools are connected' : ''
+              }.${unmeasured.length ? ` Not yet measured: ${unmeasured.join(', ')}.` : ''}`,
+              style: 'small',
+              margin: [0, 8, 0, 0],
+            },
+          ]),
+    ],
+  };
+  return [{ columns: [left, right], columnGap: 18, margin: [0, 4, 0, 14] }];
+}
+
 /** Build the full pdfmake document definition (exported for tests). */
 export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
   const brand = m.brand;
   const content: Node[] = [...coverPage(m)];
 
-  // Executive summary — KPI band first, then the narrative.
-  if (m.executive.headline || m.executive.paragraphs.length) {
+  // Opening page: headline, narrative, at-a-glance tiles, data confidence, what changed.
+  if (m.executive.headline || m.executive.paragraphs.length || selectKpiTiles(m).length >= 2) {
     content.push({ text: 'Executive Summary', style: 'h1', color: brand.primary });
-    const band = kpiBand(m);
-    if (band) content.push(band);
-    if (m.executive.headline) content.push({ text: m.executive.headline, fontSize: 13.5, bold: true, color: brand.accent, margin: [0, 0, 0, 8] });
+    if (m.executive.headline) content.push({ text: m.executive.headline, fontSize: 15, bold: true, color: brand.primary, lineHeight: 1.2, margin: [0, 0, 0, 10] });
     for (const p of m.executive.paragraphs) content.push({ text: p, style: 'body' });
     if (m.executive.highlights.length) {
       content.push({ ul: m.executive.highlights.map((h) => ({ text: h, style: 'body', margin: [0, 1, 0, 1] })), margin: [0, 4, 0, 0] });
     }
-    // "Biggest changes this quarter" — a diverging QoQ movers chart tells the
-    // change story at a glance so the section tables stay reference detail.
+    const band = kpiBand(m);
+    if (band) content.push(band);
+    const confidence = confidenceBlock(m);
+    if (confidence) content.push(confidence);
     const moversSvg = moversBarChartSvg(m.trends, { width: 508 });
     if (moversSvg) {
-      content.push({ text: 'Biggest changes this quarter', style: 'h2', color: brand.primary, margin: [0, 12, 0, 2] });
-      content.push({
-        text: 'Improvements extend right; areas needing attention extend left. Bar length shows the size of the change.',
-        style: 'small',
-        margin: [0, 0, 0, 6],
-      });
+      content.push({ text: 'What changed this quarter', style: 'h2', color: brand.primary, margin: [0, 12, 0, 2] });
+      content.push({ text: moversCaption(m.trends), style: 'small', margin: [0, 0, 0, 6] });
       content.push({ svg: moversSvg, width: 508, margin: [0, 0, 0, 8] });
     }
   }
 
-  // Strategic goals & IT alignment — opens the review by tying our work to the
-  // client's own objectives (qualitative; no figures, so no guardrail concern).
+  // Strategic goals & IT alignment (qualitative; no figures, so no guardrail concern).
   if (m.goals.length) {
-    content.push({ text: 'Strategic Goals & IT Alignment', style: 'h1', color: brand.primary });
+    content.push({ text: 'Strategic Goals & IT Alignment', style: 'h1', color: brand.primary, pageBreak: 'before' });
     content.push({ text: 'Your business objectives and how our services support them.', style: 'small', margin: [0, 0, 0, 8] });
     for (const g of m.goals) {
       content.push({
@@ -317,8 +410,8 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
               {
                 stack: [
                   { text: g.title, bold: true, color: brand.primary, fontSize: 11 },
-                  ...(g.targetPeriod ? [{ text: `Target: ${g.targetPeriod}`, style: 'small', color: GRAY, margin: [0, 1, 0, 0] as [number, number, number, number] }] : []),
-                  ...(g.alignment ? [{ text: g.alignment, style: 'body', margin: [0, 4, 0, 0] as [number, number, number, number] }] : []),
+                  ...(g.targetPeriod ? [{ text: `Target: ${g.targetPeriod}`, style: 'small', margin: [0, 1, 0, 0] as number[] }] : []),
+                  ...(g.alignment ? [{ text: g.alignment, style: 'body', margin: [0, 4, 0, 0] as number[] }] : []),
                 ],
                 margin: [10, 8, 10, 8],
               },
@@ -334,7 +427,7 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
             ],
           ],
         },
-        layout: { defaultBorder: false, fillColor: (i: number, node: unknown) => (i === 0 ? '#f4f6f8' : null) },
+        layout: { defaultBorder: false, fillColor: (i: number) => (i === 0 ? CANVAS : null) },
         margin: [0, 0, 0, 8],
       });
     }
@@ -349,22 +442,9 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
   // Maturity scorecard
   const s = m.scorecard;
   content.push({ text: 'Security & Risk Maturity', style: 'h1', color: brand.primary, pageBreak: 'before' });
-  content.push({
-    columns: [
-      { width: 170, stack: [{ svg: donutSvg(s.overall.score, s.overall.rating), width: 150 }] },
-      {
-        width: '*',
-        stack: [
-          { svg: functionBarsSvg(s.functions), width: 320 },
-          { text: `${formatPercent(s.overall.coverage * 100)} of safeguards measured · blended CIS Controls v8 / NIST CSF 2.0`, style: 'small', margin: [0, 8, 0, 0] },
-        ],
-      },
-    ],
-    columnGap: 18,
-    margin: [0, 4, 0, 14],
-  });
+  content.push(...maturityBlock(m, brand));
   // Plain-English explainer so a non-technical reader knows what the score is
-  // (and is not) — clients kept asking what "NIST" meant.
+  // (and is not); clients kept asking what "NIST" meant.
   content.push({
     table: {
       widths: ['*'],
@@ -375,7 +455,7 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
               { text: 'How to read this score', bold: true, fontSize: 9.5, color: brand.primary, margin: [0, 0, 0, 3] },
               {
                 text:
-                  'We check the safeguards protecting your business — multi-factor authentication, endpoint protection, patching, backups, and more — against CIS Controls v8, a widely used industry checklist of security best practices. The results are grouped under the six functions of the NIST Cybersecurity Framework (Govern, Identify, Protect, Detect, Respond, Recover) so you can see at a glance where your defenses are strong and where we recommend investment. The score reflects what our connected tools can measure this quarter — it is a posture guide, not a compliance certification.' +
+                  'We check the safeguards protecting your business (multi-factor authentication, endpoint protection, patching, backups and more) against CIS Controls v8, a widely used industry checklist of security best practices. The results are grouped under the six functions of the NIST Cybersecurity Framework (Govern, Identify, Protect, Detect, Respond, Recover) so you can see at a glance where your defenses are strong and where we recommend investment. The score reflects what our connected tools can measure this quarter. It is a posture guide, not a compliance certification.' +
                   (m.client.complianceStandard
                     ? ` Because ${m.client.name} answers to ${m.client.complianceStandard}, we weigh these findings with ${m.client.complianceStandard} expectations in mind throughout this review.`
                     : ''),
@@ -384,7 +464,7 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
                 lineHeight: 1.25,
               },
             ],
-            fillColor: '#f4f6f8',
+            fillColor: CANVAS,
             margin: [10, 8, 10, 8],
           },
         ],
@@ -396,7 +476,7 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
   if (s.remediations.length) {
     content.push({ text: 'Priority remediations', style: 'h2', color: brand.primary });
     content.push({
-      ul: s.remediations.map((r) => ({ text: [{ text: `${r.title} — `, bold: true }, { text: r.evidence }], style: 'body', margin: [0, 1, 0, 1] })),
+      ul: s.remediations.map((r) => ({ text: [{ text: `${r.title}: `, bold: true }, { text: r.evidence }], style: 'body', margin: [0, 1, 0, 1] })),
     });
   }
 
@@ -436,7 +516,7 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
 
   // Appendix: attached vendor reports
   if (m.documents.length) {
-    content.push({ text: 'Appendix — Attached Reports', style: 'h1', color: brand.primary, pageBreak: 'before' });
+    content.push({ text: 'Appendix: Attached Reports', style: 'h1', color: brand.primary, pageBreak: 'before' });
     content.push({ text: 'The following source reports accompany this review:', style: 'body' });
     content.push({
       ul: m.documents.map((d) => ({ text: [{ text: d.name, bold: true }, { text: `  (${d.source})`, color: GRAY }], style: 'body', margin: [0, 1, 0, 1] })),
@@ -448,12 +528,12 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
     pageSize: 'LETTER',
     pageMargins: [52, 58, 52, 56],
     background: pageBackground(brand),
-    info: { title: `${m.client.name} — ${m.period.label} QBR`, author: brand.orgName },
-    defaultStyle: { font: 'Helvetica', fontSize: 10.5, color: brand.ink, lineHeight: 1.3 },
+    info: { title: `${m.client.name} QBR, ${m.period.label}`, author: brand.orgName },
+    defaultStyle: { font: 'Helvetica', fontSize: 10.5, color: TEXT, lineHeight: 1.3 },
     styles: {
       h1: { fontSize: 19, bold: true, margin: [0, 0, 0, 10] },
       h2: { fontSize: 13, bold: true, margin: [0, 10, 0, 6] },
-      th: { fontSize: 8.5, bold: true, color: GRAY, characterSpacing: 0.4 },
+      th: { fontSize: 8.5, bold: true, color: GRAY },
       td: { fontSize: 10 },
       body: { fontSize: 10.5, margin: [0, 0, 0, 6] },
       small: { fontSize: 8.5, color: GRAY },
@@ -463,14 +543,14 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
         ? undefined
         : {
             columns: [
-              { text: `${brand.orgName} · Quarterly Business Review`, color: GRAY, fontSize: 8 },
-              { text: `${m.client.name} — ${m.period.label}`, color: GRAY, fontSize: 8, alignment: 'right' },
+              { text: `${brand.orgName} quarterly business review`, color: GRAY, fontSize: 8 },
+              { text: `${m.client.name}, ${m.period.label}`, color: GRAY, fontSize: 8, alignment: 'right' },
             ],
             margin: [52, 24, 52, 0],
           },
     footer: (page: number, pages: number) => ({
       columns: [
-        { text: `Prepared by ${brand.orgName} — confidential`, color: GRAY, fontSize: 8 },
+        { text: `Prepared by ${brand.orgName}. Confidential.`, color: GRAY, fontSize: 8 },
         { text: `Page ${page} of ${pages}`, color: GRAY, fontSize: 8, alignment: 'right' },
       ],
       margin: [52, 18, 52, 0],
@@ -489,7 +569,7 @@ export async function renderPdf(model: ReportModel): Promise<Buffer> {
     throw new Error("renderPdf requires the 'pdfmake' dependency. Install it to enable PDF export.");
   }
   const PdfPrinter = mod.default ?? mod;
-  // The PDF standard 14 fonts ship inside every reader — nothing to embed.
+  // The PDF standard 14 fonts ship inside every reader; nothing to embed.
   const printer = new PdfPrinter({
     Helvetica: { normal: 'Helvetica', bold: 'Helvetica-Bold', italics: 'Helvetica-Oblique', bolditalics: 'Helvetica-BoldOblique' },
   });
@@ -509,8 +589,10 @@ export async function renderPdf(model: ReportModel): Promise<Buffer> {
   try {
     return await render(buildPdfDefinition(model));
   } catch (e) {
-    // A corrupt uploaded logo must not block the deliverable — retry without logos.
-    if (e instanceof Error && /image/i.test(e.message)) {
+    // pdfmake throws plain strings for image problems ("Invalid image: ...").
+    // A corrupt uploaded logo must not block the deliverable: retry without logos.
+    const message = e instanceof Error ? e.message : String(e);
+    if (/image/i.test(message)) {
       const stripped = { ...model, brand: { ...model.brand, logoDataUri: undefined, orgLogoDataUri: '' } };
       return render(buildPdfDefinition(stripped));
     }
