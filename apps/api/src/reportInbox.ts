@@ -27,6 +27,11 @@ export interface InboxConfig {
   tenantId: string;
   clientId: string;
   clientSecret: string;
+  /**
+   * REPORTS_ALLOWED_SENDERS, lowercased: exact addresses, or bare domains.
+   * The mailbox's own domain is always trusted (staff forwards).
+   */
+  allowedSenders?: string[];
 }
 
 /** Read the inbox configuration from app settings (null = feature off). */
@@ -36,7 +41,31 @@ export function inboxConfigFromEnv(env: NodeJS.ProcessEnv = process.env): InboxC
   const clientId = env['REPORTS_CLIENT_ID'];
   const clientSecret = env['REPORTS_CLIENT_SECRET'];
   if (!mailbox || !tenantId || !clientId || !clientSecret) return null;
-  return { mailbox, tenantId, clientId, clientSecret };
+  const allowedSenders = (env['REPORTS_ALLOWED_SENDERS'] ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return { mailbox, tenantId, clientId, clientSecret, allowedSenders };
+}
+
+/**
+ * Whether a message's From address may file documents. The mailbox's own
+ * domain is always trusted; otherwise the sender must match an allowlist
+ * entry (an entry with `@` is an exact address, one without is a domain).
+ * Matching is case-insensitive and exact on the domain (no subdomains).
+ * From is only as trustworthy as inbound SPF/DKIM/DMARC enforcement.
+ */
+export function isTrustedSender(from: string, mailbox: string, allowlist: readonly string[] = []): boolean {
+  const addr = from.trim().toLowerCase();
+  const at = addr.lastIndexOf('@');
+  if (at <= 0 || at === addr.length - 1) return false;
+  const domain = addr.slice(at + 1);
+  const ownDomain = mailbox.toLowerCase().split('@')[1];
+  if (ownDomain && domain === ownDomain) return true;
+  return allowlist.some((entry) => {
+    const e = entry.trim().toLowerCase();
+    return e.includes('@') ? e === addr : e === domain;
+  });
 }
 
 /** The forwarding address for one client (plus-addressing on the shared mailbox). */
@@ -103,6 +132,7 @@ interface InboxMessage {
   id: string;
   subject?: string;
   hasAttachments?: boolean;
+  from?: { emailAddress?: { address?: string } };
   toRecipients?: Array<{ emailAddress?: { address?: string } }>;
   ccRecipients?: Array<{ emailAddress?: { address?: string } }>;
 }
@@ -111,6 +141,10 @@ export interface InboxPollResult {
   processed: number;
   filed: number;
   unrouted: number;
+  /** Messages from senders outside the allowlist (not filed). */
+  untrusted?: number;
+  /** Messages whose processing threw (categorized `QBR: failed`). */
+  failed?: number;
   /**
    * Per-folder stats so "0 processed" is diagnosable at a glance: mail that
    * was already marked read, or mail that landed in Junk (plus-addressed
@@ -142,6 +176,8 @@ export async function pollReportInbox(
   let processed = 0;
   let filed = 0;
   let unrouted = 0;
+  let untrusted = 0;
+  let failed = 0;
   const folders: Array<{ folder: string; total: number; unread: number }> = [];
   const messages: InboxMessage[] = [];
 
@@ -158,7 +194,7 @@ export async function pollReportInbox(
     }
 
     const listRes = await fetchFn(
-      `${mbx}/mailFolders/${folder}/messages?$filter=isRead eq false&$top=25&$select=id,subject,hasAttachments,toRecipients,ccRecipients`,
+      `${mbx}/mailFolders/${folder}/messages?$filter=isRead eq false&$top=25&$select=id,subject,hasAttachments,from,toRecipients,ccRecipients`,
       { headers },
     );
     if (!listRes.ok) {
@@ -173,7 +209,32 @@ export async function pollReportInbox(
   }
   processed = messages.length;
 
+  const mark = (id: string, category: string) =>
+    fetchFn(`${mbx}/messages/${id}`, {
+      method: 'PATCH',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isRead: true, categories: [category] }),
+    }).catch(() => undefined);
+
   for (const msg of messages) {
+    // One bad message (attachment download, storage write) must not stop the
+    // rest of the pass; it is marked read and categorized so it never loops.
+    try {
+      filed += await processMessage(msg);
+    } catch {
+      failed++;
+      await mark(msg.id, 'QBR: failed');
+    }
+  }
+
+  async function processMessage(msg: InboxMessage): Promise<number> {
+    let filedHere = 0;
+    const from = msg.from?.emailAddress?.address ?? '';
+    if (!isTrustedSender(from, cfg.mailbox, cfg.allowedSenders)) {
+      untrusted++;
+      await mark(msg.id, 'QBR: untrusted');
+      return 0;
+    }
     const recipients = [...(msg.toRecipients ?? []), ...(msg.ccRecipients ?? [])]
       .map((r) => r.emailAddress?.address ?? '')
       .filter(Boolean);
@@ -183,12 +244,8 @@ export async function pollReportInbox(
     if (!client || !msg.hasAttachments) {
       unrouted++;
       // Mark read + categorize so it surfaces in the mailbox without looping.
-      await fetchFn(`${mbx}/messages/${msg.id}`, {
-        method: 'PATCH',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isRead: true, categories: [client ? 'QBR: no attachments' : 'QBR: unrouted'] }),
-      }).catch(() => undefined);
-      continue;
+      await mark(msg.id, client ? 'QBR: no attachments' : 'QBR: unrouted');
+      return 0;
     }
 
     const period = routePeriod(msg.subject ?? '', now);
@@ -220,18 +277,16 @@ export async function pollReportInbox(
         size: bytes.length,
         uploadedAt: now.toISOString(),
         uploadedBy: `inbox:${cfg.mailbox}`,
+        from: from.toLowerCase(),
       };
       await docs.put(docPath(client.id, period, id, name), bytes, record.contentType);
       await store.putDocument(record);
-      filed++;
+      filedHere++;
     }
 
-    await fetchFn(`${mbx}/messages/${msg.id}`, {
-      method: 'PATCH',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isRead: true, categories: ['QBR: filed'] }),
-    }).catch(() => undefined);
+    await mark(msg.id, 'QBR: filed');
+    return filedHere;
   }
 
-  return { processed, filed, unrouted, folders };
+  return { processed, filed, unrouted, untrusted, failed, folders };
 }

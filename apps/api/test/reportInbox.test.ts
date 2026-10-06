@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JsonDataStore, LocalDocStore } from '../src/store/index.js';
-import { clientInboxAddress, pollReportInbox, routeClientId, routePeriod } from '../src/reportInbox.js';
+import { clientInboxAddress, inboxConfigFromEnv, isTrustedSender, pollReportInbox, routeClientId, routePeriod } from '../src/reportInbox.js';
 
 let dir: string;
 beforeAll(() => {
@@ -60,10 +60,11 @@ describe('pollReportInbox', () => {
             {
               id: 'm1',
               subject: 'FW: Check Point weekly 2026-Q2',
+              from: { emailAddress: { address: 'jason@mashit.net' } },
               hasAttachments: true,
               toRecipients: [{ emailAddress: { address: 'qbr-reports+halo-62@mashit.net' } }],
             },
-            { id: 'm2', subject: 'spam', hasAttachments: true, toRecipients: [{ emailAddress: { address: 'qbr-reports@mashit.net' } }] },
+            { id: 'm2', subject: 'spam', hasAttachments: true, from: { emailAddress: { address: 'Ops@MashIT.net' } }, toRecipients: [{ emailAddress: { address: 'qbr-reports@mashit.net' } }] },
           ],
         });
       }
@@ -101,5 +102,109 @@ describe('pollReportInbox', () => {
     }) as never;
     const cfg = { mailbox: 'qbr-reports@mashit.net', tenantId: 't', clientId: 'c', clientSecret: 's' };
     await expect(pollReportInbox(cfg, store, docs, fetchFn)).rejects.toThrow(/Access is denied.*Mail\.ReadWrite/);
+  });
+});
+
+describe('sender trust', () => {
+  it('trusts only the mailbox domain when no allowlist is set', () => {
+    expect(isTrustedSender('evil@example.org', 'qbr-reports@mashit.net', [])).toBe(false);
+    expect(isTrustedSender('Jason@MashIT.net', 'qbr-reports@mashit.net', [])).toBe(true);
+    expect(isTrustedSender('', 'qbr-reports@mashit.net', [])).toBe(false);
+    expect(isTrustedSender('x@notmashit.net', 'qbr-reports@mashit.net', [])).toBe(false);
+  });
+
+  it('admits allowlisted domains and exact addresses, case-insensitively', () => {
+    const allow = inboxConfigFromEnv({
+      REPORTS_MAILBOX: 'qbr-reports@mashit.net',
+      REPORTS_TENANT_ID: 't',
+      REPORTS_CLIENT_ID: 'c',
+      REPORTS_CLIENT_SECRET: 's',
+      REPORTS_ALLOWED_SENDERS: 'checkpoint.com, Reports@Huntress.io',
+    })!.allowedSenders;
+    expect(allow).toEqual(['checkpoint.com', 'reports@huntress.io']);
+    expect(isTrustedSender('noreply@checkpoint.com', 'qbr-reports@mashit.net', allow)).toBe(true);
+    expect(isTrustedSender('reports@huntress.io', 'qbr-reports@mashit.net', allow)).toBe(true);
+    expect(isTrustedSender('other@huntress.io', 'qbr-reports@mashit.net', allow)).toBe(false);
+    expect(isTrustedSender('noreply@evilcheckpoint.com', 'qbr-reports@mashit.net', allow)).toBe(false);
+  });
+});
+
+describe('pollReportInbox trust + resilience', () => {
+  type Msg = { id: string; from?: string; subject?: string };
+  function fakeGraph(msgs: Msg[], opts: { failAttachmentsFor?: string } = {}) {
+    const patched: Array<{ id: string; categories: string; isRead: boolean }> = [];
+    const fetchFn = (async (url: string, init?: RequestInit) => {
+      const body = (json: unknown) => ({ ok: true, status: 200, json: async () => json }) as unknown as Response;
+      if (url.includes('/oauth2/v2.0/token')) return body({ access_token: 't', expires_in: 3600 });
+      if (init?.method === 'PATCH') {
+        const b = JSON.parse(String(init.body));
+        patched.push({ id: url.split('/messages/')[1]!, categories: String(b.categories), isRead: b.isRead });
+        return body({});
+      }
+      if (url.includes('/attachments')) {
+        if (opts.failAttachmentsFor && url.includes(`/messages/${opts.failAttachmentsFor}/`)) throw new Error('socket hang up');
+        return body({
+          value: [{ '@odata.type': '#microsoft.graph.fileAttachment', name: 'report.pdf', contentType: 'application/pdf', contentBytes: Buffer.from('%PDF x').toString('base64') }],
+        });
+      }
+      if (url.includes('/mailFolders/inbox/messages?')) {
+        return body({
+          value: msgs.map((m) => ({
+            id: m.id,
+            subject: m.subject ?? 'report 2026-Q2',
+            hasAttachments: true,
+            from: m.from ? { emailAddress: { address: m.from } } : undefined,
+            toRecipients: [{ emailAddress: { address: 'qbr-reports+halo-62@mashit.net' } }],
+          })),
+        });
+      }
+      return body({ value: [] });
+    }) as never;
+    return { fetchFn, patched };
+  }
+  const cfg = { mailbox: 'qbr-reports@mashit.net', tenantId: 't', clientId: 'c', clientSecret: 's' };
+
+  it('does not file mail from an untrusted sender and categorizes it', async () => {
+    const store = new JsonDataStore(join(dir, 'trust-a'));
+    const docs = new LocalDocStore(join(dir, 'trust-a', 'docs'));
+    await store.upsertClient({ id: 'halo-62', name: 'Madison Pediatric Associates' });
+    const { fetchFn, patched } = fakeGraph([{ id: 'e1', from: 'evil@example.org' }]);
+    const result = await pollReportInbox(cfg, store, docs, fetchFn, new Date('2026-07-03T12:00:00Z'));
+    expect(result.filed).toBe(0);
+    expect(result.untrusted).toBe(1);
+    expect(await store.listDocuments('halo-62', '2026-Q2')).toHaveLength(0);
+    expect(patched).toEqual([{ id: 'e1', categories: 'QBR: untrusted', isRead: true }]);
+  });
+
+  it('admits an allowlisted vendor domain', async () => {
+    const store = new JsonDataStore(join(dir, 'trust-b'));
+    const docs = new LocalDocStore(join(dir, 'trust-b', 'docs'));
+    await store.upsertClient({ id: 'halo-62', name: 'Madison Pediatric Associates' });
+    const { fetchFn } = fakeGraph([{ id: 'v1', from: 'noreply@checkpoint.com' }]);
+    const result = await pollReportInbox({ ...cfg, allowedSenders: ['checkpoint.com', 'reports@huntress.io'] }, store, docs, fetchFn, new Date('2026-07-03T12:00:00Z'));
+    expect(result.filed).toBe(1);
+    const filed = await store.listDocuments('halo-62', '2026-Q2');
+    expect(filed[0]!.from).toBe('noreply@checkpoint.com');
+  });
+
+  it('a message that fails is categorized failed, marked read, and the next one is still processed', async () => {
+    const store = new JsonDataStore(join(dir, 'trust-c'));
+    const docs = new LocalDocStore(join(dir, 'trust-c', 'docs'));
+    await store.upsertClient({ id: 'halo-62', name: 'Madison Pediatric Associates' });
+    const { fetchFn, patched } = fakeGraph(
+      [
+        { id: 'bad', from: 'jason@mashit.net', subject: 'a 2026-Q2' },
+        { id: 'good', from: 'jason@mashit.net', subject: 'b 2026-Q2' },
+      ],
+      { failAttachmentsFor: 'bad' },
+    );
+    const result = await pollReportInbox(cfg, store, docs, fetchFn, new Date('2026-07-03T12:00:00Z'));
+    expect(result.failed).toBe(1);
+    expect(result.filed).toBe(1);
+    expect(patched).toContainEqual({ id: 'bad', categories: 'QBR: failed', isRead: true });
+    expect(patched).toContainEqual({ id: 'good', categories: 'QBR: filed', isRead: true });
+    const filed = await store.listDocuments('halo-62', '2026-Q2');
+    expect(filed).toHaveLength(1);
+    expect(filed[0]!.from).toBe('jason@mashit.net');
   });
 });
