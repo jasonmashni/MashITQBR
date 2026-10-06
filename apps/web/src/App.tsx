@@ -169,10 +169,10 @@ function ClientSwitcher() {
   return (
     <Select
       aria-label="Go to client"
-      placeholder="Go to client"
+      placeholder="Client"
       searchable
       clearable={false}
-      w={{ base: 150, sm: 240 }}
+      w={{ base: 120, sm: 240 }}
       comboboxProps={{ withinPortal: true }}
       leftSection={<IconUsers size={16} stroke={1.6} />}
       data={data}
