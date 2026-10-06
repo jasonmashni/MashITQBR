@@ -81,4 +81,36 @@ describe('createResourceController', () => {
     ctrl.setData('local');
     expect(last()).toEqual({ data: 'local', error: null, loading: false });
   });
+
+  it('a new request (deps changed) clears the previous data and error', async () => {
+    const { ctrl, last } = harness<string>();
+    ctrl.run(() => Promise.resolve('client A'));
+    await flush();
+    expect(last().data).toBe('client A');
+    const next = deferred<string>();
+    ctrl.run(() => next.promise);
+    expect(last()).toEqual({ data: undefined, error: null, loading: true });
+    next.resolve('client B');
+    await flush();
+    expect(last().data).toBe('client B');
+  });
+
+  it('a reload keeps the previous data while it loads', async () => {
+    const { ctrl, last } = harness<string>();
+    ctrl.run(() => Promise.resolve('v1'));
+    await flush();
+    const next = deferred<string>();
+    ctrl.run(() => next.promise, { keepData: true });
+    expect(last()).toEqual({ data: 'v1', error: null, loading: true });
+  });
+
+  it('setData makes an in-flight response stale, so it cannot overwrite a local save', async () => {
+    const { ctrl, last } = harness<string>();
+    const call = deferred<string>();
+    ctrl.run(() => call.promise);
+    ctrl.setData('saved locally');
+    call.resolve('older server copy');
+    await flush();
+    expect(last()).toEqual({ data: 'saved locally', error: null, loading: false });
+  });
 });

@@ -71,7 +71,22 @@ export function NarrativeEditor({
   const [focus, setFocus] = useState(config?.narrativeFocus ?? '');
   const [guidance, setGuidance] = useState(config?.narrativeGuidance ?? '');
   const [sectionNotes, setSectionNotes] = useState<Record<string, string>>(config?.sectionGuidance ?? {});
+  const [directionDirty, setDirectionDirty] = useState(false);
   const [openSection, setOpenSection] = useState<string | null>(null);
+
+  // The direction fields follow the loaded config (it arrives after mount, and
+  // changes on a client switch) unless the author has typed into them; seeding
+  // once would let Save write blanks over the saved direction.
+  useEffect(() => {
+    if (directionDirty) return;
+    setFocus(config?.narrativeFocus ?? '');
+    setGuidance(config?.narrativeGuidance ?? '');
+    setSectionNotes(config?.sectionGuidance ?? {});
+  }, [config, directionDirty]);
+  const editDirection = <T,>(set: (v: T) => void) => (v: T) => {
+    setDirectionDirty(true);
+    set(v);
+  };
 
   // A fresh draft (after Sync or Regenerate) replaces the fields unless the
   // author is mid-edit; otherwise a stale Save would overwrite the new draft.
@@ -162,6 +177,7 @@ export function NarrativeEditor({
         sectionGuidance: Object.keys(cleanNotes).length ? cleanNotes : undefined,
       };
       await api.putConfig(clientId, next);
+      setDirectionDirty(false);
       setConfig(next);
       await api.regenerateNarrative(clientId, period);
       setDirty(false);
@@ -175,6 +191,15 @@ export function NarrativeEditor({
   }
 
   const sections = model.sections ?? [];
+  // Approve signs off on what will ship: never unsaved text or an unverified figure.
+  const approveBlocked = approved || dirty || !verified;
+  const approveHint = approved
+    ? 'Already approved for this quarter'
+    : dirty
+      ? 'Save your edits first; Approve signs off on the saved text.'
+      : !verified
+        ? 'A figure does not trace back to the data. Fix it before approving.'
+        : 'Marks the story ready to send. Forward only; reopening needs an override.';
   const directionLocked = !config;
 
   return (
@@ -203,8 +228,16 @@ export function NarrativeEditor({
           <Button variant="default" loading={busy === 'regen'} onClick={() => setConfirmRegen(true)}>
             Regenerate
           </Button>
-          <Tooltip label={approved ? 'Already approved for this quarter' : 'Marks the story ready to send. Forward only; reopening needs an override.'}>
-            <Button variant="light" color="good" loading={busy === 'approve'} disabled={approved} onClick={approve}>
+          <Tooltip label={approveHint}>
+            {/* data-disabled (not disabled) so the tooltip still explains why. */}
+            <Button
+              variant="light"
+              color="good"
+              loading={busy === 'approve'}
+              data-disabled={approveBlocked || undefined}
+              aria-disabled={approveBlocked}
+              onClick={(e) => (approveBlocked ? e.preventDefault() : void approve())}
+            >
               Approve narrative
             </Button>
           </Tooltip>
@@ -227,7 +260,7 @@ export function NarrativeEditor({
             placeholder="e.g. Business security"
             data={FOCUS_OPTIONS}
             value={focus}
-            onChange={setFocus}
+            onChange={editDirection(setFocus)}
             disabled={directionLocked}
           />
         </Group>
@@ -237,7 +270,7 @@ export function NarrativeEditor({
           autosize
           minRows={2}
           value={guidance}
-          onChange={(e) => setGuidance(e.currentTarget.value)}
+          onChange={(e) => editDirection(setGuidance)(e.currentTarget.value)}
           disabled={directionLocked}
         />
         <Group>
@@ -283,7 +316,7 @@ export function NarrativeEditor({
                         minRows={1}
                         placeholder="What should change in this section? e.g. “don't call the backup drop a decline; we re-tuned what we measure”"
                         value={sectionNotes[s.category] ?? ''}
-                        onChange={(e) => setSectionNotes({ ...sectionNotes, [s.category]: e.currentTarget.value })}
+                        onChange={(e) => editDirection(setSectionNotes)({ ...sectionNotes, [s.category]: e.currentTarget.value })}
                       />
                       <Button
                         size="xs"
