@@ -26,6 +26,7 @@ param env string = 'dev'
 param location string = resourceGroup().location
 
 @description('Application (client) id of the Entra app registration Easy Auth signs users in with')
+@minLength(1)
 param aadClientId string
 
 @description('Entra tenant id that issues sign-in tokens')
@@ -33,6 +34,8 @@ param aadTenantId string = tenant().tenantId
 
 var suffix = uniqueString(resourceGroup().id, env)
 var saName = toLower('${namePrefix}${env}${take(suffix, 6)}')
+// Vault names are global like storage names, so they carry the same suffix (max 24 chars).
+var kvName = toLower('${namePrefix}-${env}-kv-${take(suffix, 6)}')
 var tags = { app: 'mashit-qbr', env: env }
 
 // ── Observability ─────────────────────────────────────────────────────────
@@ -84,7 +87,7 @@ resource docsContainer 'Microsoft.Storage/storageAccounts/blobServices/container
 
 // ── Key Vault (RBAC, soft delete 90 days, purge protection) ─────────────────
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
-  name: '${namePrefix}-${env}-kv'
+  name: kvName
   location: location
   tags: tags
   properties: {

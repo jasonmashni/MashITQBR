@@ -32,7 +32,7 @@ Requires **Node 22** or later.
 ```bash
 npm install
 npm run typecheck   # tsc across the workspace
-npm test            # vitest (328 tests)
+npm test            # vitest (513 tests)
 ```
 
 Run the API + web locally (no Azure tooling required):
@@ -201,14 +201,23 @@ One-time setup:
    is always accepted, so staff forwards keep working. Unset means only that
    domain is trusted. Mail from anyone else is not filed.
 
+The poll also reads Junk, but nothing in Junk is ever filed, whoever it claims
+to be from: a spoof of our own domain that fails DMARC lands there. Junk mail
+is categorized `QBR: untrusted`. To file a real report that landed in Junk,
+forward it from a staff mailbox.
+
 Messages are marked read and categorized (`QBR: filed` / `QBR: unrouted` /
 `QBR: untrusted` / `QBR: failed`) so the mailbox itself stays auditable. A
-message that fails to process is marked `QBR: failed` and the poll moves on
+message that fails to process is marked `QBR: failed`, listed in the poll
+result's `failed` array (id, subject, error) and logged, and the poll moves on
 to the next one. Filed documents record the sender address. `POST /api/inbox/poll` triggers a check
 immediately.
 
-The QBR status advances itself (sync → schedule → approve → disposition → push,
-never backwards), and every AI narrative is cached per client/quarter — only a
+The QBR status advances itself (sync → schedule → approve → disposition → push).
+Forward moves are automatic; a backwards move is never automatic and needs an
+explicit override with a reason, which is audited. Approve needs synced data,
+and marking the package sent records the first send date only. Every AI
+narrative is cached per client/quarter — only a
 data change or explicit Regenerate calls Claude again.
 
 ### AI cost controls
@@ -283,9 +292,12 @@ Consumption), PPTX deck, and Outlook email drafts all work out of the box. A
 
 The API also checks for the Easy Auth principal itself: on App Service
 (`WEBSITE_INSTANCE_ID` set) every route except the booking page and its API
-returns 401 without one, even if Easy Auth is misconfigured. `QBR_AUTH_REQUIRED=1`
-forces that check on anywhere, `QBR_AUTH_REQUIRED=0` turns it off (local dev
-only). In Azure without `KEY_VAULT_URL`, saving connection credentials is
+returns 401 without one, even if Easy Auth is misconfigured. App Service sets
+the read-only `WEBSITE_AUTH_ENABLED=True` when Easy Auth is on; if it is
+missing, the API fails closed and answers 401 on every gated route, because
+without Easy Auth nothing strips a forged `x-ms-client-principal` header.
+`QBR_AUTH_REQUIRED=1` forces the check on anywhere. `QBR_AUTH_REQUIRED=0` turns
+it off for local dev only; on App Service it is ignored with a warning. In Azure without `KEY_VAULT_URL`, saving connection credentials is
 refused and `GET /api/system` reports `secretStore: 'local-insecure'`.
 
 `infra/main.bicep` provisions this exact topology: Log Analytics + App
