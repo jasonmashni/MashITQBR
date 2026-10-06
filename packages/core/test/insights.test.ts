@@ -141,6 +141,25 @@ function insightsFor(current: MetricSnapshot, previous?: MetricSnapshot) {
   return computeTicketInsights(current.metrics, previous ? computeTrends(current, previous) : []);
 }
 
+describe('computeTicketInsights — subject handling', () => {
+  const metrics = [
+    ticketMetric('tickets.incidents', 'Incidents', ['VPN drops for Jane', 'VPN down <b>', 'VPN slow again']),
+    { key: 'sla.breaches', label: 'SLA breaches', value: 1, source: 'halo', category: 'operations',
+      details: [{ id: '9', summary: 'Outage for Dr. Smith' }] } as MetricValue,
+  ];
+
+  it('omits example subjects from detail and evidence when examples: false', () => {
+    const insights = computeTicketInsights(metrics, [], 6, { examples: false });
+    expect(insights.length).toBeGreaterThan(0);
+    for (const i of insights) expect(i.evidence).toEqual([]);
+    expect(JSON.stringify(insights)).not.toMatch(/Jane|Smith/);
+  });
+
+  it('strips angle brackets from subjects', () => {
+    expect(JSON.stringify(computeTicketInsights(metrics))).not.toMatch(/[<>]/);
+  });
+});
+
 describe('computeTicketInsights — counting honesty', () => {
   it('dedupes a ticket that appears in both incidents and open lists', () => {
     const row = (id: string, subject: string) => ({ id, subject, status: 'Open' });

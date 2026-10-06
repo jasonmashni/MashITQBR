@@ -61,18 +61,37 @@ export interface NarrativeInput {
   documents?: Array<{ name: string; source: string }>;
   /** Present only when the author set direction — changes bust the AI cache. */
   direction?: NarrativeDirection;
+  /**
+   * System notes about what the input deliberately leaves out (for example,
+   * ticket samples withheld for a HIPAA client). Present only when non-empty.
+   */
+  notes?: string[];
 }
 
-/** Assemble the narrative input from a client + current/previous snapshots. */
-export function buildNarrativeInput(args: {
-  client: Client;
-  current: MetricSnapshot;
-  previous?: MetricSnapshot;
-  direction?: NarrativeDirection;
-  /** Vendor reports attached to this QBR — so the model won't contradict them. */
-  documents?: Array<{ name: string; source: string }>;
-}): NarrativeInput {
+/** Note sent to the model when ticket subjects are withheld for a HIPAA client. */
+export const PHI_WITHHELD_NOTE =
+  'HIPAA client: ticket samples withheld and insight examples omitted, because ticket subjects can contain PHI. Do not guess at or describe individual tickets.';
+
+/**
+ * Assemble the narrative input from a client + current/previous snapshots.
+ *
+ * For a HIPAA client (`client.hipaa === true`) ticket subjects never leave the
+ * app unless `opts.allowPhi` is true (NARRATIVE_ALLOW_PHI, only with a BAA in
+ * place): ticketSamples and insight examples are omitted and a note says so.
+ */
+export function buildNarrativeInput(
+  args: {
+    client: Client;
+    current: MetricSnapshot;
+    previous?: MetricSnapshot;
+    direction?: NarrativeDirection;
+    /** Vendor reports attached to this QBR — so the model won't contradict them. */
+    documents?: Array<{ name: string; source: string }>;
+  },
+  opts: { allowPhi?: boolean } = {},
+): NarrativeInput {
   const { client, current, previous } = args;
+  const withholdSubjects = client.hipaa === true && opts.allowPhi !== true;
   const goals = (client.goals ?? [])
     .filter((g) => g.title.trim())
     .map((g) => ({ title: g.title, alignment: g.alignment, status: g.status, targetPeriod: g.targetPeriod }));
@@ -83,8 +102,9 @@ export function buildNarrativeInput(args: {
   const period = parsePeriod(current.period);
   const trends = computeTrends(current, previous);
   const scorecard = computeScorecard(current);
-  const ticketInsights = computeTicketInsights(current.metrics, trends);
+  const ticketInsights = computeTicketInsights(current.metrics, trends, undefined, { examples: !withholdSubjects });
   const samples = ticketDigest(current.metrics);
+  const notes = withholdSubjects && hasTicketDigest(samples) ? [PHI_WITHHELD_NOTE] : [];
 
   return {
     client: { name: client.name, industry: client.industry, hipaa: client.hipaa, complianceStandard: client.complianceStandard },
@@ -105,13 +125,14 @@ export function buildNarrativeInput(args: {
       functions: scorecard.functions.map((f) => ({ function: f.function, score: f.score, rating: f.rating })),
       remediations: scorecard.remediations.map((r) => ({ title: r.title, score: r.score, evidence: r.evidence })),
     },
-    ticketSamples: hasTicketDigest(samples) ? samples : undefined,
+    ticketSamples: !withholdSubjects && hasTicketDigest(samples) ? samples : undefined,
     ticketInsights: ticketInsights.length
       ? ticketInsights.map((i) => ({ title: i.title, detail: i.detail, severity: i.severity, figures: i.figures }))
       : undefined,
     goals: goals.length ? goals : undefined,
     documents: args.documents?.length ? args.documents : undefined,
     direction,
+    notes: notes.length ? notes : undefined,
   };
 }
 
