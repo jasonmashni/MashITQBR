@@ -241,6 +241,20 @@ describe('Hudu', () => {
     expect(out.warnings.every((w) => !w.includes('asset_passwords'))).toBe(true);
   });
 
+  it('reports no expiration metrics (with a warning) when Hudu has no expirations', async () => {
+    const { http } = fakeHttp((req) => {
+      if (req.url.includes('/companies/9/assets')) return { status: 200, json: { assets: [] } };
+      if (req.url.includes('/expirations')) return { status: 200, json: [] };
+      if (req.url.includes('/articles')) return { status: 200, json: { articles: [] } };
+      if (req.url.includes('/asset_passwords')) return { status: 200, json: { asset_passwords: [] } };
+      return { status: 404, json: {} };
+    });
+    const out = await collectHudu({ clientId: 'kpca', period: P, externalRef: '9' }, http, { baseUrl: 'https://x.huducloud.com', apiKey: 'hk' });
+    expect(out.metrics.some((m) => m.key === 'assets.warranty_expired')).toBe(false);
+    expect(out.metrics.some((m) => m.key === 'assets.expiring_90d')).toBe(false);
+    expect(out.warnings.some((w) => /expiration/i.test(w))).toBe(true);
+  });
+
   it('tolerates a base URL pasted with /api/v1 and explains a 401', async () => {
     const { http, requests } = fakeHttp(() => ({ status: 401, json: {} }));
     await expect(listHuduCompanies(http, { baseUrl: 'https://x.huducloud.com/api/v1/', apiKey: ' hk ' })).rejects.toThrow(

@@ -52,8 +52,13 @@ export interface HuduExpiration {
   date?: string;
 }
 
-/** Count expirations by type, split into already-expired vs upcoming (≤90 days). */
+/**
+ * Count expirations by type, split into already-expired vs upcoming (≤90 days).
+ * No rows means nothing was measured (an empty register reads the same as
+ * "nothing tracked"), so no metrics are emitted rather than two zeros.
+ */
 export function normalizeHuduExpirations(rows: HuduExpiration[], now: number): MetricValue[] {
+  if (rows.length === 0) return [];
   const soon = now + 90 * 24 * 3600 * 1000;
   let warrantyExpired = 0;
   const upcoming: HuduExpiration[] = [];
@@ -114,6 +119,9 @@ export async function collectHudu(ctx: CollectorContext, http: HttpTransport, cf
       );
       rows.push(...pageRows);
       if (pageRows.length < 250) break;
+    }
+    if (rows.length === 0) {
+      warnings.push('Hudu has no expirations recorded for this company — warranty and renewal metrics not reported (track warranties, domains and SSL in Hudu to include them).');
     }
     metrics.push(...normalizeHuduExpirations(rows, Date.now()));
   } catch (e) {
