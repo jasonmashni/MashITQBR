@@ -94,7 +94,16 @@ const MAX_THEMES = 2;
  * word, and suggest checking for a common root cause.
  */
 function recurringIncidents(metrics: MetricValue[]): TicketInsight[] {
-  const subs = [...summaries(rowsOf(metrics, 'tickets.incidents')), ...summaries(rowsOf(metrics, 'tickets.open'))];
+  // An open incident appears in both lists; count each ticket once (by id,
+  // falling back to its subject when the row carries no id).
+  const seenTickets = new Set<string>();
+  const rows = [...rowsOf(metrics, 'tickets.incidents'), ...rowsOf(metrics, 'tickets.open')].filter((r) => {
+    const key = String(r['id'] ?? r['summary'] ?? r['subject'] ?? '');
+    if (seenTickets.has(key)) return false;
+    seenTickets.add(key);
+    return true;
+  });
+  const subs = summaries(rows);
   if (subs.length < RECUR_MIN) return [];
 
   // Deduplicate identical subjects first so one noisy alert repeated verbatim
@@ -146,7 +155,22 @@ function trendIndex(trends: MetricTrend[]): Map<string, MetricTrend> {
 /** Incident volume rose materially quarter over quarter. */
 function incidentTrend(ti: Map<string, MetricTrend>): TicketInsight[] {
   const t = ti.get('tickets.incidents');
-  if (!t || t.current === null || t.previous === null || t.deltaPct === null) return [];
+  if (!t || t.current === null || t.previous === null) return [];
+  if (t.previous === 0) {
+    // No percentage exists from a zero base; gate on the absolute rise alone.
+    if (t.current - t.previous < 3) return [];
+    return [
+      {
+        kind: 'incident_trend',
+        severity: 'medium',
+        title: 'Incident volume is up this quarter',
+        detail: `Incidents rose from ${t.previous} to ${t.current} — worth understanding what's driving the increase and whether it points to an underlying issue.`,
+        evidence: [],
+        figures: [t.previous, t.current],
+      },
+    ];
+  }
+  if (t.deltaPct === null) return [];
   if (t.current - t.previous < 3 || t.deltaPct < 25) return [];
   return [
     {
@@ -204,7 +228,22 @@ function slaBreaches(metrics: MetricValue[]): TicketInsight[] {
 /** Open backlog grew — a staffing / prioritization conversation. */
 function openBacklog(ti: Map<string, MetricTrend>): TicketInsight[] {
   const t = ti.get('tickets.open');
-  if (!t || t.current === null || t.previous === null || t.deltaPct === null) return [];
+  if (!t || t.current === null || t.previous === null) return [];
+  if (t.previous === 0) {
+    // No percentage exists from a zero base; gate on the absolute rise alone.
+    if (t.current - t.previous < 5) return [];
+    return [
+      {
+        kind: 'open_backlog',
+        severity: 'low',
+        title: 'Open ticket backlog is growing',
+        detail: `Open tickets grew from ${t.previous} to ${t.current} — worth confirming prioritization and staffing keep pace with demand.`,
+        evidence: [],
+        figures: [t.previous, t.current],
+      },
+    ];
+  }
+  if (t.deltaPct === null) return [];
   if (t.current - t.previous < 5 || t.deltaPct < 30) return [];
   return [
     {
