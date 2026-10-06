@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Alert as LoadAlert } from '@mantine/core';
 import {
   Badge,
   Button,
@@ -97,8 +98,13 @@ export function Settings() {
     api.system().then(setSystem).catch(() => {});
   }, []);
 
+  // A failed load keeps its error and disables both Save buttons: a blank form
+  // written back would wipe the brand and the booking rules.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     let live = true;
+    setLoading(true);
     api
       .getOrgSettings()
       .then(({ brand, booking: b }) => {
@@ -108,12 +114,14 @@ export function Settings() {
         setPrimary(brand.primary ?? '');
         setAccent(brand.accent ?? '');
         setBooking(b ?? {});
+        setLoadError(null);
       })
+      .catch((e) => live && setLoadError(e instanceof Error ? e.message : 'Could not load settings'))
       .finally(() => live && setLoading(false));
     return () => {
       live = false;
     };
-  }, []);
+  }, [retry]);
 
   async function pickLogo(file: File | null) {
     if (!file) return;
@@ -170,6 +178,14 @@ export function Settings() {
           Default branding for every deliverable. Until a logo is uploaded, a built-in Mash IT wordmark is used.
         </Text>
       </div>
+      {loadError && (
+        <LoadAlert color="act" title="Could not load settings">
+          <Group gap="sm">
+            <Text size="sm">{loadError}. Saving is disabled so a blank form cannot overwrite the stored brand and booking rules.</Text>
+            <Button size="compact-sm" variant="light" onClick={() => setRetry((n) => n + 1)}>Retry</Button>
+          </Group>
+        </LoadAlert>
+      )}
 
       <Card withBorder radius="md" padding="lg">
         <Stack>
@@ -202,7 +218,7 @@ export function Settings() {
           </Group>
 
           <Group justify="flex-end">
-            <Button loading={saving} onClick={save}>Save branding</Button>
+            <Button loading={saving} onClick={save} disabled={!!loadError}>Save branding</Button>
           </Group>
         </Stack>
       </Card>
@@ -312,7 +328,7 @@ export function Settings() {
             />
           </Group>
           <Group justify="flex-end">
-            <Button loading={savingBooking} onClick={saveBooking}>Save booking rules</Button>
+            <Button loading={savingBooking} onClick={saveBooking} disabled={!!loadError}>Save booking rules</Button>
           </Group>
         </Stack>
         <Text size="sm" fw={600} mt="sm" mb={4}>One-time setup (for live availability + automatic invites)</Text>
