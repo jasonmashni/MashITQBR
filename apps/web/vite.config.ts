@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -16,6 +17,13 @@ const BUILD_INFO = `${sha} · ${new Date().toISOString().slice(0, 16).replace('T
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: {
+      // Core is pure TypeScript (no Node imports), so the browser bundles it
+      // straight from source: one status vocabulary for the API and the UI.
+      '@mashit/core': fileURLToPath(new URL('../../packages/core/src/index.ts', import.meta.url)),
+    },
+  },
   define: { __BUILD_INFO__: JSON.stringify(BUILD_INFO) },
   server: {
     // During local dev, proxy /api to the Functions host (SWA CLI also does this).
