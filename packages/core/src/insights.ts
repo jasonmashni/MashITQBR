@@ -152,13 +152,17 @@ function recurringIncidents(metrics: MetricValue[], withExamples: boolean): Tick
     if (fresh.length < RECUR_MIN) continue;
     idx.forEach((i) => claimed.add(i));
     const examples = withExamples ? idx.slice(0, 3).map((i) => uniqueSubs[i]!) : [];
+    // With examples withheld (HIPAA clients), the clustering token itself stays
+    // out too: a patient surname shared by three tickets is still PHI.
     out.push({
       kind: 'recurring_incident',
       severity: idx.length >= 5 ? 'high' : 'medium',
-      title: `Recurring theme: “${cap(token)}” appears in ${idx.length} tickets`,
-      detail: `${idx.length} tickets this quarter reference “${token}”${egClause(
-        examples,
-      )}. Worth checking for a common root cause so it stops recurring.`,
+      title: withExamples
+        ? `Recurring theme: “${cap(token)}” appears in ${idx.length} tickets`
+        : `A recurring incident theme appears in ${idx.length} tickets`,
+      detail: withExamples
+        ? `${idx.length} tickets this quarter reference “${token}”${egClause(examples)}. Worth checking for a common root cause so it stops recurring.`
+        : `${idx.length} tickets this quarter share a subject theme. Worth checking for a common root cause so it stops recurring.`,
       evidence: examples,
       figures: [idx.length],
     });

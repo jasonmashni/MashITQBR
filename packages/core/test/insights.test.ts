@@ -198,3 +198,28 @@ describe('computeTicketInsights — counting honesty', () => {
     expect(insights.some((i) => i.kind === 'incident_trend')).toBe(false);
   });
 });
+
+describe('HIPAA: withheld examples also withhold the clustering token', () => {
+  const row = (id: string, subject: string) => ({ id, subject, status: 'Open' });
+  const metrics = [
+    {
+      key: 'tickets.incidents',
+      label: 'Incidents',
+      value: 3,
+      source: 'halo' as const,
+      category: 'operations' as const,
+      details: [row('1', 'Portal login failing for Okonkwo'), row('2', 'Okonkwo cannot print scripts'), row('3', 'Okonkwo chart will not open')],
+    },
+  ];
+  it('names the token when examples are allowed', () => {
+    const themes = computeTicketInsights(metrics, [], 6, { examples: true }).filter((i) => i.kind === 'recurring_incident');
+    expect(themes.length).toBe(1);
+    expect(`${themes[0]!.title} ${themes[0]!.detail}`).toMatch(/Okonkwo/);
+  });
+  it('never mentions it when examples are withheld', () => {
+    const themes = computeTicketInsights(metrics, [], 6, { examples: false }).filter((i) => i.kind === 'recurring_incident');
+    expect(themes.length).toBe(1);
+    expect(JSON.stringify(themes[0])).not.toMatch(/okonkwo/i);
+    expect(themes[0]!.title).toBe('A recurring incident theme appears in 3 tickets');
+  });
+});
