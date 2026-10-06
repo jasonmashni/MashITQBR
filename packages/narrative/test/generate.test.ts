@@ -4,6 +4,7 @@ import {
   buildAllowedNumbers,
   buildNarrativeInput,
   generateNarrative,
+  type NarrativeInput,
   type NarrativeModel,
   type NarrativeOutput,
 } from '@mashit/narrative';
@@ -42,6 +43,37 @@ describe('buildAllowedNumbers', () => {
     expect(allowed.has(94)).toBe(true); // delta abs
     expect(allowed.has(200)).toBe(true); // delta pct
     expect(allowed.has(2026)).toBe(true); // period year, never flagged
+  });
+
+  it('takes insight figures from the insight data, never from subject text', () => {
+    const bare: NarrativeInput = {
+      client: { name: 'X' },
+      period: { id: '2026-Q3', label: 'Q3 2026' },
+      metrics: [],
+      trends: [],
+      scorecard: { overall: { score: null, rating: 'unknown', coverage: 0, confidence: 'low' }, functions: [], remediations: [] },
+      ticketInsights: [
+        { title: 'Windows 11 rollout', detail: 'Replace Lenovo P73 for 7 users', severity: 'medium', figures: [4] },
+      ],
+    };
+    const allowed = new Set(buildAllowedNumbers(bare));
+    expect(allowed.has(4)).toBe(true);
+    expect(allowed.has(11)).toBe(false);
+    expect(allowed.has(73)).toBe(false);
+    expect(allowed.has(7)).toBe(false);
+  });
+
+  it('buildNarrativeInput carries each insight figures list', () => {
+    const withInsights = buildNarrativeInput({
+      client: anp,
+      current: {
+        clientId: 'anp',
+        period: '2026-Q3',
+        capturedAt: '2026-09-30T00:00:00Z',
+        metrics: [{ key: 'sla.breaches', label: 'SLA breaches', value: 4, source: 'halo', category: 'operations' }],
+      },
+    });
+    expect(withInsights.ticketInsights?.[0]?.figures).toEqual([4]);
   });
 });
 

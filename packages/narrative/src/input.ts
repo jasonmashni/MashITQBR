@@ -45,9 +45,11 @@ export interface NarrativeInput {
   /**
    * Deterministic keyword-derived talking points — recurring themes, change
    * activity, SLA misses. Kept as a rough hint for the model and the source for
-   * the offline (no-AI) recommendations.
+   * the offline (no-AI) recommendations. `figures` are the numbers the insight
+   * computed; they are the only insight numbers the guardrail allows (digits in
+   * ticket subjects such as "Windows 11" or "P73" are not figures).
    */
-  ticketInsights?: Array<{ title: string; detail: string; severity: string }>;
+  ticketInsights?: Array<{ title: string; detail: string; severity: string; figures?: number[] }>;
   /** The client's strategic goals (qualitative) so the narrative can align to them. */
   goals?: Array<{ title: string; alignment?: string; status: string; targetPeriod?: string }>;
   /**
@@ -105,7 +107,7 @@ export function buildNarrativeInput(args: {
     },
     ticketSamples: hasTicketDigest(samples) ? samples : undefined,
     ticketInsights: ticketInsights.length
-      ? ticketInsights.map((i) => ({ title: i.title, detail: i.detail, severity: i.severity }))
+      ? ticketInsights.map((i) => ({ title: i.title, detail: i.detail, severity: i.severity, figures: i.figures }))
       : undefined,
     goals: goals.length ? goals : undefined,
     documents: args.documents?.length ? args.documents : undefined,
@@ -141,10 +143,11 @@ export function buildAllowedNumbers(input: NarrativeInput): number[] {
   for (const f of input.scorecard.functions) add(f.score);
   for (const r of input.scorecard.remediations) add(r.score);
 
-  // Counts embedded in the ticket-insight talking points (recurring-theme
-  // counts, SLA breaches…) are figures we computed — let the model quote them.
+  // The ticket-insight talking points carry the figures they computed
+  // (recurring-theme counts, SLA breaches…). Never regex the title/detail text:
+  // it embeds ticket subjects whose digits ("Windows 11", "P73") aren't figures.
   for (const i of input.ticketInsights ?? []) {
-    for (const match of `${i.title} ${i.detail}`.match(/\d+(?:\.\d+)?/g) ?? []) add(Number(match));
+    for (const n of i.figures ?? []) add(n);
   }
 
   // Period years / quarter numbers appear in prose and shouldn't be flagged.
