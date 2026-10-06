@@ -6,7 +6,7 @@ import {
   draftOfflineNarrative,
   generateNarrative,
   NARRATIVE_MODEL_ID,
-  verifyFigures,
+  verifyNarrative,
   type NarrativeModel,
   type NarrativeResult,
 } from '@mashit/narrative';
@@ -120,21 +120,28 @@ export async function buildQbrReport(
   const current = filter(currentRaw);
   const previous = previousRaw ? filter(previousRaw) : undefined;
 
-  const input = buildNarrativeInput({
-    client,
-    current,
-    previous,
-    // Attached vendor reports (e.g. a Synology Active Backup report) so the
-    // narrative won't claim a coverage gap the reports contradict.
-    documents: opts.documents,
-    // Author steering (focus / guidance / per-section comments). Because the
-    // input feeds the cache key, changing direction regenerates the prose.
-    direction: {
-      focus: opts.config?.narrativeFocus,
-      guidance: opts.config?.narrativeGuidance,
-      sectionGuidance: opts.config?.sectionGuidance as Record<string, string> | undefined,
+  // HIPAA clients' ticket subjects stay out of the model input unless the
+  // operator has a BAA in place and sets NARRATIVE_ALLOW_PHI=1.
+  const allowPhi = process.env['NARRATIVE_ALLOW_PHI'] === '1';
+  const input = buildNarrativeInput(
+    {
+      client,
+      current,
+      previous,
+      // Attached vendor reports (e.g. a Synology Active Backup report) so the
+      // narrative won't claim a coverage gap the reports contradict.
+      documents: opts.documents,
+      // Author steering (focus / guidance / per-section comments). Because the
+      // input feeds the cache key, changing direction regenerates the prose.
+      direction: {
+        focus: opts.config?.narrativeFocus,
+        guidance: opts.config?.narrativeGuidance,
+        sectionGuidance: opts.config?.sectionGuidance as Record<string, string> | undefined,
+      },
     },
-  });
+    { allowPhi },
+  );
+  const allowed = buildAllowedNumbers(input);
 
   // After an AI failure (rate limit, empty credits, outage), don't retry on
   // every page view — the Workspace rebuilds the report each visit, and each
@@ -143,8 +150,7 @@ export async function buildQbrReport(
 
   const offlineDraft = (): NarrativeResult => {
     const output = draftOfflineNarrative(input);
-    const verification = verifyFigures(output.figures_referenced, buildAllowedNumbers(input));
-    return { output, verification, attempts: 1 };
+    return { output, verification: verifyNarrative(output, allowed), attempts: 1 };
   };
 
   let narrative: NarrativeResult;
@@ -208,6 +214,11 @@ export async function buildQbrReport(
       },
     };
   }
+
+  // Verify what will actually ship: the prose as well as figures_referenced.
+  // A cached narrative may predate prose checking, and author edits can add
+  // numbers, so the stored verification is never trusted as-is.
+  narrative = { ...narrative, verification: verifyNarrative(narrative.output, allowed) };
 
   const model = buildReportModel({
     client,

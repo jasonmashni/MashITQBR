@@ -26,8 +26,15 @@ describe('overview + periods endpoints', () => {
     expect(body.clients.length).toBeGreaterThanOrEqual(3);
     const anp = body.clients.find((c) => c['clientId'] === 'anp')!;
     expect(anp['period']).toBe('2026-Q1');
-    expect(typeof anp['score']).toBe('number');
+    // ANP's seed covers too little of the scorecard to score (coverage 0.38):
+    // no overall number, by design.
+    expect(anp['score']).toBeNull();
+    expect(anp['rating']).toBe('unknown');
+    expect(anp['confidence']).toBe('low');
     expect(anp['status']).toBe('draft');
+    const kpca = body.clients.find((c) => c['clientId'] === 'kpca')!;
+    expect(typeof kpca['score']).toBe('number');
+    expect(kpca['rating']).toBe('green');
   });
 
   it('carries current-quarter triage: a client with no data this quarter is not started', async () => {

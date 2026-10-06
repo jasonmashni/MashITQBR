@@ -78,4 +78,36 @@ describe('agenda suggestions', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  describe('HIPAA ticket subjects (NARRATIVE_ALLOW_PHI)', () => {
+    const SUBJECTS = ['Windows 11 rollout', 'VPN drops for Jane Doe at clinic', 'VPN down at front desk', 'VPN reset for exam room 3'];
+    const hipaaClient: Client = { id: 'clinic', name: 'Bluegrass Clinic', hipaa: true };
+    const ticketSnap: MetricSnapshot = {
+      clientId: 'clinic',
+      period: '2026-Q3',
+      capturedAt: '2026-09-30T00:00:00Z',
+      metrics: [
+        { key: 'tickets.incidents', label: 'Incidents', value: 3, source: 'halo', category: 'operations', details: SUBJECTS.slice(1).map((summary, i) => ({ id: String(i + 1), summary, type: 'incident' })) },
+        { key: 'tickets.changes', label: 'Change requests', value: 3, source: 'halo', category: 'operations', details: [{ id: '7', summary: 'Windows 11 rollout' }, { id: '8', summary: 'Firewall rule' }, { id: '9', summary: 'Printer swap' }] },
+        { key: 'sla.breaches', label: 'SLA breaches', value: 1, source: 'halo', category: 'operations', details: [{ id: '10', summary: 'Server outage for Dr. Smith' }] },
+      ],
+    };
+    const ctxText = () => JSON.stringify(buildAgendaContext(buildReportModel({ client: hipaaClient, current: ticketSnap })));
+
+    it('keeps ticket subjects out of the agenda input for a HIPAA client when the env is unset', () => {
+      delete process.env['NARRATIVE_ALLOW_PHI'];
+      const text = ctxText();
+      expect(text).toMatch(/change request/); // insights still present, just without examples
+      for (const s of [...SUBJECTS, 'Server outage for Dr. Smith']) expect(text).not.toContain(s);
+    });
+
+    it('includes ticket subjects for a HIPAA client when NARRATIVE_ALLOW_PHI=1', () => {
+      process.env['NARRATIVE_ALLOW_PHI'] = '1';
+      try {
+        expect(ctxText()).toContain('Windows 11 rollout');
+      } finally {
+        delete process.env['NARRATIVE_ALLOW_PHI'];
+      }
+    });
+  });
 });

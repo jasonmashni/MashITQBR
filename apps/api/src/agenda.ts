@@ -73,8 +73,18 @@ const HEADLINE_KEYS = [
 
 const SENTIMENT_RANK: Record<string, number> = { negative: 0, neutral: 1, positive: 2, na: 3 };
 
-/** Distil the report model into the compact signal set the suggester reasons over. */
-export function buildAgendaContext(model: ReportModel): AgendaContext {
+/**
+ * Distil the report model into the compact signal set the suggester reasons over.
+ *
+ * For a HIPAA client, ticket subjects (which can carry PHI) are left out of both
+ * the insight examples and the samples unless `allowPhi` is true. It defaults to
+ * NARRATIVE_ALLOW_PHI=1, which an operator sets only with a BAA in place.
+ */
+export function buildAgendaContext(
+  model: ReportModel,
+  opts: { allowPhi?: boolean } = { allowPhi: process.env['NARRATIVE_ALLOW_PHI'] === '1' },
+): AgendaContext {
+  const withholdSubjects = model.client.hipaa === true && opts.allowPhi !== true;
   const byKey = new Map(model.sections.flatMap((s) => s.rows.map((r) => [r.metric.key, r.metric] as const)));
 
   const movers: Mover[] = model.trends
@@ -96,7 +106,7 @@ export function buildAgendaContext(model: ReportModel): AgendaContext {
   });
 
   const ticketMetrics = model.sections.flatMap((s) => s.rows.map((r) => r.metric));
-  const ticketInsights = computeTicketInsights(ticketMetrics, model.trends);
+  const ticketInsights = computeTicketInsights(ticketMetrics, model.trends, undefined, { examples: !withholdSubjects });
   const samples = ticketDigest(ticketMetrics);
 
   return {
@@ -108,7 +118,7 @@ export function buildAgendaContext(model: ReportModel): AgendaContext {
     weakFunctions,
     metrics,
     ticketInsights,
-    ticketSamples: hasTicketDigest(samples) ? samples : undefined,
+    ticketSamples: !withholdSubjects && hasTicketDigest(samples) ? samples : undefined,
   };
 }
 

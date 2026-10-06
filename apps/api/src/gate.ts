@@ -27,17 +27,9 @@ export function isPublicRoute(path: string): boolean {
   return p === 'book' || p.startsWith('book/') || p === 'api/book' || p.startsWith('api/book/');
 }
 
-/**
- * Capabilities endpoints stay reachable without a principal so the web header
- * can render a "sign in" state instead of a hard error. They carry presence
- * flags and the shared report mailbox address, never secret values.
- */
-const UNGATED_INFO = new Set(['api/system', 'api/capabilities', 'api/system-info']);
-
 /** Run `fn` only when the caller is allowed to reach `path`; else 401. */
 export async function gate(path: string, headerGet: HeaderGet, fn: () => Promise<ApiResult> | ApiResult): Promise<ApiResult> {
-  const p = path.replace(/^\/+/, '').replace(/\/+$/, '');
-  if (authRequired() && !isPublicRoute(p) && !UNGATED_INFO.has(p) && !principalFrom(headerGet)) {
+  if (authRequired() && !isPublicRoute(path) && !principalFrom(headerGet)) {
     return { status: 401, json: { error: 'Not signed in' } };
   }
   return fn();

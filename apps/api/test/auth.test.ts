@@ -65,9 +65,12 @@ describe('gate', () => {
     expect((await gate('book/tok', headers({}), okFn)).status).toBe(200);
   });
 
-  it('lets the system capabilities routes through so the header can render a sign-in state', async () => {
+  it('gates the system capabilities routes like every other route', async () => {
     process.env['QBR_AUTH_REQUIRED'] = '1';
-    for (const p of ['api/system', 'api/capabilities', 'api/system-info']) expect((await gate(p, headers({}), okFn)).status).toBe(200);
+    for (const p of ['api/system', 'api/capabilities', 'api/system-info', '/api/system/']) {
+      expect(await gate(p, headers({}), okFn)).toEqual({ status: 401, json: { error: 'Not signed in' } });
+      expect((await gate(p, headers({ 'x-ms-client-principal': principal }), okFn)).status).toBe(200);
+    }
   });
 
   it('is open when auth is not required (local dev)', async () => {
