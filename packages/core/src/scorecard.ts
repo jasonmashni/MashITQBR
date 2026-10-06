@@ -9,6 +9,11 @@ import type {
   SafeguardResult,
 } from './types.js';
 
+/** "1 device" / "4 devices": client-facing copy never prints "(s)". */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return n === 1 ? one : many;
+}
+
 const NIST_FUNCTIONS: NistFunction[] = [
   'GOVERN',
   'IDENTIFY',
@@ -94,7 +99,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
       return {
         score,
         evidence: `EDR active on ${endpoints} endpoints; ${
-          reportedIncidents === null ? 'incident count not reported' : `${incidents} incident(s) this period`
+          reportedIncidents === null ? 'incident count not reported' : `${incidents} ${plural(incidents, 'incident')} this period`
         }${av !== null ? `; ${av}% AV coverage` : ''}.`,
         source: 'huntress',
       };
@@ -127,7 +132,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
       const score = clamp(100 - clicks * 15);
       return {
         score,
-        evidence: `${blocked} email threat(s) blocked; ${clicks} malicious click(s).`,
+        evidence: `${blocked} email ${plural(blocked, 'threat')} blocked; ${clicks} malicious ${plural(clicks, 'click')}.`,
         source: 'checkpoint',
       };
     },
@@ -144,7 +149,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
       const encrypted = m.num('email.auto_encrypted');
       return {
         score: 90, // a DLP policy is active and generating events as designed
-        evidence: `DLP policy active — ${dlp} event(s)${
+        evidence: `DLP policy active, ${dlp} ${plural(dlp, 'event')}${
           encrypted !== null ? `, ${encrypted} auto-encrypted` : ''
         }.`,
         source: 'checkpoint',
@@ -164,7 +169,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
       if (compromises === null) return null;
       return {
         score: clamp(95 - compromises * 20),
-        evidence: `ITDR monitoring M365 identities; ${compromises} compromise(s).`,
+        evidence: `ITDR monitoring M365 identities; ${compromises} ${plural(compromises, 'compromise')}.`,
         source: 'huntress',
       };
     },
@@ -193,7 +198,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
       const compromises = m.num('sat.phishing_compromises') ?? 0;
       return {
         score: clamp(pct - compromises * 5),
-        evidence: `Training completion ${pct}%; ${compromises} simulated phishing compromise(s).`,
+        evidence: `Training completion ${pct}%; ${compromises} simulated phishing ${plural(compromises, 'compromise')}.`,
         source: 'huntress',
       };
     },
@@ -215,7 +220,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
         evidence:
           success !== null
             ? `Backup success rate ${success}%.`
-            : `Backups protecting ${protectedDevices ?? 0} device(s), ${m365 ?? 0} M365 account(s).`,
+            : `Backups protecting ${protectedDevices ?? 0} ${plural(protectedDevices ?? 0, 'device')}, ${m365 ?? 0} M365 ${plural(m365 ?? 0, 'account')}.`,
         source: 'ninja',
       };
     },
@@ -231,7 +236,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
       if (expired === null) return null;
       return {
         score: clamp(100 - expired * 5),
-        evidence: `${expired} device(s) out of warranty.`,
+        evidence: `${expired} ${plural(expired, 'device')} out of warranty.`,
         source: 'ninja',
       };
     },

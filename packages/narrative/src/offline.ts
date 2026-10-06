@@ -1,4 +1,4 @@
-import type { MetricTrend } from '@mashit/core';
+import { plural, type MetricTrend } from '@mashit/core';
 import type { NarrativeInput } from './input.js';
 import type { NarrativeOutput } from './schema.js';
 
@@ -140,7 +140,7 @@ function draftSectionSummaries(
         failed === null
           ? 'Backup job failures were not measured this quarter, so backup success cannot be confirmed from this data.'
           : failed > 0
-            ? `Backups are running with ${cite('failing backups', failed)} device(s) needing attention.`
+            ? `Backups are running with ${cite('failing backups', failed)} ${plural(failed, 'device')} needing attention.`
             : 'Backups ran with no failed jobs recorded this quarter.',
     });
   }
@@ -153,7 +153,7 @@ function draftSectionSummaries(
         expired === null
           ? 'Warranty status was not measured this quarter, so refresh risk cannot be assessed from this data.'
           : expired > 0
-            ? `${cite('devices out of warranty', expired)} device(s) are past warranty and should be planned for refresh.`
+            ? `${cite('devices out of warranty', expired)} ${plural(expired, 'device')} ${expired === 1 ? 'is' : 'are'} past warranty and should be planned for refresh.`
             : 'No devices are past warranty this quarter.',
     });
   }
