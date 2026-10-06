@@ -108,8 +108,8 @@ function NotificationBell() {
   return (
     <Menu withinPortal position="bottom-end" width={360} shadow="md">
       <Menu.Target>
-        <Indicator disabled={unread === 0} label={unread > 9 ? '9+' : unread} size={16} color="red" offset={4}>
-          <ActionIcon variant="subtle" color="gray" size="lg" aria-label={`Notifications${unread ? ` (${unread} unread)` : ''}`}>
+        <Indicator disabled={unread === 0} label={unread > 9 ? '9+' : unread} size={16} color="act" offset={4}>
+          <ActionIcon variant="subtle" color="slate" size="lg" aria-label={`Notifications${unread ? ` (${unread} unread)` : ''}`}>
             <IconBell size={20} stroke={1.6} />
           </ActionIcon>
         </Indicator>
@@ -126,7 +126,7 @@ function NotificationBell() {
         <Menu.Divider />
         {items.length === 0 ? (
           <Text size="sm" c="dimmed" ta="center" py="md">
-            Nothing yet — new reports, client bookings and scheduling reminders land here.
+            Nothing yet. New reports, client bookings and scheduling reminders land here.
           </Text>
         ) : (
           <Box mah={380} style={{ overflowY: 'auto' }}>
@@ -149,8 +149,10 @@ function NotificationBell() {
   );
 }
 
-/** Global client jumper in the header — reflects the client you're viewing and
- *  navigates straight to any other, from anywhere in the app. */
+/**
+ * Global client jumper in the header: reflects the client you're viewing and
+ * navigates straight to any other, from anywhere in the app, at every width.
+ */
 function ClientSwitcher() {
   const [clients, setClients] = useState<Array<{ id: string; name: string; qbrEnabled?: boolean }>>([]);
   const { pathname } = useLocation();
@@ -167,11 +169,10 @@ function ClientSwitcher() {
   return (
     <Select
       aria-label="Go to client"
-      placeholder="Go to client…"
+      placeholder="Go to client"
       searchable
       clearable={false}
-      w={240}
-      visibleFrom="sm"
+      w={{ base: 150, sm: 240 }}
       comboboxProps={{ withinPortal: true }}
       leftSection={<IconUsers size={16} stroke={1.6} />}
       data={data}
@@ -192,11 +193,11 @@ function UserMenu() {
       <Menu.Target>
         <UnstyledButton aria-label="Account menu">
           <Group gap={8}>
-            <Avatar radius="xl" size={32} color="brand" variant="filled">{initials(me.name)}</Avatar>
+            <Avatar radius="xl" size={32} color="navy" variant="filled">{initials(me.name)}</Avatar>
             <Box visibleFrom="sm">
               <Group gap={4}>
                 <Text size="sm" fw={600} lh={1.1}>{me.name}</Text>
-                {me.dev && <Badge size="xs" color="gray" variant="light">dev</Badge>}
+                {me.dev && <Badge size="xs" color="slate" variant="light">local dev</Badge>}
               </Group>
               {me.email && <Text size="xs" c="dimmed" lh={1.1}>{me.email}</Text>}
             </Box>
@@ -207,7 +208,7 @@ function UserMenu() {
       <Menu.Dropdown>
         <Menu.Label>
           {me.name}
-          {me.email ? ` · ${me.email}` : ''}
+          {me.email ? `, ${me.email}` : ''}
         </Menu.Label>
         <Menu.Item
           component="a"
@@ -226,22 +227,19 @@ export function App() {
   const { pathname } = useLocation();
   const [opened, { toggle, close }] = useDisclosure(false);
   return (
-    <AppShell header={{ height: 60 }} navbar={{ width: 250, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding="lg">
-      <AppShell.Header>
-        <Group h="100%" px="md" gap="sm" justify="space-between">
-          <Group gap="sm">
+    <AppShell header={{ height: 60 }} navbar={{ width: 232, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding="lg">
+      <AppShell.Header style={{ borderBottom: '1px solid var(--qbr-hairline)' }}>
+        <Group h="100%" px="md" gap="sm" justify="space-between" wrap="nowrap">
+          <Group gap="sm" wrap="nowrap">
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
-            <ThemeIcon size={34} radius="md" variant="gradient" gradient={{ from: 'navy.9', to: 'brand.6', deg: 135 }}>
-              <IconChartHistogram size={20} />
+            <ThemeIcon size={34} radius="sm" variant="filled" color="navy.9">
+              <IconChartHistogram size={20} stroke={1.8} />
             </ThemeIcon>
-            <Box>
-              <Text fw={700} size="lg" lh={1}>
-                Mash IT <Text span c="brand.8" fw={700}>QBR</Text>
-              </Text>
-              <Text size="xs" c="dimmed" lh={1.2}>Your I.T. — Our Priority</Text>
-            </Box>
+            <Text fw={700} size="lg" lh={1} c="navy.9" style={{ whiteSpace: 'nowrap' }}>
+              Mash IT <Text span c="brand.8" fw={700}>QBR</Text>
+            </Text>
           </Group>
-          <Group gap="sm">
+          <Group gap="sm" wrap="nowrap">
             <ClientSwitcher />
             <NotificationBell />
             <UserMenu />
@@ -249,7 +247,7 @@ export function App() {
         </Group>
       </AppShell.Header>
 
-      <AppShell.Navbar p="md">
+      <AppShell.Navbar p="md" style={{ borderRight: '1px solid var(--qbr-hairline)' }}>
         {NAV.map(({ to, label, icon: Icon, match }) => (
           <NavLink
             key={to}
@@ -258,19 +256,21 @@ export function App() {
             label={label}
             active={match(pathname)}
             leftSection={<Icon size={18} stroke={1.6} />}
-            variant="filled"
+            variant="light"
+            color="brand"
             mb={4}
             onClick={close}
           />
         ))}
         <Box mt="auto" pt="md">
-          <Text size="xs" c="dimmed">Signed in via Microsoft Entra ID</Text>
           <Text size="xs" c="dimmed">Build {__BUILD_INFO__}</Text>
         </Box>
       </AppShell.Navbar>
 
       <AppShell.Main>
-        <Outlet />
+        <Box maw={1280} mx="auto">
+          <Outlet />
+        </Box>
       </AppShell.Main>
     </AppShell>
   );
