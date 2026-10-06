@@ -74,6 +74,8 @@ export interface SnapshotView {
   period: string;
   capturedAt: string;
   metrics: MetricRow[];
+  /** Sync caveats persisted with the data (partial pulls, failed collectors). */
+  warnings?: string[];
 }
 
 /** An attention flag on a dashboard row. */
@@ -89,15 +91,32 @@ export interface AccountHealth {
   drivers: string[];
 }
 
+/** How much to trust a maturity score: low withholds it, medium shows it as provisional. */
+export type Confidence = 'low' | 'medium' | 'high';
+
+/** What the dashboard should nudge the account manager to do for the current quarter. */
+export type Triage = 'not_started' | 'needs_scheduling' | 'meeting_soon' | 'meeting_passed' | 'package_not_sent' | 'in_progress' | 'done';
+
+/** The current quarter's state for one client (drives the triage band). */
+export interface CurrentQuarter {
+  hasData: boolean;
+  status: QbrStatus;
+  meetingAt: string | null;
+  packageSentAt: string | null;
+  meetingSkipped: boolean;
+}
+
 /** One row of GET /api/overview. */
 export interface OverviewRow {
   clientId: string;
   name: string;
   industry?: string;
   hipaa?: boolean;
+  /** The newest quarter with data (the "last QBR"). */
   period: string | null;
   score: number | null;
   rating: Rating;
+  confidence: Confidence;
   status: string;
   meetingAt: string | null;
   mrr: number | null;
@@ -110,6 +129,17 @@ export interface OverviewRow {
   roadmapCount: number;
   /** Account health score/rating/drivers. */
   health: AccountHealth;
+  currentPeriod: string;
+  current: CurrentQuarter;
+  lastCompletedPeriod: string | null;
+  triage: Triage;
+}
+
+/** GET /api/overview. */
+export interface Overview {
+  currentPeriod: string;
+  quarterEndsInDays: number;
+  clients: OverviewRow[];
 }
 
 /** One row of GET /api/clients/{id}/periods. */
@@ -140,16 +170,19 @@ export interface MetricTrend {
 export interface ReportModel {
   client: { name: string; industry?: string; hipaa?: boolean };
   period: { id: string; label: string };
+  previousPeriod?: { id: string; label: string };
   brand?: { name?: string; logoDataUri?: string };
   executive: { headline?: string; paragraphs: string[]; highlights: string[] };
   scorecard: {
-    overall: { score: number | null; rating: Rating; coverage: number };
+    overall: { score: number | null; rating: Rating; coverage: number; confidence: Confidence };
     functions: FunctionScore[];
   };
   trends: MetricTrend[];
   /** Metric sections with their one-line executive summaries. */
   sections?: Array<{ category: string; title: string; summary?: string }>;
   recommendations: string[];
+  /** Sync caveats carried from the snapshot (partial pulls, failed collectors). */
+  dataConfidence?: string[];
 }
 
 export interface QbrMeta {
@@ -161,6 +194,8 @@ export interface QbrMeta {
   packageSentAt?: string;
   /** Set when the client opted to skip the review meeting this quarter. */
   meetingSkipped?: { at: string; reason?: string };
+  /** Set when the last sync was refused because every tool failed; cleared by the next successful sync. */
+  lastSyncAttempt?: { at: string; warnings: string[] };
 }
 
 export interface QbrResponse {
@@ -281,7 +316,8 @@ export interface AuditEvent {
 /** Runtime capabilities reported by GET /api/system. */
 export interface SystemInfo {
   dataStore: 'table' | 'json';
-  secretStore: 'keyvault' | 'local';
+  /** `local-insecure` means the app is in Azure without Key Vault: secrets cannot be saved. */
+  secretStore: 'keyvault' | 'local' | 'local-insecure';
   ai: boolean;
   pdfAvailable: boolean;
   /** Shared report mailbox (null = inbox ingestion not configured). */

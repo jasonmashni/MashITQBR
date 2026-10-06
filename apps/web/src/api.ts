@@ -16,18 +16,39 @@ import type {
   MetricRow,
   NotificationInfo,
   Opportunity,
-  OverviewRow,
+  Overview,
   PeriodInfo,
+  QbrMeta,
   QbrResponse,
+  QbrStatus,
   ReportConfig,
   SnapshotView,
   SystemInfo,
 } from './types.js';
 
+/** Thrown for a non-2xx response; `status` lets callers tell 401 from 409 from 500. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+    const text = await res.text().catch(() => '');
+    let message = `${res.status} ${res.statusText}`;
+    try {
+      const body = JSON.parse(text) as { error?: string };
+      if (body.error) message = body.error;
+    } catch {
+      // A redirect to a login page, or a host error page: keep the status text.
+      if (res.status === 401 || res.redirected) message = 'Not signed in';
+    }
+    throw new ApiError(message, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -61,24 +82,37 @@ async function withAuthRefresh<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-// Capabilities don't change while the app is open — fetch once, share everywhere.
+// Capabilities don't change while the app is open: fetch once, share everywhere.
+// A failed fetch is NOT memoized, so one cold-start error cannot hide the AI
+// buttons for the whole session.
 let _system: Promise<SystemInfo> | undefined;
 
 // Some hosts refuse to register functions on /api/system routes while serving
-// every other route — try the "system"-free alias first, then the older ones.
+// every other route: try the "system"-free alias first, then the older ones.
 async function fetchSystem(): Promise<SystemInfo> {
+  let lastStatus = 0;
   for (const url of ['/api/capabilities', '/api/system', '/api/system-info']) {
     const res = await send('GET', url);
     if (res.ok) return res.json() as Promise<SystemInfo>;
+    lastStatus = res.status;
+    if (res.status === 401) break;
   }
-  throw new Error('System info unavailable');
+  throw new ApiError(lastStatus === 401 ? 'Not signed in' : 'System info unavailable', lastStatus || 503);
 }
 
 export const api = {
-  // System capabilities (memoized)
-  system: () => (_system ??= fetchSystem()),
+  // System capabilities (memoized while the call succeeds)
+  system: () =>
+    (_system ??= fetchSystem().catch((e: unknown) => {
+      _system = undefined;
+      throw e;
+    })),
   /** Re-read the system info (e.g. after an inbox poll) and refresh the memo. */
-  systemFresh: () => (_system = fetchSystem()),
+  systemFresh: () =>
+    (_system = fetchSystem().catch((e: unknown) => {
+      _system = undefined;
+      throw e;
+    })),
   /** Drain the shared report mailbox now (the timer does this every 5 min). */
   pollInbox: () =>
     send('POST', '/api/inbox/poll').then(
@@ -99,7 +133,7 @@ export const api = {
   getQbr: (clientId: string, period: string, ai = true) =>
     send('GET', `/api/clients/${clientId}/qbr/${period}${ai ? '' : '?ai=0'}`).then(json<QbrResponse>),
   currentPeriod: () => send('GET', '/api/period/current').then(json<{ period: string }>),
-  overview: () => send('GET', '/api/overview').then(json<{ currentPeriod: string; clients: OverviewRow[] }>),
+  overview: () => send('GET', '/api/overview').then(json<Overview>),
   periods: (clientId: string) =>
     send('GET', `/api/clients/${clientId}/periods`).then(json<{ currentPeriod: string; periods: PeriodInfo[] }>),
 
@@ -115,10 +149,13 @@ export const api = {
   ) => send('PUT', `/api/clients/${clientId}/qbr/${period}/narrative`, edits).then(json<{ edits: unknown }>),
   regenerateNarrative: (clientId: string, period: string) =>
     send('POST', `/api/clients/${clientId}/qbr/${period}/narrative/regenerate`).then(json<{ cleared: boolean }>),
+  /** Approve the narrative: moves the QBR forward to narrative_approved, never backwards. */
+  approveNarrative: (clientId: string, period: string) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/narrative/approve`).then(json<QbrMeta>),
 
   // Data review
   getMetrics: (clientId: string, period: string) =>
-    send('GET', `/api/clients/${clientId}/qbr/${period}/metrics`).then(json<{ snapshot: SnapshotView; excluded: string[] }>),
+    send('GET', `/api/clients/${clientId}/qbr/${period}/metrics`).then(json<{ snapshot: SnapshotView; excluded: string[]; warnings?: string[] }>),
   putManualMetrics: (clientId: string, period: string, metrics: MetricRow[]) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/metrics`, { metrics }).then(json<{ metrics: number; manual: number }>),
 
@@ -141,8 +178,15 @@ export const api = {
   // Workflow
   sync: (clientId: string, period: string) =>
     send('POST', `/api/clients/${clientId}/qbr/${period}/sync`).then(json<{ metrics: number; warnings: string[]; documents?: number }>),
-  putStatus: (clientId: string, period: string, status: string) =>
-    send('PUT', `/api/clients/${clientId}/qbr/${period}/status`, { status }).then(json<unknown>),
+  /**
+   * Set the lifecycle status. Forward moves just happen; a backwards move
+   * needs `force: true` and a reason, and is written to the audit log.
+   */
+  putStatus: (clientId: string, period: string, body: { status: QbrStatus; force?: boolean; reason?: string }) =>
+    send('PUT', `/api/clients/${clientId}/qbr/${period}/status`, body).then(json<QbrMeta>),
+  /** Record that the report package went out (the explicit "Send package" step). */
+  markPackageSent: (clientId: string, period: string) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/package/sent`).then(json<QbrMeta>),
   /** Client skipped the meeting: record the disposition and close the quarter as completed. */
   dispositionSkipped: (clientId: string, period: string, reason?: string) =>
     send('POST', `/api/clients/${clientId}/qbr/${period}/disposition`, reason ? { reason } : {}).then(json<unknown>),
@@ -201,7 +245,7 @@ export const api = {
     },
   ) => send('POST', `/api/clients/${clientId}/qbr/${period}/actions/push`, body).then(json<{ system: string; id: string; status?: string }>),
 
-  // Microsoft 365 (delegated Graph via Easy Auth — token refreshed transparently)
+  // Microsoft 365 (delegated Graph via Easy Auth; token refreshed transparently)
   emailQbr: (clientId: string, period: string, payload: { to: string[]; subject?: string; bodyHtml?: string; attachDeck?: boolean }) =>
     withAuthRefresh(() => send('POST', `/api/clients/${clientId}/qbr/${period}/email`, payload).then(json<{ sent: boolean; to: string[] }>)),
   createMeeting: (clientId: string, period: string, payload: { start: string; end?: string; attendees?: string[]; subject?: string }) =>

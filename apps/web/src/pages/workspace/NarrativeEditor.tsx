@@ -13,14 +13,15 @@ import {
   Badge,
   Divider,
   Tooltip,
+  Alert,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import { IconPencil, IconSparkles } from '@tabler/icons-react';
+import { isQbrStatus, statusAtLeast } from '@mashit/core';
 import { api } from '../../api.js';
 import type { ReportConfig, ReportModel } from '../../types.js';
-import { toastError } from '../../toast.js';
+import { toastError, toastOk } from '../../toast.js';
+import { ConfirmModal } from '../../ui.js';
 
-// ── Narrative editor ──────────────────────────────────────────────────────────
 const FOCUS_OPTIONS = [
   'Business security',
   'Business continuity',
@@ -30,13 +31,20 @@ const FOCUS_OPTIONS = [
   'Service experience',
 ];
 
+/**
+ * Edit, regenerate and approve the narrative. Approve only moves forward;
+ * Regenerate asks first because it discards edits and (with AI on) costs a
+ * model call; the editor re-syncs from a fresh draft unless you have typed.
+ */
 export function NarrativeEditor({
   clientId,
   period,
   model,
   aiEnabled,
   status,
+  verified,
   config,
+  configError,
   setConfig,
   onChanged,
 }: {
@@ -45,7 +53,9 @@ export function NarrativeEditor({
   model: ReportModel;
   aiEnabled: boolean;
   status: string;
+  verified: boolean;
   config: ReportConfig | null;
+  configError: string | null;
   setConfig: (c: ReportConfig) => void;
   onChanged: () => void;
 }) {
@@ -53,19 +63,39 @@ export function NarrativeEditor({
   const [summary, setSummary] = useState(model.executive.paragraphs.join('\n\n'));
   const [highlights, setHighlights] = useState(model.executive.highlights.join('\n'));
   const [recommendations, setRecommendations] = useState(model.recommendations.join('\n'));
+  const [dirty, setDirty] = useState(false);
   const [editedBy, setEditedBy] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [confirmRegen, setConfirmRegen] = useState(false);
   // AI direction (persisted in the report config; changing it re-drafts).
   const [focus, setFocus] = useState(config?.narrativeFocus ?? '');
   const [guidance, setGuidance] = useState(config?.narrativeGuidance ?? '');
   const [sectionNotes, setSectionNotes] = useState<Record<string, string>>(config?.sectionGuidance ?? {});
   const [openSection, setOpenSection] = useState<string | null>(null);
 
+  // A fresh draft (after Sync or Regenerate) replaces the fields unless the
+  // author is mid-edit; otherwise a stale Save would overwrite the new draft.
   useEffect(() => {
-    api.getNarrative(clientId, period).then((d) => setEditedBy(d.edits ? `${d.edits.editedBy} · ${new Date(d.edits.editedAt).toLocaleString()}` : null)).catch(() => {});
+    if (dirty) return;
+    setHeadline(model.executive.headline ?? '');
+    setSummary(model.executive.paragraphs.join('\n\n'));
+    setHighlights(model.executive.highlights.join('\n'));
+    setRecommendations(model.recommendations.join('\n'));
+  }, [model, dirty]);
+
+  useEffect(() => {
+    api
+      .getNarrative(clientId, period)
+      .then((d) => setEditedBy(d.edits ? `Edited by ${d.edits.editedBy} on ${new Date(d.edits.editedAt).toLocaleString()}` : null))
+      .catch(() => {});
   }, [clientId, period]);
 
   const splitLines = (s: string) => s.split('\n').map((l) => l.trim()).filter(Boolean);
+  const approved = isQbrStatus(status) && statusAtLeast(status, 'narrative_approved');
+  const edit = <T,>(set: (v: T) => void) => (v: T) => {
+    setDirty(true);
+    set(v);
+  };
 
   async function save() {
     setBusy('save');
@@ -76,7 +106,8 @@ export function NarrativeEditor({
         highlights: splitLines(highlights),
         recommendations: splitLines(recommendations),
       });
-      notifications.show({ color: 'teal', message: 'Narrative saved — no AI call needed.' });
+      setDirty(false);
+      toastOk('Narrative saved.');
       onChanged();
     } catch (e) {
       toastError('Save failed', e);
@@ -89,10 +120,9 @@ export function NarrativeEditor({
     setBusy('regen');
     try {
       await api.regenerateNarrative(clientId, period);
-      notifications.show({
-        color: 'teal',
-        message: aiEnabled ? 'Cleared — the next load drafts fresh AI text.' : 'Cleared — the offline drafter will rebuild the text.',
-      });
+      setDirty(false);
+      setConfirmRegen(false);
+      toastOk(aiEnabled ? 'Regenerating the narrative.' : 'Regenerating the narrative with the offline drafter.');
       onChanged();
     } catch (e) {
       toastError('Regenerate failed', e);
@@ -104,8 +134,8 @@ export function NarrativeEditor({
   async function approve() {
     setBusy('approve');
     try {
-      await api.putStatus(clientId, period, 'narrative_approved');
-      notifications.show({ color: 'teal', message: 'Narrative approved.' });
+      await api.approveNarrative(clientId, period);
+      toastOk('Narrative approved.');
       onChanged();
     } catch (e) {
       toastError('Approve failed', e);
@@ -117,13 +147,15 @@ export function NarrativeEditor({
   /**
    * Persist focus/guidance/section comments into the report config, then clear
    * the cached draft so the next build re-drafts with the direction included.
+   * Never writes when the settings failed to load: a stub would replace them.
    */
   async function applyDirection(notes: Record<string, string>, busyKey: string) {
+    if (!config) return;
     setBusy(busyKey);
     try {
       const cleanNotes = Object.fromEntries(Object.entries(notes).filter(([, v]) => v.trim() !== ''));
       const next: ReportConfig = {
-        ...(config ?? { clientId }),
+        ...config,
         clientId,
         narrativeFocus: focus.trim() || undefined,
         narrativeGuidance: guidance.trim() || undefined,
@@ -132,10 +164,8 @@ export function NarrativeEditor({
       await api.putConfig(clientId, next);
       setConfig(next);
       await api.regenerateNarrative(clientId, period);
-      notifications.show({
-        color: 'teal',
-        message: aiEnabled ? 'Direction saved — regenerating the narrative with it.' : 'Direction saved (connect the AI key to use it).',
-      });
+      setDirty(false);
+      toastOk(aiEnabled ? 'Direction saved. Regenerating the narrative with it.' : 'Direction saved. Connect the AI key to use it.');
       onChanged();
     } catch (e) {
       toastError('Could not apply direction', e);
@@ -145,65 +175,80 @@ export function NarrativeEditor({
   }
 
   const sections = model.sections ?? [];
+  const directionLocked = !config;
 
   return (
-    <Card withBorder radius="md" padding="lg">
+    <Card padding="lg">
       <Group justify="space-between" mb="sm">
-        <Title order={5}>Narrative editor</Title>
-        {editedBy && <Badge variant="light" color="yellow">edited · {editedBy}</Badge>}
+        <Title order={5}>Narrative</Title>
+        <Group gap="xs">
+          {editedBy && <Badge color="watch">{editedBy}</Badge>}
+          {approved && <Badge color="good">Approved</Badge>}
+        </Group>
       </Group>
+      {!verified && (
+        <Alert color="act" variant="light" mb="sm" title="A figure does not trace back to the data">
+          Edit the text so every number matches the Data tab, or regenerate. The deliverables stay locked until this clears.
+        </Alert>
+      )}
       <Stack gap="sm">
-        <TextInput label="Headline" value={headline} onChange={(e) => setHeadline(e.currentTarget.value)} />
-        <Textarea label="Executive summary (blank line between paragraphs)" autosize minRows={4} value={summary} onChange={(e) => setSummary(e.currentTarget.value)} />
-        <Textarea label="Highlights (one per line)" autosize minRows={2} value={highlights} onChange={(e) => setHighlights(e.currentTarget.value)} />
-        <Textarea label="Recommendations (one per line)" autosize minRows={2} value={recommendations} onChange={(e) => setRecommendations(e.currentTarget.value)} />
+        <TextInput label="Headline" value={headline} onChange={(e) => edit(setHeadline)(e.currentTarget.value)} />
+        <Textarea label="Executive summary (blank line between paragraphs)" autosize minRows={4} value={summary} onChange={(e) => edit(setSummary)(e.currentTarget.value)} />
+        <Textarea label="Highlights (one per line)" autosize minRows={2} value={highlights} onChange={(e) => edit(setHighlights)(e.currentTarget.value)} />
+        <Textarea label="Recommendations (one per line)" autosize minRows={2} value={recommendations} onChange={(e) => edit(setRecommendations)(e.currentTarget.value)} />
         <Group>
-          <Button loading={busy === 'save'} onClick={save}>Save narrative</Button>
-          <Button variant="default" loading={busy === 'regen'} onClick={regenerate}>
-            Regenerate {aiEnabled ? 'with AI' : ''}
+          <Button loading={busy === 'save'} onClick={save} disabled={!dirty}>
+            Save narrative
           </Button>
-          <Button
-            variant="light"
-            color="teal"
-            loading={busy === 'approve'}
-            disabled={status === 'narrative_approved'}
-            onClick={approve}
-          >
-            Approve narrative
+          <Button variant="default" loading={busy === 'regen'} onClick={() => setConfirmRegen(true)}>
+            Regenerate
           </Button>
+          <Tooltip label={approved ? 'Already approved for this quarter' : 'Marks the story ready to send. Forward only; reopening needs an override.'}>
+            <Button variant="light" color="good" loading={busy === 'approve'} disabled={approved} onClick={approve}>
+              Approve narrative
+            </Button>
+          </Tooltip>
         </Group>
         <Text size="xs" c="dimmed">
-          Edits are saved per client/quarter and always win over generated text — no regeneration happens when you tweak wording.
-          Regenerate discards edits and the cached draft.
+          Saved wording always wins over generated text and never calls the model. Regenerate discards your edits and the cached draft.
+          {approved ? ' Editing after approval keeps the approval; re-read before sending.' : ''}
         </Text>
 
         <Divider label="AI direction" labelPosition="left" mt="xs" />
+        {directionLocked && (
+          <Alert color="watch" variant="light">
+            {configError ? `Report settings did not load (${configError}).` : 'Report settings are still loading.'} Direction can be saved once they are in.
+          </Alert>
+        )}
         <Group grow align="flex-start">
           <Autocomplete
             label="QBR focus"
-            description="The theme this QBR should emphasize — pick one or type your own."
+            description="The theme this QBR should emphasize. Pick one or type your own."
             placeholder="e.g. Business security"
             data={FOCUS_OPTIONS}
             value={focus}
             onChange={setFocus}
+            disabled={directionLocked}
           />
         </Group>
         <Textarea
           label="Guidance for the AI"
-          description="Standing instruction applied every time the narrative is drafted (e.g. “backup counts changed because we re-tuned monitoring — do not present that as a trend”)."
+          description="A standing instruction applied every time the narrative is drafted, e.g. “backup counts changed because we re-tuned monitoring; do not present that as a trend”."
           autosize
           minRows={2}
           value={guidance}
           onChange={(e) => setGuidance(e.currentTarget.value)}
+          disabled={directionLocked}
         />
         <Group>
           <Button
             variant="light"
             leftSection={<IconSparkles size={16} />}
             loading={busy === 'direction'}
+            disabled={directionLocked}
             onClick={() => applyDirection(sectionNotes, 'direction')}
           >
-            Save direction &amp; regenerate
+            Save direction and regenerate
           </Button>
         </Group>
 
@@ -221,8 +266,9 @@ export function NarrativeEditor({
                     <Tooltip label="Comment on this section and regenerate">
                       <ActionIcon
                         variant={openSection === s.category || sectionNotes[s.category] ? 'light' : 'subtle'}
-                        color="teal"
-                        aria-label={`Adjust ${s.title} summary`}
+                        color="brand"
+                        aria-label={`Adjust the ${s.title} summary`}
+                        disabled={directionLocked}
                         onClick={() => setOpenSection(openSection === s.category ? null : s.category)}
                       >
                         <IconPencil size={15} />
@@ -235,7 +281,7 @@ export function NarrativeEditor({
                         style={{ flex: 1 }}
                         autosize
                         minRows={1}
-                        placeholder="What should change in this section? (e.g. “don't call the backup drop a decline — we re-tuned what we measure”)"
+                        placeholder="What should change in this section? e.g. “don't call the backup drop a decline; we re-tuned what we measure”"
                         value={sectionNotes[s.category] ?? ''}
                         onChange={(e) => setSectionNotes({ ...sectionNotes, [s.category]: e.currentTarget.value })}
                       />
@@ -243,6 +289,7 @@ export function NarrativeEditor({
                         size="xs"
                         variant="light"
                         loading={busy === `section:${s.category}`}
+                        disabled={directionLocked}
                         onClick={() => applyDirection(sectionNotes, `section:${s.category}`)}
                       >
                         Regenerate
@@ -253,11 +300,26 @@ export function NarrativeEditor({
               ))}
             </Stack>
             <Text size="xs" c="dimmed">
-              Section comments are remembered and applied on every regenerate — clear a comment and regenerate to drop it.
+              Section comments are remembered and applied on every regenerate. Clear a comment and regenerate to drop it.
             </Text>
           </>
         )}
       </Stack>
+      <ConfirmModal
+        opened={confirmRegen}
+        title="Regenerate the narrative?"
+        confirmLabel="Regenerate"
+        loading={busy === 'regen'}
+        onCancel={() => setConfirmRegen(false)}
+        onConfirm={regenerate}
+      >
+        <Text size="sm">This discards your saved edits and the cached draft.{aiEnabled ? ' With AI on, it makes a paid model call.' : ''}</Text>
+        {approved && (
+          <Text size="sm" c="watch.8" mt="xs">
+            The narrative is already approved. Re-read the new draft before sending the package.
+          </Text>
+        )}
+      </ConfirmModal>
     </Card>
   );
 }

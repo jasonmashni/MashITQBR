@@ -17,12 +17,14 @@ import {
   Table,
   Modal,
   Anchor,
+  List,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
-import { IconTrash, IconPlus, IconDownload, IconExternalLink } from '@tabler/icons-react';
+import { IconTrash, IconPlus, IconDownload, IconExternalLink, IconAlertTriangle } from '@tabler/icons-react';
 import { api } from '../../api.js';
+import { metricValue } from '../../format.js';
 import type { MetricRow, ReportConfig, SnapshotView } from '../../types.js';
-import { toastError } from '../../toast.js';
+import { toastError, toastOk } from '../../toast.js';
+import { ConfirmModal } from '../../ui.js';
 import { SECTIONS } from './shared.js';
 
 /** Download a metric's drill-down rows as a CSV (client-side, no round trip). */
@@ -40,7 +42,11 @@ function exportDetailsCsv(m: MetricRow) {
   URL.revokeObjectURL(a.href);
 }
 
-// ── Data review tab ───────────────────────────────────────────────────────────
+/**
+ * Everything Sync pulled, reviewed before it enters the QBR. Caveats from the
+ * sync sit at the top so a sampled count is never mistaken for a complete one;
+ * a failed load disables Save so nothing empty can be written back.
+ */
 export function DataTab({
   clientId,
   period,
@@ -60,14 +66,18 @@ export function DataTab({
   onSaved: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<SnapshotView | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [manual, setManual] = useState<MetricRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [draft, setDraft] = useState({ label: '', value: '', unit: '', category: 'security' });
-  // The metric whose backing rows (tickets, invoice lines, devices…) are open.
+  // The metric whose backing rows (tickets, invoice lines, devices) are open.
   const [detail, setDetail] = useState<MetricRow | null>(null);
+  const [removeSource, setRemoveSource] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -77,9 +87,11 @@ export function DataTab({
       .then((d) => {
         if (!live) return;
         setSnapshot(d.snapshot);
+        setWarnings(d.warnings ?? d.snapshot.warnings ?? []);
         setExcluded(new Set(d.excluded));
         setManual(d.snapshot.metrics.filter((m) => m.source === 'manual'));
         setLoadError(null);
+        setDirty(false);
         onDirty?.(false);
       })
       .catch((e) => live && setLoadError(e instanceof Error ? e.message : 'No data'))
@@ -89,9 +101,14 @@ export function DataTab({
     };
   }, [clientId, period, refresh]);
 
+  const markDirty = () => {
+    setDirty(true);
+    onDirty?.(true);
+  };
+
   function addManual() {
     if (!draft.label.trim() || draft.value === '') {
-      notifications.show({ color: 'red', message: 'Manual metrics need a label and a value.' });
+      toastError('Manual metrics need a label and a value', new Error('Fill in both fields, then add it.'));
       return;
     }
     const numeric = Number(draft.value);
@@ -107,7 +124,7 @@ export function DataTab({
       },
     ]);
     setDraft({ label: '', value: '', unit: '', category: draft.category });
-    onDirty?.(true);
+    markDirty();
   }
 
   async function save() {
@@ -117,7 +134,8 @@ export function DataTab({
       const nextConfig = { ...config, clientId, excludedMetrics: [...excluded] };
       await api.putConfig(clientId, nextConfig);
       setConfig(nextConfig);
-      notifications.show({ color: 'teal', message: 'Data review saved — the report reflects it immediately.' });
+      toastOk('Data review saved. The report reflects it immediately.');
+      setDirty(false);
       onDirty?.(false);
       onSaved();
     } catch (e) {
@@ -127,56 +145,60 @@ export function DataTab({
     }
   }
 
+  async function removeImport() {
+    if (!removeSource) return;
+    setRemoving(true);
+    try {
+      const r = await api.removeImportedMetrics(clientId, period, removeSource);
+      toastOk(`${r.removed} imported metric${r.removed === 1 ? '' : 's'} removed from ${period}.`);
+      setRemoveSource(null);
+      onSaved();
+    } catch (e) {
+      toastError('Remove failed', e);
+    } finally {
+      setRemoving(false);
+    }
+  }
+
   if (loading) return <Center h={200}><Loader /></Center>;
   if (loadError || !snapshot) {
     return (
-      <Alert color="blue" title="No data pulled yet">
-        {loadError ?? 'No snapshot for this quarter.'} Use <b>Sync</b> to pull from the connected tools — everything lands here for review
-        before it appears in the QBR. You can also add manual metrics below after the first sync.
+      <Alert color="slate" variant="light" title={`No data for ${period} yet`}>
+        {loadError && loadError !== 'No data' ? `${loadError}. ` : ''}
+        Use Sync in the header to pull from the connected tools. Everything lands here for review before it appears in the QBR; manual metrics can be added after the first sync.
       </Alert>
     );
   }
 
   const collected = snapshot.metrics.filter((m) => m.source !== 'manual');
   const sources = [...new Set(collected.map((m) => m.source))];
-  // Millions read as 68.5M; fractional values keep one decimal (77.8 GB).
-  const fmtNum = (v: number) =>
-    Math.abs(v) >= 1e6 ? `${Math.round(v / 1e5) / 10}M` : Number.isInteger(v) ? v.toLocaleString() : String(Math.round(v * 10) / 10);
-  const fmt = (m: MetricRow) =>
-    `${m.value === null ? '—' : typeof m.value === 'number' ? fmtNum(m.value) : String(m.value)}${m.unit && m.unit !== 'count' ? ` ${m.unit}` : ''}`;
+  const pulled = new Date(snapshot.capturedAt).toLocaleString();
 
   return (
     <Stack gap="lg">
-      <Group justify="space-between">
-        <Text size="sm" c="dimmed">
-          Pulled {new Date(snapshot.capturedAt).toLocaleString()} · {collected.length} metric(s) from {sources.length} source(s).
-          Untick anything you don't want in the QBR — the report, scorecard, and AI summary all respect it.
+      {warnings.length > 0 && (
+        <Alert color="watch" variant="light" icon={<IconAlertTriangle size={18} />} title="Data confidence">
+          <Text size="xs" c="dimmed" mb={4}>These notes travel with the data and print on the report.</Text>
+          <List size="sm" spacing={2}>{warnings.map((w, i) => <List.Item key={i}>{w}</List.Item>)}</List>
+        </Alert>
+      )}
+      <Group justify="space-between" align="flex-start">
+        <Text size="sm" c="dimmed" maw="60ch">
+          Pulled {pulled}: {collected.length} metric{collected.length === 1 ? '' : 's'} from {sources.length} source{sources.length === 1 ? '' : 's'}.
+          Untick anything you do not want in the QBR; the report, the scorecard and the narrative all respect it.
         </Text>
-        <Button loading={saving} onClick={save}>Save review</Button>
+        <Button loading={saving} onClick={save} disabled={!dirty}>
+          Save review
+        </Button>
       </Group>
 
       {sources.map((source) => (
-        <Card key={source} withBorder radius="md" padding="lg">
+        <Card key={source} padding="lg">
           <Group mb="sm" gap="xs">
-            <Badge variant="light" color={source.startsWith('pdf:') ? 'grape' : 'navy'}>{source}</Badge>
-            <Text size="xs" c="dimmed">{collected.filter((m) => m.source === source).length} metric(s)</Text>
+            <Badge color={source.startsWith('pdf:') ? 'navy' : 'brand'}>{source}</Badge>
+            <Text size="xs" c="dimmed">{collected.filter((m) => m.source === source).length} metrics</Text>
             {source.startsWith('pdf:') && (
-              <Button
-                size="compact-xs"
-                variant="subtle"
-                color="red"
-                ml="auto"
-                onClick={async () => {
-                  if (!window.confirm(`Remove every metric imported from ${source} out of ${period}? The PDF itself stays in Reports.`)) return;
-                  try {
-                    const r = await api.removeImportedMetrics(clientId, period, source);
-                    notifications.show({ color: 'teal', message: `${r.removed} imported metric(s) removed from ${period}.` });
-                    onSaved();
-                  } catch (e) {
-                    notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Remove failed' });
-                  }
-                }}
-              >
+              <Button size="compact-xs" variant="subtle" color="act" ml="auto" onClick={() => setRemoveSource(source)}>
                 Remove import
               </Button>
             )}
@@ -186,7 +208,7 @@ export function DataTab({
               <Table.Tr>
                 <Table.Th w={70}>Include</Table.Th>
                 <Table.Th>Metric</Table.Th>
-                <Table.Th>Value</Table.Th>
+                <Table.Th ta="right">Value</Table.Th>
                 <Table.Th>Category</Table.Th>
               </Table.Tr>
             </Table.Thead>
@@ -204,20 +226,20 @@ export function DataTab({
                           if (e.currentTarget.checked) next.delete(m.key);
                           else next.add(m.key);
                           setExcluded(next);
-                          onDirty?.(true);
+                          markDirty();
                         }}
                       />
                     </Table.Td>
                     <Table.Td><Text size="sm">{m.label}</Text></Table.Td>
-                    <Table.Td>
+                    <Table.Td ta="right" data-num>
                       {m.details?.length ? (
-                        <Tooltip label={`View the ${m.details.length} row(s) behind this number`}>
+                        <Tooltip label={`View the ${m.details.length} row${m.details.length === 1 ? '' : 's'} behind this number`}>
                           <Anchor component="button" type="button" size="sm" fw={600} onClick={() => setDetail(m)}>
-                            {fmt(m)}
+                            {metricValue(m)}
                           </Anchor>
                         </Tooltip>
                       ) : (
-                        <Text size="sm" fw={600}>{fmt(m)}</Text>
+                        <Text size="sm" fw={600}>{metricValue(m)}</Text>
                       )}
                     </Table.Td>
                     <Table.Td><Text size="sm" c="dimmed">{m.category}</Text></Table.Td>
@@ -231,7 +253,7 @@ export function DataTab({
       <Modal
         opened={detail !== null}
         onClose={() => setDetail(null)}
-        title={detail ? `${detail.label} — ${detail.details?.length ?? 0} row(s)` : ''}
+        title={detail ? `${detail.label}: ${detail.details?.length ?? 0} row${(detail.details?.length ?? 0) === 1 ? '' : 's'}` : ''}
         size="xl"
       >
         {detail?.details?.length ? (
@@ -263,7 +285,7 @@ export function DataTab({
                         <Table.Td>
                           {typeof row['url'] === 'string' && row['url'] && (
                             <Tooltip label="Open in the source tool">
-                              <ActionIcon component="a" href={row['url']} target="_blank" variant="subtle" size="sm" aria-label="Open in source tool">
+                              <ActionIcon component="a" href={row['url']} target="_blank" variant="subtle" size="sm" aria-label="Open in the source tool">
                                 <IconExternalLink size={14} />
                               </ActionIcon>
                             </Tooltip>
@@ -279,23 +301,43 @@ export function DataTab({
         ) : null}
         {typeof detail?.value === 'number' && (detail.details?.length ?? 0) < detail.value && (
           <Text size="xs" c="dimmed" mt="xs">
-            Showing the first {detail.details?.length} of {detail.value} — the full set lives in the source tool.
+            Showing the first {detail.details?.length} of {detail.value}. The full set lives in the source tool.
           </Text>
         )}
       </Modal>
 
-      <Card withBorder radius="md" padding="lg">
+      <ConfirmModal
+        opened={removeSource !== null}
+        title={`Remove the ${removeSource ?? ''} import?`}
+        confirmLabel="Remove import"
+        color="act"
+        loading={removing}
+        onCancel={() => setRemoveSource(null)}
+        onConfirm={removeImport}
+      >
+        <Text size="sm">Every metric imported from {removeSource} leaves {period}. The PDF itself stays on the Reports tab.</Text>
+      </ConfirmModal>
+
+      <Card padding="lg">
         <Group mb="sm" gap="xs">
-          <Badge variant="light" color="teal">manual</Badge>
-          <Text size="xs" c="dimmed">Numbers the APIs can't provide (Synology backups, SAT completion, canaries…)</Text>
+          <Badge color="good">manual</Badge>
+          <Text size="xs" c="dimmed">Numbers the APIs cannot provide: Synology backups, SAT completion, canaries.</Text>
         </Group>
         <Stack gap="xs">
           {manual.map((m, i) => (
             <Group key={m.key + i} wrap="nowrap">
               <Text size="sm" style={{ flex: 1 }}>{m.label}</Text>
-              <Text size="sm" fw={600}>{fmt(m)}</Text>
+              <Text size="sm" fw={600} data-num>{metricValue(m)}</Text>
               <Text size="sm" c="dimmed">{m.category}</Text>
-              <ActionIcon color="red" variant="subtle" aria-label={`Remove ${m.label}`} onClick={() => { setManual(manual.filter((_, j) => j !== i)); onDirty?.(true); }}>
+              <ActionIcon
+                color="act"
+                variant="subtle"
+                aria-label={`Remove ${m.label}`}
+                onClick={() => {
+                  setManual(manual.filter((_, j) => j !== i));
+                  markDirty();
+                }}
+              >
                 <IconTrash size={16} />
               </ActionIcon>
             </Group>

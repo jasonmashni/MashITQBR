@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { Tabs, Text, Stack, Alert, Loader, Center, Badge, Tooltip } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
-import { api, reportUrls } from '../api.js';
+import { Tabs, Text, Stack, Alert, Loader, Center, Badge, Tooltip, Button, Group } from '@mantine/core';
+import { api, ApiError, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
 import type { Client, Discussion, QbrResponse, SystemInfo } from '../types.js';
 import { useResource } from '../hooks/useResource.js';
-import { toastError } from '../toast.js';
+import { toastError, toastOk } from '../toast.js';
 import { WorkspaceHeader } from './workspace/WorkspaceHeader.js';
 import { PipelineStepper } from './workspace/PipelineStepper.js';
 import { OverviewTab } from './workspace/OverviewTab.js';
@@ -16,24 +15,28 @@ import { MeetingTab } from './workspace/MeetingTab.js';
 import { ActionsTab } from './workspace/ActionsTab.js';
 import { OpportunitiesTab } from './workspace/OpportunitiesTab.js';
 import { StudioTab } from './workspace/StudioTab.js';
+import { deliverableGuard, deriveSteps, nextStep, type Step } from './workspace/nextStep.js';
+
+/** The quarter the calendar is in right now, e.g. 2026-Q4 (UTC, same as the API). */
+function currentQuarterId(d = new Date()): string {
+  return `${d.getUTCFullYear()}-Q${Math.floor(d.getUTCMonth() / 3) + 1}`;
+}
 
 /**
- * The QBR workspace, organized around the working flow: everything you
- * deliver is one click in the sticky header; the tabs follow the lifecycle —
- * Overview (what the client sees), Data (what feeds it), Meeting (prep + run
- * the review), Actions (what happens after), Studio (shape the report).
+ * The QBR workspace, organized around the working flow: the header carries
+ * the next step and the deliverables; the tabs follow the lifecycle:
+ * Overview (what the client sees), Data (what feeds it), Reports (what was
+ * filed), Meeting (prep and run the review), Actions (what happens after),
+ * Opportunities, Studio (shape the report).
  */
 export function Workspace() {
   const { clientId = '' } = useParams();
   // The selected quarter lives in the URL (?period=) so a browser refresh
   // stays on the quarter you were viewing instead of jumping to the current
-  // one — and a notification deep link re-runs the targeting effect even when
-  // we're already on this client (useParams alone wouldn't remount).
+  // one, and a notification deep link re-runs the targeting effect even when
+  // we're already on this client.
   const [searchParams, setSearchParams] = useSearchParams();
   const wantedPeriod = searchParams.get('period');
-  // Persist the selected quarter in the URL. Build a FRESH URLSearchParams
-  // (mutating the existing one is unreliable in React Router) so the change
-  // always lands and survives a refresh.
   const selectPeriod = (p: string) => {
     const next = new URLSearchParams(searchParams);
     next.set('period', p);
@@ -41,6 +44,7 @@ export function Workspace() {
   };
   const [periods, setPeriods] = useState<Array<{ value: string; label: string }>>([]);
   const [periodList, setPeriodList] = useState<Array<{ period: string; hasSnapshot: boolean; status?: string }>>([]);
+  const [periodsError, setPeriodsError] = useState<string | null>(null);
   const [period, setPeriod] = useState('');
   const [qbr, setQbr] = useState<QbrResponse | null>(null);
   // Report settings: a failed load stays an error (no `{ clientId }` stand-in
@@ -49,11 +53,14 @@ export function Workspace() {
   const config = configRes.data ?? null;
   const setConfig = configRes.setData;
   const [disc, setDisc] = useState<Discussion | null>(null);
+  const [discError, setDiscError] = useState<string | null>(null);
   const [client, setClient] = useState<Client | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [signedOut, setSignedOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [primaryBusy, setPrimaryBusy] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [tab, setTab] = useState<string>('overview');
   // Unsaved-work guards: a refresh must not clobber a mid-meeting agenda, and
@@ -63,17 +70,33 @@ export function Workspace() {
   const discKey = useRef('');
 
   useEffect(() => {
-    // Switching clients: clear stale report state so the header + tabs never
-    // show the previous client's data while the new one loads.
+    // Switching clients: clear every piece of the previous client's state,
+    // including the quarter, so nothing fetches (or bills an AI draft for)
+    // the old quarter under the new client.
+    let live = true;
     setClient(null);
     setQbr(null);
+    setDisc(null);
+    setDiscError(null);
     setError(null);
-    api.listClients().then((d) => setClient(d.clients.find((c) => c.id === clientId) ?? null)).catch(() => {});
-    api.system().then(setSystem).catch(() => {});
+    setPeriod('');
+    setPeriodList([]);
+    setPeriods([]);
+    api
+      .listClients()
+      .then((d) => live && setClient(d.clients.find((c) => c.id === clientId) ?? null))
+      .catch(() => {});
+    api
+      .system()
+      .then((s) => live && setSystem(s))
+      .catch((e) => live && e instanceof ApiError && e.status === 401 && setSignedOut(true));
+    return () => {
+      live = false;
+    };
   }, [clientId]);
 
   // Reports needing attention: uncategorized files (fresh inbox arrivals land
-  // without a category until matched/filed) — surfaces a dot on the tab.
+  // without a category until matched/filed); surfaces a count on the tab.
   const [unfiled, setUnfiled] = useState(0);
   useEffect(() => {
     let live = true;
@@ -86,33 +109,34 @@ export function Workspace() {
     };
   }, [clientId, refresh]);
 
-  // Load which of the last 8 quarters have data — ONCE per client. Kept
-  // separate from period selection so picking a quarter doesn't re-fetch (which
-  // used to race and snap back to the current quarter).
+  // Load which of the last 8 quarters have data, once per client. Kept
+  // separate from period selection so picking a quarter doesn't re-fetch.
   useEffect(() => {
     let live = true;
+    setPeriodsError(null);
     api
       .periods(clientId)
       .then(({ periods: list }) => {
         if (!live) return;
         setPeriodList(list);
-        setPeriods(list.map((p) => ({ value: p.period, label: p.hasSnapshot ? p.period : `${p.period} — no data` })));
+        setPeriods(list.map((p) => ({ value: p.period, label: p.hasSnapshot ? p.period : `${p.period} (no data)` })));
       })
-      .catch(() => {
+      .catch((e) => {
         if (!live) return;
-        const options = lastPeriods('2026-Q1', 4);
+        // Fall back to the calendar, not a hard-coded quarter, and say so.
+        const options = lastPeriods(currentQuarterId(), 4);
         setPeriodList(options.map((p) => ({ period: p, hasSnapshot: false })));
         setPeriods(options.map((p) => ({ value: p, label: p })));
+        setPeriodsError(e instanceof Error ? e.message : 'Could not load this client’s quarters');
       });
     return () => {
       live = false;
     };
   }, [clientId]);
 
-  // Choose the active quarter off the loaded list (synchronous — no refetch):
-  // the URL's ?period= wins when it's in range (refresh persistence +
-  // notification deep links); otherwise land on the newest quarter with data,
-  // or the NEXT quarter when that one is already completed/archived.
+  // Choose the active quarter off the loaded list (synchronous, no refetch):
+  // the URL's ?period= wins when it's in range; otherwise land on the newest
+  // quarter with data, or the NEXT quarter when that one is already closed.
   useEffect(() => {
     if (periodList.length === 0) return;
     if (wantedPeriod && periodList.some((p) => p.period === wantedPeriod)) {
@@ -147,7 +171,8 @@ export function Workspace() {
       .catch((e) => {
         if (!live) return;
         setQbr(null);
-        setError(e instanceof Error ? e.message : 'Failed to build QBR');
+        // A quarter with no snapshot is an empty state, not an error.
+        setError(e instanceof ApiError && e.status === 404 ? null : e instanceof Error ? e.message : 'Failed to build QBR');
       })
       .finally(() => live && setLoading(false));
     // Switching client/quarter always reloads the discussion; a plain refresh
@@ -158,8 +183,17 @@ export function Workspace() {
     }
     api
       .getDiscussion(clientId, period)
-      .then((d) => live && !discDirty.current && setDisc(d))
-      .catch(() => live && !discDirty.current && setDisc({ clientId, period, items: [] }));
+      .then((d) => {
+        if (!live || discDirty.current) return;
+        setDisc(d);
+        setDiscError(null);
+      })
+      .catch((e) => {
+        if (!live || discDirty.current) return;
+        // Keep the error: an empty stand-in would let Save wipe the real agenda.
+        setDisc(null);
+        setDiscError(e instanceof Error ? e.message : 'Could not load the agenda');
+      });
     return () => {
       live = false;
     };
@@ -169,11 +203,8 @@ export function Workspace() {
     setSyncing(true);
     try {
       const r = await api.sync(clientId, period);
-      notifications.show({
-        color: r.warnings.length ? 'yellow' : 'teal',
-        title: `Synced ${r.metrics} metric(s)${r.documents ? ` + ${r.documents} vendor report(s)` : ''}`,
-        message: r.warnings[0] ?? 'Live data pulled from the connected tools.',
-      });
+      const extra = r.warnings.length > 1 ? ` and ${r.warnings.length - 1} more note${r.warnings.length > 2 ? 's' : ''} on the Data tab` : '';
+      toastOk(`Synced ${r.metrics} metrics${r.documents ? ` and ${r.documents} vendor reports` : ''}.${r.warnings[0] ? ` ${r.warnings[0]}${extra}` : ''}`);
       setRefresh((n) => n + 1);
     } catch (e) {
       toastError('Sync failed', e);
@@ -182,8 +213,58 @@ export function Workspace() {
     }
   }
 
+  async function onComplete() {
+    try {
+      await api.putStatus(clientId, period, { status: 'completed' });
+      toastOk(`${period} closed. The workspace will open on the next quarter from now on.`);
+      setRefresh((n) => n + 1);
+    } catch (e) {
+      toastError('Could not close the quarter', e);
+      throw e;
+    }
+  }
+
+  async function onApprove() {
+    setPrimaryBusy(true);
+    try {
+      await api.approveNarrative(clientId, period);
+      toastOk('Narrative approved.');
+      setRefresh((n) => n + 1);
+    } catch (e) {
+      toastError('Approve failed', e);
+    } finally {
+      setPrimaryBusy(false);
+    }
+  }
+
+  /** The header's one primary button: do the next step, or go where it happens. */
+  function onPrimary(step: Step) {
+    switch (step.key) {
+      case 'sync':
+        void onSync();
+        return;
+      case 'narrative':
+        if (qbr && qbr.verification) void onApprove();
+        else setTab('overview');
+        return;
+      case 'complete':
+        setTab('overview');
+        return;
+      default:
+        setTab(step.tab);
+    }
+  }
+
   const urls = reportUrls(clientId, period);
   const meta = qbr?.meta;
+  const steps = deriveSteps({ hasData: Boolean(qbr), meta, unfiled, disc });
+  const next = nextStep(steps);
+  const guard = deliverableGuard({
+    hasQbr: Boolean(qbr),
+    verificationOk: qbr?.verification ?? false,
+    status: meta?.status,
+    confidence: qbr?.model.scorecard.overall.confidence,
+  });
 
   return (
     <Stack gap="lg">
@@ -194,17 +275,39 @@ export function Workspace() {
         period={period}
         onPeriodChange={(v) => {
           setPeriod(v);
-          selectPeriod(v); // remember it across refreshes
+          selectPeriod(v);
         }}
         syncing={syncing}
         onSync={onSync}
         urls={urls}
+        clientId={clientId}
+        next={next}
+        guard={guard}
+        primaryBusy={primaryBusy}
+        onPrimary={onPrimary}
+        onPackageSent={() => setRefresh((n) => n + 1)}
       />
 
-      {error && <Alert color="red" title="Could not build report">{error}. Try running a Sync, or check the client's tool mappings.</Alert>}
+      {signedOut && (
+        <Alert color="act" title="Your session has expired">
+          <Group gap="sm">
+            <Text size="sm">Sign in again to keep working.</Text>
+            <Button size="compact-sm" component="a" href="/.auth/login/aad?post_login_redirect_uri=/">Sign in</Button>
+          </Group>
+        </Alert>
+      )}
+      {error && <Alert color="act" title="Could not build the report">{error}. Try a Sync, or check the client's tool mappings on the Integrations page.</Alert>}
+      {periodsError && (
+        <Alert color="watch" title="Quarter list unavailable">
+          {periodsError}. Showing the last four calendar quarters without data markers.
+        </Alert>
+      )}
       {configRes.error && (
-        <Alert color="red" title="Could not load report settings">
-          {configRes.error}. The Data and Studio tabs stay unavailable until the settings load; reload the page to retry.
+        <Alert color="act" title="Could not load report settings">
+          <Group gap="sm">
+            <Text size="sm">{configRes.error}. The Data and Studio tabs and the narrative direction stay read-only until the settings load.</Text>
+            <Button size="compact-sm" variant="light" onClick={configRes.reload}>Retry</Button>
+          </Group>
         </Alert>
       )}
 
@@ -227,8 +330,8 @@ export function Workspace() {
             value="reports"
             rightSection={
               unfiled > 0 ? (
-                <Tooltip label={`${unfiled} report(s) need filing — categorize or AI-match them`}>
-                  <Badge size="xs" circle color="yellow" variant="filled">
+                <Tooltip label={`${unfiled} report${unfiled === 1 ? '' : 's'} need filing: categorize or AI-match them`}>
+                  <Badge size="xs" circle color="watch" variant="filled">
                     {unfiled}
                   </Badge>
                 </Tooltip>
@@ -245,31 +348,26 @@ export function Workspace() {
 
         <Tabs.Panel value="overview">
           {loading || !period ? (
-            <Center h={240}><Loader /></Center>
+            <Center h={240}>
+              <Loader />
+            </Center>
           ) : (
             <Stack gap="lg">
               <PipelineStepper
-                hasData={Boolean(qbr)}
-                meta={meta}
-                unfiled={unfiled}
-                disc={disc}
+                steps={steps}
+                next={next}
+                skipped={Boolean(meta?.meetingSkipped)}
+                packageSent={Boolean(meta?.packageSentAt)}
+                period={period}
                 goTab={setTab}
-                onComplete={async () => {
-                  try {
-                    await api.putStatus(clientId, period, 'completed');
-                    notifications.show({ color: 'teal', message: `${period} QBR completed — the workspace will target the next quarter from now on.` });
-                    setRefresh((n) => n + 1);
-                  } catch (e) {
-                    notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Could not complete' });
-                  }
-                }}
+                onComplete={onComplete}
                 onSkipMeeting={async (reason) => {
                   try {
                     await api.dispositionSkipped(clientId, period, reason || undefined);
-                    notifications.show({ color: 'teal', message: `${period} QBR dispositioned — meeting skipped, quarter closed as completed.` });
+                    toastOk(`${period} closed without a meeting.`);
                     setRefresh((n) => n + 1);
                   } catch (e) {
-                    notifications.show({ color: 'red', message: e instanceof Error ? e.message : 'Could not disposition' });
+                    toastError('Could not close the quarter', e);
                   }
                 }}
               />
@@ -281,18 +379,24 @@ export function Workspace() {
                   refresh={refresh}
                   aiEnabled={system?.ai ?? false}
                   config={config}
+                  configError={configRes.error}
                   setConfig={setConfig}
                   onChanged={() => setRefresh((n) => n + 1)}
                 />
               ) : (
-                <Text c="dimmed">No report yet — run a Sync to pull this quarter's data.</Text>
+                <Alert color="slate" variant="light" title={`No data for ${period} yet`}>
+                  <Group gap="sm">
+                    <Text size="sm">Pull this quarter's data from the connected tools to start the review.</Text>
+                    <Button size="compact-sm" loading={syncing} onClick={onSync}>Sync data</Button>
+                  </Group>
+                </Alert>
               )}
             </Stack>
           )}
         </Tabs.Panel>
 
         <Tabs.Panel value="data">
-          {period && config && (
+          {period && config ? (
             <Stack gap="lg" maw={900}>
               <DataTab
                 clientId={clientId}
@@ -304,6 +408,8 @@ export function Workspace() {
                 onSaved={() => setRefresh((n) => n + 1)}
               />
             </Stack>
+          ) : (
+            period && !configRes.error && <Center h={160}><Loader /></Center>
           )}
         </Tabs.Panel>
 
@@ -322,7 +428,14 @@ export function Workspace() {
         </Tabs.Panel>
 
         <Tabs.Panel value="meeting">
-          {disc && (
+          {discError ? (
+            <Alert color="act" title="Could not load the agenda">
+              <Group gap="sm">
+                <Text size="sm">{discError}. Nothing can be saved until it loads, so last quarter's answers stay safe.</Text>
+                <Button size="compact-sm" variant="light" onClick={() => setRefresh((n) => n + 1)}>Retry</Button>
+              </Group>
+            </Alert>
+          ) : disc ? (
             <MeetingTab
               disc={disc}
               setDisc={(d) => {
@@ -335,6 +448,8 @@ export function Workspace() {
               onSavedDiscussion={() => (discDirty.current = false)}
               onChanged={() => setRefresh((n) => n + 1)}
             />
+          ) : (
+            <Center h={160}><Loader /></Center>
           )}
         </Tabs.Panel>
 
@@ -347,7 +462,11 @@ export function Workspace() {
         </Tabs.Panel>
 
         <Tabs.Panel value="studio">
-          {config && <StudioTab config={config} setConfig={setConfig} clientId={clientId} onSaved={() => setRefresh((n) => n + 1)} />}
+          {config ? (
+            <StudioTab config={config} setConfig={setConfig} clientId={clientId} onSaved={() => setRefresh((n) => n + 1)} />
+          ) : (
+            !configRes.error && <Center h={160}><Loader /></Center>
+          )}
         </Tabs.Panel>
       </Tabs>
     </Stack>

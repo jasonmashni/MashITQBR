@@ -1,16 +1,15 @@
-import { Title, Group, Button, Select, Badge, Tooltip } from '@mantine/core';
-import {
-  IconRefresh,
-  IconFileText,
-  IconFileTypePdf,
-  IconPresentation,
-  IconMailForward,
-} from '@tabler/icons-react';
+import { Title, Group, Button, Select, Badge, Tooltip, Text, Box } from '@mantine/core';
+import { IconRefresh } from '@tabler/icons-react';
 import type { reportUrls } from '../../api.js';
 import type { QbrResponse } from '../../types.js';
 import { RatingBadge, StatusBadge } from '../../ui.js';
+import { DeliverMenu } from './DeliverMenu.js';
+import type { Guard, Step } from './nextStep.js';
 
-// ── Workspace header: client name, status badges, quarter picker, deliverables ─
+/**
+ * The workspace header: who, which quarter, where the quarter stands, and one
+ * primary button for the next step. Everything else is secondary.
+ */
 export function WorkspaceHeader({
   name,
   qbr,
@@ -20,6 +19,12 @@ export function WorkspaceHeader({
   syncing,
   onSync,
   urls,
+  clientId,
+  next,
+  guard,
+  primaryBusy,
+  onPrimary,
+  onPackageSent,
 }: {
   name: string;
   qbr: QbrResponse | null;
@@ -29,26 +34,45 @@ export function WorkspaceHeader({
   syncing: boolean;
   onSync: () => void;
   urls: ReturnType<typeof reportUrls>;
+  clientId: string;
+  next: Step | undefined;
+  guard: Guard;
+  primaryBusy: boolean;
+  onPrimary: (step: Step) => void;
+  onPackageSent: () => void;
 }) {
   const meta = qbr?.meta;
+  const overall = qbr?.model.scorecard.overall;
+  const primaryIsSync = next?.key === 'sync';
+  const primaryIsSend = next?.key === 'send';
+
   return (
-    <Group justify="space-between" align="flex-end">
-      <div>
+    <Group justify="space-between" align="flex-end" wrap="wrap" gap="md">
+      <Box>
         <Title order={2}>{name}</Title>
-        <Group gap="xs" mt={4}>
+        <Group gap="xs" mt={6} wrap="wrap">
           {meta && <StatusBadge status={meta.status} />}
           {meta?.meetingSkipped && (
             <Tooltip label={meta.meetingSkipped.reason ?? 'The client opted to skip the review meeting this quarter.'}>
-              <Badge color="gray" variant="light">meeting skipped</Badge>
+              <Badge color="slate">Meeting skipped</Badge>
             </Tooltip>
           )}
-          {qbr && <RatingBadge rating={qbr.model.scorecard.overall.rating} score={qbr.model.scorecard.overall.score} />}
-          {qbr && !qbr.verification && <Badge color="red" variant="light">figures unverified</Badge>}
+          {overall && <RatingBadge rating={overall.rating} score={overall.score} confidence={overall.confidence} />}
+          {qbr && !qbr.verification && (
+            <Tooltip label="A figure in the narrative does not trace back to the data. Edit it or regenerate before sending anything.">
+              <Badge color="act">Figures unverified</Badge>
+            </Tooltip>
+          )}
+          {next ? (
+            <Text size="sm" c="dimmed">Next: {next.label.toLowerCase()}</Text>
+          ) : (
+            meta && <Text size="sm" c="good.8">All done for {period}</Text>
+          )}
         </Group>
-      </div>
-      <Group gap="xs">
+      </Box>
+      <Group gap="xs" wrap="wrap">
         <Select
-          w={180}
+          w={170}
           data={periods}
           value={period || null}
           onChange={(v) => {
@@ -59,21 +83,19 @@ export function WorkspaceHeader({
           placeholder="Quarter"
           aria-label="Quarter"
         />
-        <Button leftSection={<IconRefresh size={16} />} loading={syncing} onClick={onSync} disabled={!period}>Sync</Button>
-        <Button component="a" href={urls.html} target="_blank" variant="default" leftSection={<IconFileText size={16} />} disabled={!qbr}>
-          Report
-        </Button>
-        <Button component="a" href={urls.pdf} target="_blank" variant="default" leftSection={<IconFileTypePdf size={16} />} disabled={!qbr}>
-          PDF
-        </Button>
-        <Button component="a" href={urls.deck} download variant="default" leftSection={<IconPresentation size={16} />} disabled={!qbr}>
-          Deck
-        </Button>
-        <Tooltip label="Downloads a ready-to-send Outlook draft: recipient, a short message, and the PDF attached.">
-          <Button component="a" href={urls.email} variant="default" leftSection={<IconMailForward size={16} />} disabled={!qbr}>
-            Email draft
+        {!primaryIsSync && (
+          <Tooltip label="Pull fresh data from the connected tools">
+            <Button variant="default" leftSection={<IconRefresh size={16} />} loading={syncing} onClick={onSync} disabled={!period}>
+              Sync
+            </Button>
+          </Tooltip>
+        )}
+        {next && !primaryIsSend && (
+          <Button loading={primaryIsSync ? syncing : primaryBusy} onClick={() => onPrimary(next)} disabled={!period}>
+            {next.action}
           </Button>
-        </Tooltip>
+        )}
+        <DeliverMenu urls={urls} guard={guard} clientId={clientId} period={period} primary={primaryIsSend} onPackageSent={onPackageSent} />
       </Group>
     </Group>
   );

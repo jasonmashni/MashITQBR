@@ -17,6 +17,7 @@ import {
   Tooltip,
   SegmentedControl,
   CopyButton,
+  Modal,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { notifications } from '@mantine/notifications';
@@ -34,7 +35,7 @@ import { api } from '../../api.js';
 import type { Discussion, DiscussionItem, QbrResponse } from '../../types.js';
 import { uid } from '../../ui.js';
 import { toastError } from '../../toast.js';
-import { QBR_STATUS_ORDER, isQbrStatus } from '@mashit/core';
+import { QBR_STATUS_ORDER, isQbrStatus, qbrStatusLabel, statusAtLeast, type QbrStatus } from '@mashit/core';
 
 const DISPOSITIONS = ['pending', 'create_opportunity', 'create_ticket', 'accept_risk', 'no_action'];
 
@@ -430,28 +431,49 @@ function ScheduleCard({
 }) {
   const [scheduledAt, setScheduledAt] = useState<Date | null>(meta?.meeting?.scheduledAt ? new Date(meta.meeting.scheduledAt) : null);
   const [joinUrl, setJoinUrl] = useState(meta?.meeting?.joinUrl ?? '');
-  const [status, setStatus] = useState(meta?.status ?? 'draft');
   const [attendees, setAttendees] = useState('');
   const [savingSched, setSavingSched] = useState(false);
   const [creatingMeeting, setCreatingMeeting] = useState(false);
+  // Status override: the lifecycle moves forward on its own; moving it by hand
+  // is an audited exception with a reason, never a dropdown next to the date.
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [overrideStatus, setOverrideStatus] = useState<QbrStatus>(meta?.status ?? 'draft');
+  const [overrideReason, setOverrideReason] = useState('');
+  const [overriding, setOverriding] = useState(false);
+  const currentStatus: QbrStatus = meta?.status ?? 'draft';
+  const backwards = !statusAtLeast(overrideStatus, currentStatus);
 
   useEffect(() => {
     setScheduledAt(meta?.meeting?.scheduledAt ? new Date(meta.meeting.scheduledAt) : null);
     setJoinUrl(meta?.meeting?.joinUrl ?? '');
-    setStatus(meta?.status ?? 'draft');
+    setOverrideStatus(meta?.status ?? 'draft');
   }, [meta]);
 
   async function saveSchedule() {
     setSavingSched(true);
     try {
       await api.putSchedule(clientId, period, { scheduledAt: scheduledAt ? scheduledAt.toISOString() : undefined, joinUrl: joinUrl || undefined });
-      if (status !== meta?.status) await api.putStatus(clientId, period, status);
       notifications.show({ color: 'teal', message: 'Schedule saved.' });
       onChanged();
     } catch (e) {
       toastError('Save failed', e);
     } finally {
       setSavingSched(false);
+    }
+  }
+
+  async function applyOverride() {
+    setOverriding(true);
+    try {
+      await api.putStatus(clientId, period, backwards ? { status: overrideStatus, force: true, reason: overrideReason.trim() } : { status: overrideStatus });
+      notifications.show({ color: 'teal', message: `Status set to ${qbrStatusLabel(overrideStatus)}.` });
+      setOverrideOpen(false);
+      setOverrideReason('');
+      onChanged();
+    } catch (e) {
+      toastError('Could not change the status', e);
+    } finally {
+      setOverriding(false);
     }
   }
 
@@ -486,17 +508,67 @@ function ScheduleCard({
     <Card withBorder radius="md" padding="lg">
       <Title order={5} mb="md">Schedule</Title>
       <Stack>
-        <Group grow>
+        <Group grow align="flex-end">
           <DateTimePicker
-            label="Meeting date &amp; time"
-            placeholder="Pick date and time"
+            label="Meeting date and time"
+            placeholder="Pick a date and time"
             value={scheduledAt}
             onChange={setScheduledAt}
             leftSection={<IconCalendarEvent size={16} />}
             clearable
           />
-          <Select label="Status" data={QBR_STATUS_ORDER.map((s) => ({ value: s, label: s.replace(/_/g, ' ') }))} value={status} onChange={(v) => isQbrStatus(v) && setStatus(v)} allowDeselect={false} />
+          <Group gap="xs" align="center" wrap="nowrap">
+            <Text size="sm" c="dimmed">Status: {qbrStatusLabel(currentStatus)}</Text>
+            <Button size="compact-xs" variant="subtle" color="slate" onClick={() => setOverrideOpen(true)}>
+              Override
+            </Button>
+          </Group>
         </Group>
+        <Modal opened={overrideOpen} onClose={() => setOverrideOpen(false)} title={<Text fw={600}>Override the status</Text>} centered radius="md">
+          <Stack gap="sm">
+            <Text size="sm">
+              The lifecycle moves forward on its own as you work. Use this only to correct a mistake. Moving backwards is written to the audit log with your reason.
+            </Text>
+            <Select
+              label="Set status to"
+              data={QBR_STATUS_ORDER.map((s) => ({ value: s, label: qbrStatusLabel(s) }))}
+              value={overrideStatus}
+              onChange={(v) => isQbrStatus(v) && setOverrideStatus(v)}
+              allowDeselect={false}
+            />
+            {backwards && (
+              <>
+                <Alert color="watch" variant="light" p="xs">
+                  <Text size="xs">
+                    Moving back from {qbrStatusLabel(currentStatus)} reopens the quarter on the dashboard
+                    {statusAtLeast(currentStatus, 'completed') ? ' and clears the recorded review date' : ''}.
+                  </Text>
+                </Alert>
+                <Textarea
+                  label="Reason (required)"
+                  placeholder="e.g. closed by mistake, the meeting is next week"
+                  autosize
+                  minRows={2}
+                  value={overrideReason}
+                  onChange={(e) => setOverrideReason(e.currentTarget.value)}
+                />
+              </>
+            )}
+            <Group justify="flex-end" gap="xs" mt="xs">
+              <Button variant="default" onClick={() => setOverrideOpen(false)} disabled={overriding}>
+                Cancel
+              </Button>
+              <Button
+                color={backwards ? 'watch' : 'brand'}
+                loading={overriding}
+                disabled={overrideStatus === currentStatus || (backwards && !overrideReason.trim())}
+                onClick={applyOverride}
+              >
+                {backwards ? 'Override and log it' : 'Set status'}
+              </Button>
+            </Group>
+          </Stack>
+        </Modal>
         <TextInput label="Teams meeting link" placeholder="https://teams.microsoft.com/l/meetup-join/..." value={joinUrl} onChange={(e) => setJoinUrl(e.currentTarget.value)} />
         <TextInput
           label="Attendees (comma-separated, for Create Teams meeting)"

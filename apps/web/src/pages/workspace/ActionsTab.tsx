@@ -76,31 +76,45 @@ export function ActionsTab({
                   )}
                 </Group>
                 <Divider my="xs" />
-                <Group gap="xs">
-                  <Button size="xs" variant="light" leftSection={<IconTicket size={14} />} onClick={() => setTicketItem(it)}>
-                    Halo ticket…
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="light"
-                    color="teal"
-                    leftSection={<IconTargetArrow size={14} />}
-                    loading={pushing === it.id + 'halo_opportunity'}
-                    onClick={() => pushSimple(it.id, 'halo_opportunity')}
-                  >
-                    Halo opportunity
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="light"
-                    color="grape"
-                    leftSection={<IconTargetArrow size={14} />}
-                    loading={pushing === it.id + 'zomentum_opportunity'}
-                    onClick={() => pushSimple(it.id, 'zomentum_opportunity')}
-                  >
-                    Zomentum opportunity
-                  </Button>
-                </Group>
+                {it.externalRef ? (
+                  // Already pushed: a second push would create a duplicate ticket or opportunity.
+                  <Text size="xs" c="dimmed">
+                    Pushed to {it.externalRef.system} as #{it.externalRef.id}. Follow it up there; this item will not be pushed again.
+                  </Text>
+                ) : (
+                  <Group gap="xs">
+                    <Button
+                      size="xs"
+                      variant={it.disposition === 'create_ticket' ? 'filled' : 'light'}
+                      leftSection={<IconTicket size={14} />}
+                      onClick={() => setTicketItem(it)}
+                    >
+                      Create a Halo ticket
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant={it.disposition === 'create_opportunity' ? 'filled' : 'light'}
+                      color="good"
+                      leftSection={<IconTargetArrow size={14} />}
+                      loading={pushing === it.id + 'halo_opportunity'}
+                      disabled={pushing !== null && pushing !== it.id + 'halo_opportunity'}
+                      onClick={() => pushSimple(it.id, 'halo_opportunity')}
+                    >
+                      Create a Halo opportunity
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="light"
+                      color="navy"
+                      leftSection={<IconTargetArrow size={14} />}
+                      loading={pushing === it.id + 'zomentum_opportunity'}
+                      disabled={pushing !== null && pushing !== it.id + 'zomentum_opportunity'}
+                      onClick={() => pushSimple(it.id, 'zomentum_opportunity')}
+                    >
+                      Create a Zomentum opportunity
+                    </Button>
+                  </Group>
+                )}
               </Fieldset>
             ))}
           </Stack>
