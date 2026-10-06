@@ -12,7 +12,10 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "paths": {
+      "@mashit/core": ["../../packages/core/src/index.ts"]
+    }
   },
   "include": ["src"]
 }

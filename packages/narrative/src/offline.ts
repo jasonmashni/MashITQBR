@@ -68,7 +68,9 @@ export function draftOfflineNarrative(input: NarrativeInput): NarrativeOutput {
 
   const rating = sc.overall.rating;
   const headline =
-    rating === 'green'
+    rating === 'unknown'
+      ? `${input.period.label}: not enough data to rate security posture this quarter`
+      : rating === 'green'
       ? `${input.period.label}: strong, actively managed security posture`
       : rating === 'amber'
         ? `${input.period.label}: stable quarter with targeted improvements ahead`
@@ -116,7 +118,7 @@ function draftSectionSummaries(
       summary:
         sc.score !== null
           ? `Layered monitoring kept the environment protected; overall security maturity rates ${sc.rating} at ${cite('security maturity', sc.score)}/100.`
-          : 'Layered monitoring kept the environment protected this quarter.',
+          : 'There is not enough data this quarter to rate overall security maturity.',
     });
   }
   if (has('identity')) {
@@ -133,20 +135,26 @@ function draftSectionSummaries(
     const failed = num('backup.failed_jobs');
     out.push({
       category: 'backup',
+      // Absent is not zero: without a failure count, don't vouch for backup health.
       summary:
-        failed !== null && failed > 0
-          ? `Backups are running with ${cite('failing backups', failed)} device(s) needing attention.`
-          : 'Backup coverage is in place and healthy.',
+        failed === null
+          ? 'Backup job failures were not measured this quarter, so backup success cannot be confirmed from this data.'
+          : failed > 0
+            ? `Backups are running with ${cite('failing backups', failed)} device(s) needing attention.`
+            : 'Backups ran with no failed jobs recorded this quarter.',
     });
   }
   if (has('infrastructure')) {
     const expired = num('assets.warranty_expired');
     out.push({
       category: 'infrastructure',
+      // Absent is not zero: without warranty data, don't claim the fleet is current.
       summary:
-        expired !== null && expired > 0
-          ? `${cite('devices out of warranty', expired)} device(s) are past warranty and should be planned for refresh.`
-          : 'The device fleet is current with no urgent refresh risk.',
+        expired === null
+          ? 'Warranty status was not measured this quarter, so refresh risk cannot be assessed from this data.'
+          : expired > 0
+            ? `${cite('devices out of warranty', expired)} device(s) are past warranty and should be planned for refresh.`
+            : 'No devices are past warranty this quarter.',
     });
   }
   if (has('spend')) {

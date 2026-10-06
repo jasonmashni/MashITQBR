@@ -190,13 +190,24 @@ export async function collectHuntress(
   try {
     const reportsUrl = `${base}/reports?organization_id=${org}&period_min=${ctx.period.start}&period_max=${ctx.period.end}`;
     let reports = await pageAll<HuntressSummaryReport>(http, `${reportsUrl}&type=quarterly_summary`, headers, 'reports', 1);
+    let monthly = false;
     if (reports.length === 0) {
       reports = await pageAll<HuntressSummaryReport>(http, `${reportsUrl}&type=monthly_summary`, headers, 'reports', 1);
-      if (reports.length > 0) warnings.push('No Huntress quarterly summary for this period yet — using the latest monthly summary.');
+      // Response order is not guaranteed: take the newest month explicitly.
+      // Reports without a period sort last.
+      reports = [...reports].sort((a, b) => String(b.period ?? '').localeCompare(String(a.period ?? '')));
+      monthly = reports.length > 0;
+      if (monthly) {
+        warnings.push(
+          `No Huntress quarterly summary for this period yet — using the latest monthly summary${reports[0]!.period ? ` (${reports[0]!.period})` : ''}; these figures cover one month, not the quarter.`,
+        );
+      }
     }
     const report = reports[0];
     if (report) {
-      metrics.push(...normalizeHuntressSummary(report));
+      const summary = normalizeHuntressSummary(report);
+      // A month's counts must not read as the quarter's.
+      metrics.push(...(monthly ? summary.map((m) => ({ ...m, label: `${m.label} (latest month)` })) : summary));
       // Huntress publishes the rendered summary PDF at report.url — attach it to the QBR.
       if (typeof report.url === 'string' && report.url) {
         documents.push({

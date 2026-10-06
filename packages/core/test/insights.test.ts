@@ -116,3 +116,85 @@ describe('computeTicketInsights — SLA, changes, trends', () => {
     expect(computeTicketInsights(metrics)).toEqual([]);
   });
 });
+
+/** Build a snapshot from `{ key: { value, details? } }` (ticket metrics). */
+function snapshotWith(
+  entries: Record<string, { value: number; details?: Array<Record<string, string | number>> }>,
+  period = '2026-Q3',
+): MetricSnapshot {
+  return snap(
+    period,
+    Object.entries(entries).map(([key, e]) => ({
+      key,
+      label: key,
+      value: e.value,
+      source: 'halo',
+      category: 'operations',
+      higherIsBetter: false,
+      ...(e.details ? { details: e.details } : {}),
+    })),
+  );
+}
+
+/** Insights for a current snapshot, with trends against an optional prior one. */
+function insightsFor(current: MetricSnapshot, previous?: MetricSnapshot) {
+  return computeTicketInsights(current.metrics, previous ? computeTrends(current, previous) : []);
+}
+
+describe('computeTicketInsights — subject handling', () => {
+  const metrics = [
+    ticketMetric('tickets.incidents', 'Incidents', ['VPN drops for Jane', 'VPN down <b>', 'VPN slow again']),
+    { key: 'sla.breaches', label: 'SLA breaches', value: 1, source: 'halo', category: 'operations',
+      details: [{ id: '9', summary: 'Outage for Dr. Smith' }] } as MetricValue,
+  ];
+
+  it('omits example subjects from detail and evidence when examples: false', () => {
+    const insights = computeTicketInsights(metrics, [], 6, { examples: false });
+    expect(insights.length).toBeGreaterThan(0);
+    for (const i of insights) expect(i.evidence).toEqual([]);
+    expect(JSON.stringify(insights)).not.toMatch(/Jane|Smith/);
+  });
+
+  it('strips angle brackets from subjects', () => {
+    expect(JSON.stringify(computeTicketInsights(metrics))).not.toMatch(/[<>]/);
+  });
+});
+
+describe('computeTicketInsights — counting honesty', () => {
+  it('dedupes a ticket that appears in both incidents and open lists', () => {
+    const row = (id: string, subject: string) => ({ id, subject, status: 'Open' });
+    const snapshot = snapshotWith({
+      'tickets.incidents': { value: 3, details: [row('1', 'VPN drops'), row('2', 'VPN drops again'), row('3', 'VPN down')] },
+      'tickets.open': { value: 3, details: [row('1', 'VPN drops'), row('2', 'VPN drops again'), row('3', 'VPN down')] },
+    });
+    const theme = insightsFor(snapshot).find((i) => i.kind === 'recurring_incident')!;
+    expect(theme.detail).toMatch(/3 tickets/);
+    expect(theme.figures).toEqual([3]);
+  });
+
+  it('fires the incident trend when the prior quarter had zero', () => {
+    const insights = insightsFor(
+      snapshotWith({ 'tickets.incidents': { value: 40 } }),
+      snapshotWith({ 'tickets.incidents': { value: 0 } }, '2026-Q2'),
+    );
+    const trend = insights.find((i) => i.kind === 'incident_trend');
+    expect(trend).toBeDefined();
+    expect(trend!.figures).toEqual(expect.arrayContaining([0, 40]));
+  });
+
+  it('fires the backlog trend when the prior quarter had zero open tickets', () => {
+    const insights = insightsFor(
+      snapshotWith({ 'tickets.open': { value: 12 } }),
+      snapshotWith({ 'tickets.open': { value: 0 } }, '2026-Q2'),
+    );
+    expect(insights.some((i) => i.kind === 'open_backlog')).toBe(true);
+  });
+
+  it('a zero-base trend still needs a material absolute increase', () => {
+    const insights = insightsFor(
+      snapshotWith({ 'tickets.incidents': { value: 2 } }),
+      snapshotWith({ 'tickets.incidents': { value: 0 } }, '2026-Q2'),
+    );
+    expect(insights.some((i) => i.kind === 'incident_trend')).toBe(false);
+  });
+});

@@ -28,11 +28,28 @@ const WORD_MULTIPLIERS: Record<string, number> = {
 const NUMBER_RE =
   /(-?\$?\s?\d[\d,]*(?:\.\d+)?)\s*(?:(thousand|million|billion|trillion|mm|bn|[kmbt])\b)?\s*(%)?/gi;
 
+/**
+ * Remove tokens that contain digits but are not figures, so the guardrail does
+ * not flag (or accept) them as quantitative claims. Applied in order: ISO dates,
+ * period labels, framework/product version tokens, then the "/ 100" score
+ * denominator. Finally a hyphen between digits becomes a space so "3-5 days"
+ * reads as the range 3 and 5, not 3 and -5.
+ */
+export function stripNonFigures(text: string): string {
+  return text
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+    .replace(/\bQ[1-4]\s*\d{4}\b|\b\d{4}-Q[1-4]\b/gi, ' ')
+    .replace(/\bQ[1-4]\b/gi, ' ')
+    .replace(/\bv\d+(\.\d+)?\b|\bCSF\s*\d+(\.\d+)?\b|\bM365\b|\bO365\b|\b24\/7\b/gi, ' ')
+    .replace(/\s*\/\s*100\b/g, ' ')
+    .replace(/(\d)\s*-\s*(?=\d)/g, '$1 ');
+}
+
 /** Extract every number-like token from a string, normalized to a JS number. */
 export function extractNumbers(text: string): number[] {
   if (!text) return [];
   const out: number[] = [];
-  for (const m of text.matchAll(NUMBER_RE)) {
+  for (const m of stripNonFigures(text).matchAll(NUMBER_RE)) {
     const rawBase = m[1];
     if (!rawBase) continue;
     const cleaned = rawBase.replace(/[$,\s]/g, '');

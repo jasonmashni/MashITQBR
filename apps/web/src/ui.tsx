@@ -1,5 +1,6 @@
 // Small shared UI helpers used across pages.
 import { Badge } from '@mantine/core';
+import { isQbrStatus, qbrStatusLabel, type QbrStatus } from '@mashit/core';
 import type { Rating } from './types.js';
 
 export const uid = () => Math.random().toString(36).slice(2, 9);
@@ -19,7 +20,7 @@ export function RatingBadge({ rating, score }: { rating: Rating; score?: number 
   );
 }
 
-const STATUS_COLOR: Record<string, string> = {
+const STATUS_COLOR: Record<QbrStatus, string> = {
   draft: 'gray',
   data_synced: 'blue',
   narrative_approved: 'indigo',
@@ -32,8 +33,8 @@ const STATUS_COLOR: Record<string, string> = {
 
 export function StatusBadge({ status }: { status: string }) {
   return (
-    <Badge color={STATUS_COLOR[status] ?? 'gray'} variant="light" radius="sm">
-      {status.replace(/_/g, ' ')}
+    <Badge color={isQbrStatus(status) ? STATUS_COLOR[status] : 'gray'} variant="light" radius="sm">
+      {qbrStatusLabel(status)}
     </Badge>
   );
 }

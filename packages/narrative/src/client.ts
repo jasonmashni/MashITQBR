@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { buildCorrectionContent, buildUserContent } from './prompt.js';
 import { buildAllowedNumbers, type NarrativeInput } from './input.js';
 import { NARRATIVE_JSON_SCHEMA, SYSTEM_PROMPT, type NarrativeOutput } from './schema.js';
-import { describeFailures, verifyFigures, type VerificationResult } from './verify.js';
+import { describeFailures, verifyNarrative, type VerificationResult } from './verify.js';
 
 export interface NarrativeMessage {
   role: 'user' | 'assistant';
@@ -44,14 +44,16 @@ export async function generateNarrative(
   model: NarrativeModel,
   opts: { maxRetries?: number; tolerance?: { absolute?: number; relative?: number } } = {},
 ): Promise<NarrativeResult> {
-  const maxRetries = opts.maxRetries ?? 2;
+  // Clamp so a negative or fractional setting still makes exactly one first attempt.
+  const maxRetries = Math.max(0, Math.floor(opts.maxRetries ?? 2));
   const allowed = buildAllowedNumbers(input);
   const messages: NarrativeMessage[] = [{ role: 'user', content: buildUserContent(input) }];
 
   let last: NarrativeResult | undefined;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
-    const output = await model(messages);
-    const verification = verifyFigures(output.figures_referenced, allowed, opts.tolerance);
+    const output: unknown = await model(messages);
+    assertNarrativeShape(output);
+    const verification = verifyNarrative(output, allowed, opts.tolerance);
     last = { output, verification, attempts: attempt };
     if (verification.ok) return last;
 
@@ -93,12 +95,59 @@ export function createClaudeNarrativeModel(
       .map((b) => b.text)
       .join('');
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error(`Narrative model did not return valid JSON. Got: ${text.slice(0, 200)}`);
-    }
-    return parsed as NarrativeOutput;
+    return parseModelText(text, response.stop_reason);
   };
+}
+
+const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
+
+/**
+ * Throw unless `x` has the NarrativeOutput shape: a string headline, string
+ * arrays for summary_paragraphs/highlights/recommendations, a
+ * figures_referenced array of {label, value} strings, and (when present)
+ * section_summaries as {category, summary} strings. Structured output should
+ * guarantee this, but a truncated or off-schema reply must fail loudly rather
+ * than crash later in verification or rendering.
+ */
+export function assertNarrativeShape(x: unknown): asserts x is NarrativeOutput {
+  const problems: string[] = [];
+  const o = (typeof x === 'object' && x !== null ? x : {}) as Record<string, unknown>;
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) problems.push('not an object');
+  if (typeof o['headline'] !== 'string') problems.push('headline is not a string');
+  for (const key of ['summary_paragraphs', 'highlights', 'recommendations'] as const) {
+    if (!isStringArray(o[key])) problems.push(`${key} is not a string array`);
+  }
+  const figures = o['figures_referenced'];
+  if (
+    !Array.isArray(figures) ||
+    !figures.every((f) => typeof f === 'object' && f !== null && typeof f.label === 'string' && typeof f.value === 'string')
+  ) {
+    problems.push('figures_referenced is not a {label, value} array');
+  }
+  const sections = o['section_summaries'];
+  if (
+    sections !== undefined &&
+    (!Array.isArray(sections) ||
+      !sections.every((s) => typeof s === 'object' && s !== null && typeof s.category === 'string' && typeof s.summary === 'string'))
+  ) {
+    problems.push('section_summaries is not a {category, summary} array');
+  }
+  if (problems.length) throw new Error(`Narrative model output has the wrong shape: ${problems.join('; ')}.`);
+}
+
+/**
+ * Parse the model's text reply into a NarrativeOutput. A non-JSON body (often
+ * a reply cut off at max_tokens) throws with the stop_reason so the cause is
+ * visible; a parsed body is shape-checked.
+ */
+export function parseModelText(text: string, stopReason?: string | null): NarrativeOutput {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    const reason = stopReason ? ` (stop_reason: ${stopReason})` : '';
+    throw new Error(`Narrative model did not return valid JSON${reason}. Got: ${text.slice(0, 200)}`);
+  }
+  assertNarrativeShape(parsed);
+  return parsed;
 }
