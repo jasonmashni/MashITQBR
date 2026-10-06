@@ -11,7 +11,9 @@ import {
   parsePeriod,
   periodFor,
   previousPeriod,
+  qbrStatusLabel,
   roadmapValue,
+  statusAtLeast,
   type ClientGoal,
   type MetricCategory,
   type MetricValue,
@@ -92,8 +94,8 @@ export function mapBuildError(e: unknown): ApiResult {
 }
 
 /** Fire-and-forget compliance audit entry — a storage hiccup never fails the mutation. */
-function audit(action: string, target: string, detail?: string): void {
-  void getDataStore()
+function audit(action: string, target: string, detail?: string): Promise<void> {
+  return getDataStore()
     .appendAudit({
       id: Math.random().toString(36).slice(2, 10),
       at: new Date().toISOString(),
@@ -1228,15 +1230,34 @@ export async function syncQbr(clientId: string, period: string): Promise<ApiResu
   }
 }
 
-export async function putStatus(clientId: string, period: string, status: unknown): Promise<ApiResult> {
-  // Manual status set is the explicit user override (incl. un-archiving) — validated, not advanced.
+/**
+ * Set a QBR's status. Forward moves apply directly. Any backwards move
+ * (including un-archiving) is an override: it needs `force: true` plus a
+ * reason, and is audited with both; without force it is refused with 409.
+ */
+export async function putStatus(
+  clientId: string,
+  period: string,
+  body: { status: unknown; force?: unknown; reason?: unknown },
+): Promise<ApiResult> {
+  const status = body.status;
   if (!isQbrStatus(status)) return err(400, `Invalid status: ${String(status)}`);
+  const existing = await getDataStore().getQbr(clientId, period);
+  const current: QbrStatus = existing?.status ?? 'draft';
+  if (status === current) return ok(existing ?? { clientId, period, status: current });
+  const forward = !statusAtLeast(current, status);
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!forward) {
+    if (body.force !== true) {
+      return err(409, `Moving from ${qbrStatusLabel(current)} back to ${qbrStatusLabel(status)} needs an override with a reason.`);
+    }
+    if (!reason) return err(400, 'A reason is required for a status override.');
+  }
   const patch: { status: QbrStatus; meeting?: QbrRecord['meeting'] } = { status };
   // Reaching a held stage stamps WHEN the review happened (if not already known)
   // so account-health's engagement signal has an authoritative date going
   // forward — use the scheduled time if it's already passed, else now.
   if (QBR_HELD_STAGES.includes(status)) {
-    const existing = await getDataStore().getQbr(clientId, period);
     // A skipped-meeting quarter never gets a heldAt — no review took place.
     if (!existing?.meeting?.heldAt && !existing?.meetingSkipped) {
       const sched = existing?.meeting?.scheduledAt;
@@ -1245,7 +1266,18 @@ export async function putStatus(clientId: string, period: string, status: unknow
     }
   }
   const saved = await patchQbr(clientId, period, patch);
-  audit('qbr.status', `qbr:${clientId}/${period}`, status);
+  if (forward) audit('qbr.status', `qbr:${clientId}/${period}`, status);
+  else await audit('qbr.status', `qbr:${clientId}/${period}`, `override ${current} -> ${status}: ${reason}`);
+  return ok(saved);
+}
+
+/** Approve the narrative: advance-only, so a later-stage QBR keeps its status. */
+export async function approveNarrative(clientId: string, period: string): Promise<ApiResult> {
+  const existing = await getDataStore().getQbr(clientId, period);
+  const status = advanceStatus(existing?.status, 'narrative_approved');
+  if (existing && status === existing.status) return ok(existing);
+  const saved = await patchQbr(clientId, period, { status });
+  audit('qbr.narrative.approve', `qbr:${clientId}/${period}`, status);
   return ok(saved);
 }
 

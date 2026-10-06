@@ -113,7 +113,10 @@ route('suggestAgenda', 'POST', 'api/clients/{clientId}/qbr/{period}/agenda', asy
 
 // Live pipeline + workflow
 route('syncQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/sync', (req) => h.syncQbr(req.params['clientId']!, req.params['period']!));
-route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) => h.putStatus(req.params['clientId']!, req.params['period']!, (await body(req))['status']));
+route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) =>
+  h.putStatus(req.params['clientId']!, req.params['period']!, (await body(req)) as { status: unknown; force?: unknown; reason?: unknown }),
+);
+route('approveNarrative', 'POST', 'api/clients/{clientId}/qbr/{period}/narrative/approve', (req) => h.approveNarrative(req.params['clientId']!, req.params['period']!));
 route('dispositionSkipped', 'POST', 'api/clients/{clientId}/qbr/{period}/disposition', async (req) => h.dispositionQbrSkipped(req.params['clientId']!, req.params['period']!, (await body(req)) as { reason?: unknown }));
 route('putSchedule', 'PUT', 'api/clients/{clientId}/qbr/{period}/schedule', async (req) => h.putSchedule(req.params['clientId']!, req.params['period']!, (await body(req)) as { scheduledAt?: string; joinUrl?: string }));
 route('pushAction', 'POST', 'api/clients/{clientId}/qbr/{period}/actions/push', async (req) => h.pushQbrAction(req.params['clientId']!, req.params['period']!, (await body(req)) as { actionId?: string; target: PushInput['target'] }));

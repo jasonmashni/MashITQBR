@@ -78,7 +78,7 @@ describe('overview + periods endpoints', () => {
     expect(anp.health.drivers.join(' ')).not.toMatch(/no qbr held/i);
 
     // Completing the QBR stamps heldAt from the (past) scheduled time.
-    await h.putStatus('anp', '2026-Q1', 'completed');
+    await h.putStatus('anp', '2026-Q1', { status: 'completed' });
     const rec = await store.getQbr('anp', '2026-Q1');
     expect(rec?.meeting?.heldAt).toBe(past);
   });
@@ -108,7 +108,7 @@ describe('overview + periods endpoints', () => {
     expect(mp.health.drivers.join(' ')).toMatch(/no qbr held/i);
 
     // Later stage changes must not backfill heldAt on a skipped quarter.
-    await h.putStatus('mp', '2026-Q1', 'actions_pushed');
+    await h.putStatus('mp', '2026-Q1', { status: 'actions_pushed' });
     expect((await store.getQbr('mp', '2026-Q1'))?.meeting?.heldAt).toBeUndefined();
   });
 

@@ -226,7 +226,7 @@ describe('QbrRecord field durability (pipeline stepper regression)', () => {
     expect((await store.getQbr('anp', '2026-Q4'))?.packageSentAt).toBeTruthy();
 
     // A later status change (any other QBR writer) must NOT wipe the stamp.
-    await h.putStatus('anp', '2026-Q4', 'narrative_approved');
+    await h.putStatus('anp', '2026-Q4', { status: 'narrative_approved' });
     const after = await store.getQbr('anp', '2026-Q4');
     expect(after?.packageSentAt).toBeTruthy();
     expect(after?.status).toBe('narrative_approved');
