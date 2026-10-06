@@ -79,4 +79,13 @@ describe('generateNarrative', () => {
     expect(result.verification.ok).toBe(false);
     expect(result.verification.failures[0]!.unmatched).toContain(88888);
   });
+
+  it('retries when prose cites an unverifiable figure', async () => {
+    const outputs: NarrativeOutput[] = [{ ...clean, headline: 'Resolved 9,999 tickets', figures_referenced: [] }, clean];
+    let i = 0;
+    const model: NarrativeModel = async () => outputs[i++]!;
+    const r = await generateNarrative(input, model, { maxRetries: 2 });
+    expect(r.attempts).toBe(2);
+    expect(r.verification.ok).toBe(true);
+  });
 });

@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { buildCorrectionContent, buildUserContent } from './prompt.js';
 import { buildAllowedNumbers, type NarrativeInput } from './input.js';
 import { NARRATIVE_JSON_SCHEMA, SYSTEM_PROMPT, type NarrativeOutput } from './schema.js';
-import { describeFailures, verifyFigures, type VerificationResult } from './verify.js';
+import { describeFailures, verifyNarrative, type VerificationResult } from './verify.js';
 
 export interface NarrativeMessage {
   role: 'user' | 'assistant';
@@ -51,7 +51,7 @@ export async function generateNarrative(
   let last: NarrativeResult | undefined;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     const output = await model(messages);
-    const verification = verifyFigures(output.figures_referenced, allowed, opts.tolerance);
+    const verification = verifyNarrative(output, allowed, opts.tolerance);
     last = { output, verification, attempts: attempt };
     if (verification.ok) return last;
 

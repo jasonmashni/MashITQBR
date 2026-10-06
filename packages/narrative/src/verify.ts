@@ -36,6 +36,37 @@ export function verifyFigures(
   return { ok: failures.length === 0, checks, failures };
 }
 
+/**
+ * The prose fields of a narrative as {label, value} pairs, labeled by where
+ * they sit in the output: `headline`, `summary_paragraphs[0]`,
+ * `highlights[2]`, `recommendations[1]`, `section_summaries.security`.
+ */
+function proseFields(output: NarrativeOutput): NarrativeOutput['figures_referenced'] {
+  const fields: NarrativeOutput['figures_referenced'] = [{ label: 'headline', value: output.headline }];
+  const lists = ['summary_paragraphs', 'highlights', 'recommendations'] as const;
+  for (const key of lists) {
+    output[key].forEach((value, i) => fields.push({ label: `${key}[${i}]`, value }));
+  }
+  for (const s of output.section_summaries ?? []) {
+    fields.push({ label: `section_summaries.${s.category}`, value: s.summary });
+  }
+  return fields;
+}
+
+/**
+ * Verify the whole narrative: the model's own `figures_referenced` list plus
+ * every prose field. A number the model writes into the headline or a bullet
+ * but leaves out of figures_referenced is still caught. Dates, period labels
+ * and version tokens are ignored (see stripNonFigures).
+ */
+export function verifyNarrative(
+  output: NarrativeOutput,
+  allowed: Iterable<number>,
+  opts?: { absolute?: number; relative?: number },
+): VerificationResult {
+  return verifyFigures([...output.figures_referenced, ...proseFields(output)], allowed, opts);
+}
+
 /** Human-readable summary of failures, for retry prompts and audit logs. */
 export function describeFailures(result: VerificationResult): string {
   return result.failures
