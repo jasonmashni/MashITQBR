@@ -1,5 +1,5 @@
 import { existsSync, statSync } from 'node:fs';
-import { join, normalize, resolve } from 'node:path';
+import { isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -66,7 +66,11 @@ export function resolveStaticFile(wwwDir: string, requestPath: string): StaticFi
   const root = resolve(wwwDir);
   if (clean !== '') {
     const candidate = resolve(root, normalize(clean));
-    if ((candidate === root || candidate.startsWith(root + '/')) && existsSync(candidate) && statSync(candidate).isFile()) {
+    // path.relative is separator- and drive-aware, so this holds on Windows
+    // and Linux alike: inside means non-empty, not `..`-led, not absolute.
+    const rel = relative(root, candidate);
+    const inside = rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+    if (inside && existsSync(candidate) && statSync(candidate).isFile()) {
       const cacheControl = clean.startsWith('assets/') ? IMMUTABLE : NO_CACHE;
       return { file: candidate, contentType: contentTypeFor(candidate), cacheControl };
     }

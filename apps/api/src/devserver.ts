@@ -18,6 +18,7 @@ import { runWithActor } from './requestContext.js';
 import { gate } from './gate.js';
 import { INVALID_BODY, parseBody } from './body.js';
 import { resolveStaticFile, SECURITY_HEADERS } from './static.js';
+import { contentDisposition } from './contentDisposition.js';
 
 const PORT = Number(process.env['PORT'] ?? 7071);
 // Loopback only: the dev server has no Easy Auth in front of it.
@@ -144,14 +145,14 @@ const server = createServer(async (req, res) => {
       if (result.html !== undefined) { res.writeHead(result.status, { 'Content-Type': 'text/html; charset=utf-8', ...cors }); return res.end(result.html); }
       if (result.pdf !== undefined) { res.writeHead(result.status, { 'Content-Type': 'application/pdf', ...cors }); return res.end(result.pdf); }
       if (result.pptx !== undefined) {
-        const cd = result.filename ? `attachment; filename="${result.filename.replace(/["\\]/g, '')}"` : 'attachment';
+        const cd = result.filename ? contentDisposition(result.filename) : 'attachment';
         res.writeHead(result.status, { 'Content-Type': PPTX, 'Content-Disposition': cd, ...cors });
         return res.end(result.pptx);
       }
       if (result.file !== undefined) {
         res.writeHead(result.status, {
           'Content-Type': result.file.contentType,
-          'Content-Disposition': `attachment; filename="${result.file.filename.replace(/["\\]/g, '')}"`,
+          'Content-Disposition': contentDisposition(result.file.filename),
           ...cors,
         });
         return res.end(result.file.bytes);

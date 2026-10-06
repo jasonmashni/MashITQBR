@@ -1,4 +1,5 @@
 import { app, type HttpMethod, type HttpRequest, type HttpResponseInit } from '@azure/functions';
+import { contentDisposition } from './contentDisposition.js';
 import { SECURITY_HEADERS } from './static.js';
 import { actorFrom, principalFrom } from './auth.js';
 import { runWithActor } from './requestContext.js';
@@ -17,7 +18,7 @@ function toResponse(r: ApiResult): HttpResponseInit {
   if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...sec }, body: r.html };
   if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf', ...sec }, body: r.pdf };
   if (r.pptx !== undefined) {
-    const cd = r.filename ? `attachment; filename="${r.filename.replace(/["\\]/g, '')}"` : 'attachment';
+    const cd = r.filename ? contentDisposition(r.filename) : 'attachment';
     return { status: r.status, headers: { 'Content-Type': PPTX, 'Content-Disposition': cd, ...sec }, body: r.pptx };
   }
   if (r.file !== undefined) {
@@ -25,7 +26,7 @@ function toResponse(r: ApiResult): HttpResponseInit {
       status: r.status,
       headers: {
         'Content-Type': r.file.contentType,
-        'Content-Disposition': `attachment; filename="${r.file.filename.replace(/["\\]/g, '')}"`,
+        'Content-Disposition': contentDisposition(r.file.filename),
         ...sec,
       },
       body: r.file.bytes,
