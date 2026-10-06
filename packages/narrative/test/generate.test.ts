@@ -146,6 +146,17 @@ describe('model output validation', () => {
     expect(result.verification.ok).toBe(false);
   });
 
+  it('treats a non-numeric maxRetries as the default of 2', async () => {
+    let calls = 0;
+    const model: NarrativeModel = async () => {
+      calls++;
+      return fabricated;
+    };
+    const result = await generateNarrative(input, model, { maxRetries: Number.NaN });
+    expect(calls).toBe(3);
+    expect(result.attempts).toBe(3);
+  });
+
   it('parseModelText includes stop_reason when the body is not JSON', () => {
     expect(() => parseModelText('{"headline": "cut off', 'max_tokens')).toThrow(/stop_reason: max_tokens/);
     expect(() => parseModelText('not json', null)).toThrow(/did not return valid JSON/);

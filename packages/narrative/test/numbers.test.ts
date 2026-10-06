@@ -31,6 +31,15 @@ describe('extractNumbers', () => {
     expect(extractNumbers('compared with Q3')).toEqual([]);
   });
 
+  it('keeps a real figure that follows a quarter label', () => {
+    expect(extractNumbers('In Q3 2600 email events')).toEqual([2600]);
+    expect(extractNumbers('In 2600-Q3 terms')).toEqual([2600]);
+  });
+
+  it('ignores ticket subjects quoted in curly quotes', () => {
+    expect(extractNumbers('3 tickets reference “windows” (e.g. “Windows 11 upgrade”, “exam room 3”)')).toEqual([3]);
+  });
+
   it('ignores framework versions and product tokens', () => {
     expect(extractNumbers('CIS Controls v8, NIST CSF 2.0, M365, 24/7 SOC')).toEqual([]);
     expect(extractNumbers('O365 tenant')).toEqual([]);

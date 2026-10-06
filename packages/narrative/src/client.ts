@@ -44,8 +44,10 @@ export async function generateNarrative(
   model: NarrativeModel,
   opts: { maxRetries?: number; tolerance?: { absolute?: number; relative?: number } } = {},
 ): Promise<NarrativeResult> {
-  // Clamp so a negative or fractional setting still makes exactly one first attempt.
-  const maxRetries = Math.max(0, Math.floor(opts.maxRetries ?? 2));
+  // Clamp so a negative or fractional setting still makes one first attempt;
+  // a non-numeric setting (NaN, Infinity) falls back to the default of 2.
+  const requested = opts.maxRetries ?? 2;
+  const maxRetries = Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 2;
   const allowed = buildAllowedNumbers(input);
   const messages: NarrativeMessage[] = [{ role: 'user', content: buildUserContent(input) }];
 

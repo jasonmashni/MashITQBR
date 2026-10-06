@@ -30,15 +30,18 @@ const NUMBER_RE =
 
 /**
  * Remove tokens that contain digits but are not figures, so the guardrail does
- * not flag (or accept) them as quantitative claims. Applied in order: ISO dates,
- * period labels, framework/product version tokens, then the "/ 100" score
- * denominator. Finally a hyphen between digits becomes a space so "3-5 days"
+ * not flag (or accept) them as quantitative claims. Applied in order: text in
+ * curly quotes (“…”, how insights quote ticket subjects such as “Windows 11
+ * upgrade”), ISO dates, period labels (years 19xx/20xx only, so "Q3 2600
+ * events" keeps 2600), framework/product version tokens, then the "/ 100"
+ * score denominator. Finally a hyphen between digits becomes a space so "3-5 days"
  * reads as the range 3 and 5, not 3 and -5.
  */
 export function stripNonFigures(text: string): string {
   return text
+    .replace(/“[^”]*”/g, ' ')
     .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
-    .replace(/\bQ[1-4]\s*\d{4}\b|\b\d{4}-Q[1-4]\b/gi, ' ')
+    .replace(/\bQ[1-4]\s*(?:19|20)\d{2}\b|\b(?:19|20)\d{2}-Q[1-4]\b/gi, ' ')
     .replace(/\bQ[1-4]\b/gi, ' ')
     .replace(/\bv\d+(\.\d+)?\b|\bCSF\s*\d+(\.\d+)?\b|\bM365\b|\bO365\b|\b24\/7\b/gi, ' ')
     .replace(/\s*\/\s*100\b/g, ' ')
