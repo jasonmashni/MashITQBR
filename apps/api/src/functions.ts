@@ -118,6 +118,7 @@ route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (r
 );
 route('approveNarrative', 'POST', 'api/clients/{clientId}/qbr/{period}/narrative/approve', (req) => h.approveNarrative(req.params['clientId']!, req.params['period']!));
 route('dispositionSkipped', 'POST', 'api/clients/{clientId}/qbr/{period}/disposition', async (req) => h.dispositionQbrSkipped(req.params['clientId']!, req.params['period']!, (await body(req)) as { reason?: unknown }));
+route('packageSent', 'POST', 'api/clients/{clientId}/qbr/{period}/package/sent', (req) => h.markPackageSent(req.params['clientId']!, req.params['period']!));
 route('putSchedule', 'PUT', 'api/clients/{clientId}/qbr/{period}/schedule', async (req) => h.putSchedule(req.params['clientId']!, req.params['period']!, (await body(req)) as { scheduledAt?: string; joinUrl?: string }));
 route('pushAction', 'POST', 'api/clients/{clientId}/qbr/{period}/actions/push', async (req) => h.pushQbrAction(req.params['clientId']!, req.params['period']!, (await body(req)) as { actionId?: string; target: PushInput['target'] }));
 route('emailDraft', 'GET', 'api/clients/{clientId}/qbr/{period}/email.eml', (req) => h.getEmailDraft(req.params['clientId']!, req.params['period']!, ai(req), headerGet(req)));

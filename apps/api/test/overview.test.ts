@@ -90,8 +90,8 @@ describe('overview + periods endpoints', () => {
     // Guard: the report package must have gone out first.
     expect((await h.dispositionQbrSkipped('mp', '2026-Q1', { reason: 'client passed' })).status).toBe(409);
 
-    // Generating the email draft stamps packageSentAt; then the skip closes the quarter.
-    await h.getEmailDraft('mp', '2026-Q1', null);
+    // Marking the package sent stamps packageSentAt; then the skip closes the quarter.
+    await h.markPackageSent('mp', '2026-Q1');
     const res = await h.dispositionQbrSkipped('mp', '2026-Q1', { reason: 'Client declined — emailed report only' });
     expect(res.status).toBe(200);
     const rec = await store.getQbr('mp', '2026-Q1');

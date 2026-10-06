@@ -1304,6 +1304,13 @@ export async function dispositionQbrSkipped(clientId: string, period: string, bo
   return ok(saved);
 }
 
+/** The account manager confirms the report package went to the client. */
+export async function markPackageSent(clientId: string, period: string): Promise<ApiResult> {
+  const saved = await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() });
+  audit('qbr.package_sent', `qbr:${clientId}/${period}`);
+  return ok(saved);
+}
+
 export async function putSchedule(clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }): Promise<ApiResult> {
   const store = getDataStore();
   const existing = await store.getQbr(clientId, period);
@@ -1442,12 +1449,8 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
     attachments,
   });
   audit('qbr.email_draft', `qbr:${clientId}/${period}`, `${client?.primaryContact?.email ?? 'no recipient'} · ${attachments.length} attachment(s)`);
-  // Stamp the pipeline: generating the package marks the "send" step done.
-  try {
-    await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() });
-  } catch {
-    // Stamp is best-effort.
-  }
+  // Downloading a draft is not sending it: the "package sent" step is stamped
+  // only by the explicit markPackageSent action.
   return { status: 200, file: { bytes: eml, contentType: 'message/rfc822', filename: `QBR-${clientId}-${period}.eml` } };
 }
 
