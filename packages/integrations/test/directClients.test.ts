@@ -54,7 +54,9 @@ describe('NinjaOne direct', () => {
         expect(url.searchParams.get('installedAfter')).toBe(P.start);
         expect(url.searchParams.get('installedBefore')).toBe(P.end);
         const status = url.searchParams.get('status');
-        return { status: 200, json: { results: status === 'INSTALLED' ? [{ id: 1 }, { id: 2 }, { id: 3 }] : [{ id: 4 }] } };
+        // 12 events: enough for a success rate (the floor is 10).
+        const rows = (n: number, base: number) => Array.from({ length: n }, (_, i) => ({ id: base + i }));
+        return { status: 200, json: { results: status === 'INSTALLED' ? rows(9, 1) : rows(3, 100) } };
       }
       if (req.url.includes('os-patches')) return { status: 200, json: { results: [{ deviceId: 17 }, { deviceId: 17 }] } };
       if (req.url.includes('backup/usage')) {
@@ -82,14 +84,60 @@ describe('NinjaOne direct', () => {
     expect(by['endpoints.offline']).toBeUndefined(); // point-in-time offline dropped
     expect(by['endpoints.needs_attention']).toBeUndefined(); // tech-queue signal, not a QBR metric
     expect(by['endpoints.av_coverage_pct']).toBe(50);
-    expect(by['patch.installed_quarter']).toBe(3);
-    expect(by['patch.failed_quarter']).toBe(1);
-    expect(by['patch.compliance_pct']).toBe(75); // 3 installed / 4 attempted this quarter
+    expect(by['patch.installed_quarter']).toBe(9);
+    expect(by['patch.failed_quarter']).toBe(3);
+    expect(by['patch.compliance_pct']).toBe(75); // 9 installed / 12 attempted this quarter
     expect(by['patch.pending']).toBe(2);
     expect(by['backup.protected_devices']).toBe(2); // org 7's device excluded
     expect(by['backup.failed_jobs']).toBe(1); // device 18: last failure newer than last success
     // token exchanged once (cached across the collect's calls)
     expect(requests.filter((r) => r.url.includes('/ws/oauth/token')).length).toBe(1);
+  });
+
+  const ninjaRoutes = (over: (req: HttpRequest) => HttpResponse | undefined) =>
+    fakeHttp((req) => {
+      if (req.url.includes('/ws/oauth/token')) return { status: 200, json: { access_token: 'nt', expires_in: 3600 } };
+      const o = over(req);
+      if (o) return o;
+      if (req.url.includes('/v2/organization/3/devices')) return { status: 200, json: [{ id: 17 }, { id: 18 }] };
+      if (req.url.includes('antivirus-status')) return { status: 200, json: { results: [{ deviceId: 17, productState: 'ON' }, { deviceId: 18, productState: 'ON' }] } };
+      if (req.url.includes('os-patch-installs')) return { status: 200, json: { results: [] } };
+      if (req.url.includes('os-patches')) return { status: 200, json: { results: [] } };
+      if (req.url.includes('backup/usage')) return { status: 200, json: { results: [] } };
+      return { status: 404, json: {} };
+    });
+
+  it('measures AV coverage over every managed device, not just devices reporting AV', async () => {
+    const { http } = ninjaRoutes((req) =>
+      req.url.includes('/v2/organization/3/devices') ? { status: 200, json: [{ id: 17 }, { id: 18 }, { id: 19 }, { id: 20 }] } : undefined,
+    );
+    const out = await collectNinjaDirect({ clientId: 'anp', period: P, externalRef: '3' }, http, { clientId: 'ninja-av-1', clientSecret: 's' });
+    expect(out.metrics.find((m) => m.key === 'endpoints.av_coverage_pct')?.value).toBe(50);
+  });
+
+  it('withholds the patch success rate below the sample floor', async () => {
+    const { http } = ninjaRoutes((req) => {
+      if (!req.url.includes('os-patch-installs')) return undefined;
+      const status = new URL(req.url).searchParams.get('status');
+      return { status: 200, json: { results: status === 'INSTALLED' ? [{ id: 1 }, { id: 2 }] : [{ id: 3 }] } };
+    });
+    const out = await collectNinjaDirect({ clientId: 'anp', period: P, externalRef: '3' }, http, { clientId: 'ninja-floor-1', clientSecret: 's' });
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['patch.compliance_pct']).toBeUndefined();
+    expect(by['patch.installed_quarter']).toBe(2);
+    expect(out.warnings.some((w) => /too few patch events/.test(w))).toBe(true);
+  });
+
+  it('warns when a query is truncated at the page cap', async () => {
+    let page = 0;
+    const { http } = ninjaRoutes((req) => {
+      if (!req.url.includes('os-patches')) return undefined;
+      page++;
+      // Every page, including the last one the client is allowed to read, hands back a cursor.
+      return { status: 200, json: { results: [{ deviceId: 17, id: page }], cursor: { name: `c${page}` } } };
+    });
+    const out = await collectNinjaDirect({ clientId: 'anp', period: P, externalRef: '3' }, http, { clientId: 'ninja-trunc-1', clientSecret: 's' });
+    expect(out.warnings.some((w) => /truncated/.test(w) && /pending/i.test(w))).toBe(true);
   });
 
   it('normalizers handle empty input', () => {
