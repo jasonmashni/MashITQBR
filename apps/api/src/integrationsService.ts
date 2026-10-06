@@ -508,7 +508,9 @@ export async function syncClientMetrics(
     runs.push({
       source: 'checkpoint',
       run: async () =>
-        collectCheckpoint(ctx(refs.checkpoint ?? clientId), http, {
+        // Only a real tenant mapping scopes the query; never fall back to the
+        // internal QBR client id (the collector warns when nothing is mapped).
+        collectCheckpoint(ctx(refs.checkpoint), http, {
           baseUrl: checkpoint.config['baseUrl'] ?? '',
           token: await resolveSecret(secrets, checkpoint, 'token'),
           clientId: checkpoint.config['clientId'] || undefined,
