@@ -36,8 +36,8 @@ describe('extractNumbers', () => {
     expect(extractNumbers('In 2600-Q3 terms')).toEqual([2600]);
   });
 
-  it('ignores ticket subjects quoted in curly quotes', () => {
-    expect(extractNumbers('3 tickets reference “windows” (e.g. “Windows 11 upgrade”, “exam room 3”)')).toEqual([3]);
+  it('does not blanket-skip curly quotes (verifyNarrative decides which quotes are known subjects)', () => {
+    expect(extractNumbers('saved you “$48,000” this year')).toEqual([48000]);
   });
 
   it('ignores framework versions and product tokens', () => {

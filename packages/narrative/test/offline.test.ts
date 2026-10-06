@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { SEED_CLIENTS, findSeedSnapshot, previousPeriod, type MetricSnapshot } from '@mashit/core';
 import {
   buildAllowedNumbers,
+  buildAllowedQuotes,
   buildNarrativeInput,
   draftOfflineNarrative,
   verifyFigures,
@@ -20,7 +21,7 @@ describe('draftOfflineNarrative', () => {
       const result = verifyFigures(draft.figures_referenced, buildAllowedNumbers(input));
       expect(result.ok).toBe(true);
       // ...and so must every number in its prose.
-      expect(verifyNarrative(draft, buildAllowedNumbers(input)).ok).toBe(true);
+      expect(verifyNarrative(draft, buildAllowedNumbers(input), { allowedQuotes: buildAllowedQuotes(input) }).ok).toBe(true);
       expect(draft.headline).toContain('2026');
       expect(draft.summary_paragraphs.length).toBeGreaterThan(0);
     });
@@ -100,7 +101,7 @@ describe('draftOfflineNarrative', () => {
     // The recommendation really does quote the subjects...
     expect(draft.recommendations.join(' ')).toContain('Windows 11');
     // ...and the deterministic draft still verifies.
-    const r = verifyNarrative(draft, buildAllowedNumbers(input));
+    const r = verifyNarrative(draft, buildAllowedNumbers(input), { allowedQuotes: buildAllowedQuotes(input) });
     expect(r.failures).toEqual([]);
     expect(r.ok).toBe(true);
   });

@@ -30,16 +30,17 @@ const NUMBER_RE =
 
 /**
  * Remove tokens that contain digits but are not figures, so the guardrail does
- * not flag (or accept) them as quantitative claims. Applied in order: text in
- * curly quotes (“…”, how insights quote ticket subjects such as “Windows 11
- * upgrade”), ISO dates, period labels (years 19xx/20xx only, so "Q3 2600
- * events" keeps 2600), framework/product version tokens, then the "/ 100"
+ * not flag (or accept) them as quantitative claims. Applied in order: ISO
+ * dates, period labels (years 19xx/20xx only, so "Q3 2600 events" keeps 2600),
+ * framework/product version tokens, then the "/ 100"
  * score denominator. Finally a hyphen between digits becomes a space so "3-5 days"
  * reads as the range 3 and 5, not 3 and -5.
  */
 export function stripNonFigures(text: string): string {
+  // Curly-quoted text is NOT stripped here: a quote is skipped only when it is
+  // a known ticket subject (verifyNarrative's allowedQuotes), so “$48,000”
+  // cannot carry a figure past the guardrail.
   return text
-    .replace(/“[^”]*”/g, ' ')
     .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
     .replace(/\bQ[1-4]\s*(?:19|20)\d{2}\b|\b(?:19|20)\d{2}-Q[1-4]\b/gi, ' ')
     .replace(/\bQ[1-4]\b/gi, ' ')
@@ -86,4 +87,15 @@ export function matchesAllowed(
     if (Math.abs(n - a) <= tol) return true;
   }
   return false;
+}
+
+/**
+ * Drop curly-quoted spans whose trimmed, case-insensitive content is a known
+ * ticket subject (or insight token); unknown quotes keep their text so any
+ * number inside them is still checked.
+ */
+export function stripAllowedQuotes(text: string, allowedQuotes: Iterable<string> = []): string {
+  const known = new Set([...allowedQuotes].map((q) => q.trim().toLowerCase()).filter(Boolean));
+  if (!known.size) return text;
+  return text.replace(/“([^”]*)”/g, (m, inner: string) => (known.has(inner.trim().toLowerCase()) ? ' ' : m));
 }

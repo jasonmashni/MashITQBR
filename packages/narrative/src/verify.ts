@@ -1,4 +1,4 @@
-import { extractNumbers, matchesAllowed } from './numbers.js';
+import { extractNumbers, matchesAllowed, stripAllowedQuotes } from './numbers.js';
 import type { NarrativeOutput } from './schema.js';
 
 export interface FigureCheck {
@@ -7,6 +7,18 @@ export interface FigureCheck {
   /** Numbers extracted from the value that did not match any allowed figure. */
   unmatched: number[];
   ok: boolean;
+}
+
+export interface VerifyOptions {
+  absolute?: number;
+  relative?: number;
+  /**
+   * Ticket subjects (and insight tokens) from the input. A curly-quoted span is
+   * ignored only when its trimmed, case-insensitive text is one of these, so
+   * digits in a real subject ("Windows 11") pass while an invented quoted
+   * figure is still checked.
+   */
+  allowedQuotes?: string[];
 }
 
 export interface VerificationResult {
@@ -24,11 +36,12 @@ export interface VerificationResult {
 export function verifyFigures(
   figures: NarrativeOutput['figures_referenced'],
   allowed: Iterable<number>,
-  opts?: { absolute?: number; relative?: number },
+  opts?: VerifyOptions,
 ): VerificationResult {
   const allowedArr = [...allowed];
+  const quotes = opts?.allowedQuotes ?? [];
   const checks: FigureCheck[] = figures.map(({ label, value }) => {
-    const numbers = extractNumbers(value);
+    const numbers = extractNumbers(stripAllowedQuotes(value, quotes));
     const unmatched = numbers.filter((n) => !matchesAllowed(n, allowedArr, opts));
     return { label, value, unmatched, ok: unmatched.length === 0 };
   });
@@ -57,12 +70,13 @@ function proseFields(output: NarrativeOutput): NarrativeOutput['figures_referenc
  * Verify the whole narrative: the model's own `figures_referenced` list plus
  * every prose field. A number the model writes into the headline or a bullet
  * but leaves out of figures_referenced is still caught. Dates, period labels
- * and version tokens are ignored (see stripNonFigures).
+ * and version tokens are ignored (see stripNonFigures), as are quoted spans
+ * matching `opts.allowedQuotes` (see buildAllowedQuotes).
  */
 export function verifyNarrative(
   output: NarrativeOutput,
   allowed: Iterable<number>,
-  opts?: { absolute?: number; relative?: number },
+  opts?: VerifyOptions,
 ): VerificationResult {
   return verifyFigures([...output.figures_referenced, ...proseFields(output)], allowed, opts);
 }

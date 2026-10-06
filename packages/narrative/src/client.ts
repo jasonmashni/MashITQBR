@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { buildCorrectionContent, buildUserContent } from './prompt.js';
-import { buildAllowedNumbers, type NarrativeInput } from './input.js';
+import { buildAllowedNumbers, buildAllowedQuotes, type NarrativeInput } from './input.js';
 import { NARRATIVE_JSON_SCHEMA, SYSTEM_PROMPT, type NarrativeOutput } from './schema.js';
 import { describeFailures, verifyNarrative, type VerificationResult } from './verify.js';
 
@@ -49,13 +49,14 @@ export async function generateNarrative(
   const requested = opts.maxRetries ?? 2;
   const maxRetries = Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 2;
   const allowed = buildAllowedNumbers(input);
+  const allowedQuotes = buildAllowedQuotes(input);
   const messages: NarrativeMessage[] = [{ role: 'user', content: buildUserContent(input) }];
 
   let last: NarrativeResult | undefined;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     const output: unknown = await model(messages);
     assertNarrativeShape(output);
-    const verification = verifyNarrative(output, allowed, opts.tolerance);
+    const verification = verifyNarrative(output, allowed, { ...opts.tolerance, allowedQuotes });
     last = { output, verification, attempts: attempt };
     if (verification.ok) return last;
 

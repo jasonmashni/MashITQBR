@@ -181,3 +181,25 @@ export function buildAllowedNumbers(input: NarrativeInput): number[] {
 
   return [...allowed];
 }
+
+/**
+ * Every ticket subject string the input carries: the ticket samples plus the
+ * curly-quoted tokens and examples inside insight titles and details. The
+ * guardrail ignores a quoted span only when it matches one of these.
+ */
+export function buildAllowedQuotes(input: NarrativeInput): string[] {
+  const out = new Set<string>();
+  const add = (s: string | undefined) => {
+    const t = s?.trim();
+    if (t) out.add(t);
+  };
+  const samples = input.ticketSamples;
+  if (samples) for (const list of [samples.incidents, samples.changes, samples.slaBreaches]) for (const s of list ?? []) add(s);
+  for (const i of input.ticketInsights ?? []) {
+    const extra = i as { evidence?: string[]; examples?: string[] };
+    for (const s of extra.evidence ?? []) add(s);
+    for (const s of extra.examples ?? []) add(s);
+    for (const text of [i.title, i.detail]) for (const m of text.matchAll(/“([^”]*)”/g)) add(m[1]);
+  }
+  return [...out];
+}

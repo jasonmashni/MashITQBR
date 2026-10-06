@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { previousPeriod, type Brand, type DiscussionItem, type MetricValue, type ReportConfig } from '@mashit/core';
 import {
   buildAllowedNumbers,
+  buildAllowedQuotes,
   buildNarrativeInput,
   draftOfflineNarrative,
   generateNarrative,
@@ -142,6 +143,8 @@ export async function buildQbrReport(
     { allowPhi },
   );
   const allowed = buildAllowedNumbers(input);
+  // Quoted spans are skipped only when they are real ticket subjects from the input.
+  const allowedQuotes = buildAllowedQuotes(input);
 
   // After an AI failure (rate limit, empty credits, outage), don't retry on
   // every page view — the Workspace rebuilds the report each visit, and each
@@ -150,7 +153,7 @@ export async function buildQbrReport(
 
   const offlineDraft = (): NarrativeResult => {
     const output = draftOfflineNarrative(input);
-    return { output, verification: verifyNarrative(output, allowed), attempts: 1 };
+    return { output, verification: verifyNarrative(output, allowed, { allowedQuotes }), attempts: 1 };
   };
 
   let narrative: NarrativeResult;
@@ -218,7 +221,7 @@ export async function buildQbrReport(
   // Verify what will actually ship: the prose as well as figures_referenced.
   // A cached narrative may predate prose checking, and author edits can add
   // numbers, so the stored verification is never trusted as-is.
-  narrative = { ...narrative, verification: verifyNarrative(narrative.output, allowed) };
+  narrative = { ...narrative, verification: verifyNarrative(narrative.output, allowed, { allowedQuotes }) };
 
   const model = buildReportModel({
     client,
