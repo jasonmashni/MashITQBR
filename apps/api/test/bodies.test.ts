@@ -55,3 +55,13 @@ describe('write handlers reject empty bodies', () => {
     expect((await h.putOrgSettings({ brand: { name: 'Mash IT' } })).status).toBe(200);
   });
 });
+
+describe('brand colors', () => {
+  it('rejects anything but a #rrggbb hex for primary and accent', async () => {
+    const h = await import('../src/handlers.js');
+    expect((await h.putOrgSettings({ brand: { primary: '#000}</style><script>' } })).status).toBe(400);
+    expect((await h.putOrgSettings({ brand: { accent: 'red' } })).status).toBe(400);
+    expect((await h.putOrgSettings({ brand: { primary: '#004aad' } })).status).toBe(200);
+    expect((await h.putOrgSettings({ brand: { primary: '#004AAD', accent: '#0B2545' } })).status).toBe(200);
+  });
+});

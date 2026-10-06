@@ -313,6 +313,12 @@ export async function putOrgSettings(body: Record<string, unknown>): Promise<Api
     return err(400, 'Logo must be an embedded PNG/JPEG/SVG/WebP image.');
   }
   if (logo && logo.length > 700_000) return err(400, 'Logo is too large — keep it under 500 KB.');
+  // Colors are interpolated into report CSS; only a plain #rrggbb is accepted.
+  const HEX = /^#[0-9a-f]{6}$/i;
+  for (const k of ['primary', 'accent'] as const) {
+    const v = str(k);
+    if (v !== undefined && !HEX.test(v)) return err(400, `Brand ${k} color must be a hex value like #004AAD.`);
+  }
   const brand = { name: str('name'), logoDataUri: logo, primary: str('primary'), accent: str('accent') };
 
   // Booking rules ride the same org record; unknown keys are dropped and
