@@ -106,7 +106,7 @@ describe('gate', () => {
     it('passes a valid envelope when Easy Auth is on (WEBSITE_AUTH_ENABLED=True, any case)', async () => {
       delete process.env['QBR_AUTH_REQUIRED'];
       process.env['WEBSITE_INSTANCE_ID'] = 'abc';
-      for (const v of ['True', 'true', 'TRUE']) {
+      for (const v of ['True', 'true', 'TRUE', '1', ' true ']) {
         process.env['WEBSITE_AUTH_ENABLED'] = v;
         expect((await gate('api/clients', headers({ 'x-ms-client-principal': principal }), okFn)).status).toBe(200);
       }
@@ -117,8 +117,10 @@ describe('gate', () => {
       process.env['WEBSITE_INSTANCE_ID'] = 'abc';
       delete process.env['WEBSITE_AUTH_ENABLED'];
       expect((await gate('api/clients', headers({ 'x-ms-client-principal': principal }), okFn)).status).toBe(401);
-      process.env['WEBSITE_AUTH_ENABLED'] = 'False';
-      expect((await gate('api/system', headers({ 'x-ms-client-principal': principal }), okFn)).status).toBe(401);
+      for (const v of ['False', '0', '', 'yes', 'truee', '11']) {
+        process.env['WEBSITE_AUTH_ENABLED'] = v;
+        expect((await gate('api/system', headers({ 'x-ms-client-principal': principal }), okFn)).status).toBe(401);
+      }
       // The public booking page keeps working.
       expect((await gate('api/book/tok', headers({}), okFn)).status).toBe(200);
     });

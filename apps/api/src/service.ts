@@ -237,7 +237,11 @@ export async function buildQbrReport(
   const warnings: string[] = [];
   if (aiFailure) warnings.push(aiFailure);
   if (!narrative.verification.ok) {
-    warnings.push('AI narrative cited figures that could not be verified — review before sending.');
+    // Neutral wording: the text may be the AI's or an author's edit.
+    const detail = narrative.verification.failures
+      .map((f) => `${f.label} (${f.unmatched.join(', ')})`)
+      .join('; ');
+    warnings.push(`The narrative cites a figure that does not match the data: ${detail}. Review before sending.`);
   }
   if (!previous) {
     warnings.push('No prior-quarter snapshot found — quarter-over-quarter trends are unavailable.');

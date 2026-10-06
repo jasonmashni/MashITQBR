@@ -76,7 +76,10 @@ describe('buildQbrReport narrative verification (verifyNarrative)', () => {
     expect(modelCalls).toBe(0);
     expect(report.narrative.verification.ok).toBe(false);
     expect(report.narrative.verification.failures.map((f) => f.label)).toContain('headline');
-    expect(report.warnings.some((w) => /could not be verified/.test(w))).toBe(true);
+    const warning = report.warnings.find((w) => w.startsWith('The narrative cites a figure that does not match the data: '));
+    expect(warning).toContain('headline');
+    expect(warning).toContain('987');
+    expect(report.warnings.join(' ')).not.toMatch(/AI narrative/);
   });
 
   it('verifies author edits too: an edited headline with an unknown number is reported', async () => {
@@ -85,6 +88,10 @@ describe('buildQbrReport narrative verification (verifyNarrative)', () => {
     });
     expect(report.narrative.verification.ok).toBe(false);
     expect(report.narrative.verification.failures.map((f) => f.label)).toContain('headline');
+    // Neutral wording: a person wrote this text, not the AI.
+    const warning = report.warnings.find((w) => w.startsWith('The narrative cites a figure that does not match the data: '));
+    expect(warning).toContain('4242');
+    expect(report.warnings.join(' ')).not.toMatch(/AI narrative/);
   });
 });
 

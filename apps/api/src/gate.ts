@@ -31,12 +31,14 @@ export function authRequired(env: Record<string, string | undefined> = process.e
 }
 
 /**
- * On App Service, the platform sets WEBSITE_AUTH_ENABLED=True when Easy Auth is
+ * On App Service, the platform sets WEBSITE_AUTH_ENABLED (True) when Easy Auth is
  * on. Without it nothing strips a client-supplied `x-ms-client-principal`
  * header, so the header cannot be trusted and every gated route fails closed.
  */
 export function easyAuthMissing(env: Record<string, string | undefined> = process.env): boolean {
-  return Boolean(env['WEBSITE_INSTANCE_ID']) && (env['WEBSITE_AUTH_ENABLED'] ?? '').trim().toLowerCase() !== 'true';
+  // Accept `True` in any case or `1`, so a platform variant cannot lock
+  // production out; absent or anything else fails closed.
+  return Boolean(env['WEBSITE_INSTANCE_ID']) && !/^(true|1)$/i.test((env['WEBSITE_AUTH_ENABLED'] ?? '').trim());
 }
 
 /** The client self-scheduling page and its API: public by design (the token authorizes). */
