@@ -23,14 +23,16 @@ centerpiece (the gap across CloudRadial / ScalePad / Strategy Overview).
 | `packages/report` | One view-model → branded HTML, **designed pdfmake PDF**, rebuilt pptxgenjs deck |
 | `apps/api` | Azure Functions (v4) HTTP API + orchestration, data/secret/**document** stores (Table Storage / Key Vault / Blob), live sync + workflow pipeline, Outlook `.eml` drafts |
 | `apps/web` | React (Vite) + **Mantine v7** admin app (Dashboard, Clients, Integrations, QBR workspace, Settings), gated by Entra ID auth |
-| `infra` | Bicep: SWA + Flex-Consumption Functions + Key Vault + Azure SQL + Blob, VNet-isolated |
+| `infra` | Bicep: one Linux Consumption Function App (Node 22, Easy Auth) + Storage (tables, blobs) + Key Vault + Log Analytics |
 
 ## Develop
+
+Requires **Node 22** or later.
 
 ```bash
 npm install
 npm run typecheck   # tsc across the workspace
-npm test            # vitest (88 tests)
+npm test            # vitest (328 tests)
 ```
 
 Run the API + web locally (no Azure tooling required):
@@ -193,8 +195,16 @@ One-time setup:
    `REPORTS_CLIENT_ID`, and `REPORTS_CLIENT_SECRET` (store the secret in Key
    Vault and use an `@Microsoft.KeyVault(SecretUri=…)` reference).
 
-Messages are marked read and categorized (`QBR: filed` / `QBR: unrouted`) so
-the mailbox itself stays auditable. `POST /api/inbox/poll` triggers a check
+4. Optional: `REPORTS_ALLOWED_SENDERS`, a comma-separated list of sender
+   addresses or bare domains allowed to file reports (for example
+   `checkpoint.com,reports@huntress.io`). Mail from the mailbox's own domain
+   is always accepted, so staff forwards keep working. Unset means only that
+   domain is trusted. Mail from anyone else is not filed.
+
+Messages are marked read and categorized (`QBR: filed` / `QBR: unrouted` /
+`QBR: untrusted` / `QBR: failed`) so the mailbox itself stays auditable. A
+message that fails to process is marked `QBR: failed` and the poll moves on
+to the next one. Filed documents record the sender address. `POST /api/inbox/poll` triggers a check
 immediately.
 
 The QBR status advances itself (sync → schedule → approve → disposition → push,
@@ -214,6 +224,11 @@ per MTok; `claude-sonnet-5` runs ~40% cheaper) and `NARRATIVE_EFFORT`
 (default `high`; `medium` spends fewer reasoning tokens). Changing the model
 regenerates narratives on next view (the model id is part of the cache key).
 
+For HIPAA clients, ticket subjects and samples are withheld from the model by
+default. Set `NARRATIVE_ALLOW_PHI=1` only when a BAA covering the model
+provider is in place; it lets ticket samples reach the prompt for every
+client.
+
 Persistence is a local JSON store + secret file in dev (`.data/`, gitignored;
 override the dir with `QBR_DATA_DIR`); in Azure it uses **Azure Table Storage**
 (app data, references only) + **Key Vault** (secrets) + **Blob Storage**
@@ -230,7 +245,7 @@ ever downgrading a later stage.
 
 ## Deploy to Azure (one Function App)
 
-Deployed as a **single Linux Node-20 Azure Function App** that serves both the
+Deployed as a **single Linux Node 22 Azure Function App** that serves both the
 API and the React UI at one URL (mirrors the Mash IT MCP gateway). Build the
 self-contained package and deploy the folder:
 
@@ -253,7 +268,7 @@ Compress-Archive -Path * -DestinationPath ..\deploy.zip -Force
 az functionapp deployment source config-zip -g QBRTool -n mashqbr --src ..\deploy.zip
 ```
 
-Portal one-time: create the Function App (Node 20 / Linux / Consumption),
+Portal one-time: create the Function App (Node 22 / Linux / Consumption),
 enable system-assigned **managed identity**, put `ANTHROPIC_API_KEY` in **Key
 Vault**, and add the app setting `ANTHROPIC_API_KEY=@Microsoft.KeyVault(SecretUri=…)`.
 For the portal-managed integrations, grant the identity **Key Vault Secrets
@@ -265,6 +280,22 @@ Turn on **Entra Easy Auth** to lock the app to Mash IT logins (it also powers
 the account menu and audit actor). Report, **PDF** (pdfmake — works on
 Consumption), PPTX deck, and Outlook email drafts all work out of the box. A
 5-minute keep-warm timer softens cold starts.
+
+The API also checks for the Easy Auth principal itself: on App Service
+(`WEBSITE_INSTANCE_ID` set) every route except the booking page and its API
+returns 401 without one, even if Easy Auth is misconfigured. `QBR_AUTH_REQUIRED=1`
+forces that check on anywhere, `QBR_AUTH_REQUIRED=0` turns it off (local dev
+only). In Azure without `KEY_VAULT_URL`, saving connection credentials is
+refused and `GET /api/system` reports `secretStore: 'local-insecure'`.
+
+`infra/main.bicep` provisions this exact topology: Log Analytics + App
+Insights, a Storage account (TLS 1.2, HTTPS only, no public blob access, the
+`qbr-documents` container), Key Vault (RBAC, 90-day soft delete, purge
+protection), a Linux Consumption (Y1) plan, the Function App on Node 22 with a
+system identity scoped to **Key Vault Secrets Officer** on the vault,
+`authsettingsV2` with the four booking paths excluded, and diagnostic
+settings for the app, blob, table and vault. Parameters: `namePrefix`, `env`,
+`location`, `aadClientId`, `aadTenantId`.
 
 ### Microsoft 365 Teams scheduling (one-time)
 
@@ -369,8 +400,12 @@ Function App (the old separate Static-Web-Apps deploy is gone).
 - Verified narratives are **cached** per client/period, keyed on a hash of the
   exact metric bundle + model id — repeat report views don't re-call Claude,
   and any data re-sync or model upgrade regenerates automatically.
-- Secrets live in Key Vault (referenced, never stored in the DB); SQL is
-  Entra-only; data services are private-endpoint only. See `infra/main.bicep`.
+- Secrets live in Key Vault (referenced, never stored in the DB) and the app
+  refuses to store them anywhere else in Azure. Easy Auth fronts every route
+  but the booking page, and the API rejects requests without a principal as
+  a second layer. Consumption has no VNet, so Storage and Key Vault keep
+  public endpoints, protected by account keys, Entra RBAC and TLS 1.2, with
+  diagnostics to Log Analytics. See `infra/main.bicep`.
 
 ## Status
 

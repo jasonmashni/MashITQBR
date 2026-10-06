@@ -119,6 +119,8 @@ export interface DocumentRecord {
    * even after the user renames it — renames used to cause duplicates.
    */
   sourceKey?: string;
+  /** Sender address for documents filed from the report inbox. */
+  from?: string;
   /** User-assigned bucket on the Reports tab (Security, Backup, Endpoint…). */
   category?: string;
   contentType: string;

@@ -11,7 +11,9 @@ import {
   parsePeriod,
   periodFor,
   previousPeriod,
+  qbrStatusLabel,
   roadmapValue,
+  statusAtLeast,
   type ClientGoal,
   type MetricCategory,
   type MetricValue,
@@ -67,6 +69,7 @@ import { buildAgendaContext, createClaudeAgendaSuggester, offlineAgenda, type Ag
 import { createClaudeResearcher, type ResearchModel } from './research.js';
 import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
+import { computeTriage } from './triage.js';
 
 export interface ApiResult {
   status: number;
@@ -81,6 +84,9 @@ export interface ApiResult {
 }
 const ok = (json: unknown): ApiResult => ({ status: 200, json });
 const err = (status: number, message: string): ApiResult => ({ status, json: { error: message } });
+/** A write with nothing in it is a client bug (or a failed parse upstream), never a reset. */
+const isEmptyBody = (body: Record<string, unknown> | null | undefined) => !body || Object.keys(body).length === 0;
+const EMPTY_BODY = 'Request body is empty';
 
 /** Map a report-build failure: 404 for a missing client/snapshot, 500 otherwise. */
 export function mapBuildError(e: unknown): ApiResult {
@@ -89,8 +95,8 @@ export function mapBuildError(e: unknown): ApiResult {
 }
 
 /** Fire-and-forget compliance audit entry — a storage hiccup never fails the mutation. */
-function audit(action: string, target: string, detail?: string): void {
-  void getDataStore()
+function audit(action: string, target: string, detail?: string): Promise<void> {
+  return getDataStore()
     .appendAudit({
       id: Math.random().toString(36).slice(2, 10),
       at: new Date().toISOString(),
@@ -171,7 +177,14 @@ async function resolveMcp(): Promise<McpTransport | undefined> {
   );
 }
 
+let _integrationsOverride: (() => Promise<Integrations>) | undefined;
+/** Test seam: substitute fake integrations for the live ones (undefined restores). */
+export function __setIntegrationsForTests(factory: (() => Promise<Integrations>) | undefined): void {
+  _integrationsOverride = factory;
+}
+
 async function buildIntegrations(): Promise<Integrations> {
+  if (_integrationsOverride) return _integrationsOverride();
   return { store: getDataStore(), secrets: getSecretStore(), mcp: await resolveMcp(), http: new FetchHttpTransport() };
 }
 
@@ -211,6 +224,8 @@ export async function getClientRecord(id: string): Promise<ApiResult> {
  * minted. Kept qualitative — no figures.
  */
 export async function putClientGoals(id: string, body: Record<string, unknown>): Promise<ApiResult> {
+  if (isEmptyBody(body)) return err(400, EMPTY_BODY);
+  if (!Array.isArray(body['goals'])) return err(400, 'goals must be a list');
   const store = getDataStore();
   const existing = await store.getClient(id);
   if (!existing) return err(404, 'Unknown client');
@@ -300,6 +315,7 @@ export async function getOrgSettings(): Promise<ApiResult> {
 }
 
 export async function putOrgSettings(body: Record<string, unknown>): Promise<ApiResult> {
+  if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const raw = (body['brand'] ?? {}) as Record<string, unknown>;
   const str = (k: string) => (typeof raw[k] === 'string' && raw[k] ? (raw[k] as string) : undefined);
   const logo = str('logoDataUri');
@@ -307,6 +323,12 @@ export async function putOrgSettings(body: Record<string, unknown>): Promise<Api
     return err(400, 'Logo must be an embedded PNG/JPEG/SVG/WebP image.');
   }
   if (logo && logo.length > 700_000) return err(400, 'Logo is too large — keep it under 500 KB.');
+  // Colors are interpolated into report CSS; only a plain #rrggbb is accepted.
+  const HEX = /^#[0-9a-f]{6}$/i;
+  for (const k of ['primary', 'accent'] as const) {
+    const v = str(k);
+    if (v !== undefined && !HEX.test(v)) return err(400, `Brand ${k} color must be a hex value like #004AAD.`);
+  }
   const brand = { name: str('name'), logoDataUri: logo, primary: str('primary'), accent: str('accent') };
 
   // Booking rules ride the same org record; unknown keys are dropped and
@@ -345,6 +367,7 @@ export async function getConfig(clientId: string): Promise<ApiResult> {
   return ok((await getDataStore().getReportConfig(clientId)) ?? { clientId });
 }
 export async function putConfig(clientId: string, body: Record<string, unknown>): Promise<ApiResult> {
+  if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const saved = await getDataStore().putReportConfig({ ...body, clientId } as never);
   audit('config.save', `client:${clientId}`);
   return ok(saved);
@@ -353,6 +376,7 @@ export async function getDiscussion(clientId: string, period: string): Promise<A
   return ok((await getDataStore().getDiscussion(clientId, period)) ?? { clientId, period, items: [] });
 }
 export async function putDiscussion(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const store = getDataStore();
   const items = Array.isArray(body['items']) ? (body['items'] as never[]) : [];
   const saved = await store.putDiscussion({ clientId, period, items, notes: body['notes'] as string | undefined });
@@ -477,7 +501,7 @@ export async function getMetrics(clientId: string, period: string): Promise<ApiR
   const snapshot = await storeDataSource(store).getSnapshot(clientId, period);
   if (!snapshot) return err(404, `No metric snapshot for ${clientId} ${period} — run a Sync first.`);
   const config = await store.getReportConfig(clientId);
-  return ok({ snapshot, excluded: config?.excludedMetrics ?? [] });
+  return ok({ snapshot, excluded: config?.excludedMetrics ?? [], warnings: snapshot.warnings ?? [] });
 }
 
 
@@ -1047,6 +1071,10 @@ export async function listIntegrations(): Promise<ApiResult> {
 export async function saveIntegration(body: ConnectionInput): Promise<ApiResult> {
   if (!body.type || !body.label) return err(400, 'type and label are required');
   if (!isConnectionType(body.type)) return err(400, `Unknown integration type: ${String(body.type)}`);
+  const hasSecretValues = Object.values(body.secrets ?? {}).some((v) => typeof v === 'string' && v !== '');
+  if (hasSecretValues && secretStoreKind() === 'local-insecure') {
+    return err(400, 'Key Vault is not configured: set KEY_VAULT_URL on the Function App before saving credentials.');
+  }
   const conn = await saveConnection(getDataStore(), getSecretStore(), body);
   audit('integration.save', `integration:${conn.type}/${conn.id}`, conn.label);
   return ok(toConnectionView(conn));
@@ -1189,7 +1217,11 @@ export async function importHalo(): Promise<ApiResult> {
 
 export async function syncQbr(clientId: string, period: string): Promise<ApiResult> {
   try {
-    const { snapshot, warnings, documents } = await syncClientMetrics(await buildIntegrations(), clientId, period);
+    const { snapshot, warnings, documents, allFailed } = await syncClientMetrics(await buildIntegrations(), clientId, period);
+    if (allFailed) {
+      audit('qbr.sync', `qbr:${clientId}/${period}`, 'every collector failed; previous data kept');
+      return err(409, 'Every connected tool failed; previous data kept. ' + warnings.join(' '));
+    }
     // Vendor-published report files (e.g. the Huntress quarterly PDF) attach automatically.
     await attachSyncDocuments(clientId, period, documents, warnings);
     const store = getDataStore();
@@ -1203,15 +1235,34 @@ export async function syncQbr(clientId: string, period: string): Promise<ApiResu
   }
 }
 
-export async function putStatus(clientId: string, period: string, status: unknown): Promise<ApiResult> {
-  // Manual status set is the explicit user override (incl. un-archiving) — validated, not advanced.
+/**
+ * Set a QBR's status. Forward moves apply directly. Any backwards move
+ * (including un-archiving) is an override: it needs `force: true` plus a
+ * reason, and is audited with both; without force it is refused with 409.
+ */
+export async function putStatus(
+  clientId: string,
+  period: string,
+  body: { status: unknown; force?: unknown; reason?: unknown },
+): Promise<ApiResult> {
+  const status = body.status;
   if (!isQbrStatus(status)) return err(400, `Invalid status: ${String(status)}`);
+  const existing = await getDataStore().getQbr(clientId, period);
+  const current: QbrStatus = existing?.status ?? 'draft';
+  if (status === current) return ok(existing ?? { clientId, period, status: current });
+  const forward = !statusAtLeast(current, status);
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!forward) {
+    if (body.force !== true) {
+      return err(409, `Moving from ${qbrStatusLabel(current)} back to ${qbrStatusLabel(status)} needs an override with a reason.`);
+    }
+    if (!reason) return err(400, 'A reason is required for a status override.');
+  }
   const patch: { status: QbrStatus; meeting?: QbrRecord['meeting'] } = { status };
   // Reaching a held stage stamps WHEN the review happened (if not already known)
   // so account-health's engagement signal has an authoritative date going
   // forward — use the scheduled time if it's already passed, else now.
   if (QBR_HELD_STAGES.includes(status)) {
-    const existing = await getDataStore().getQbr(clientId, period);
     // A skipped-meeting quarter never gets a heldAt — no review took place.
     if (!existing?.meeting?.heldAt && !existing?.meetingSkipped) {
       const sched = existing?.meeting?.scheduledAt;
@@ -1220,7 +1271,18 @@ export async function putStatus(clientId: string, period: string, status: unknow
     }
   }
   const saved = await patchQbr(clientId, period, patch);
-  audit('qbr.status', `qbr:${clientId}/${period}`, status);
+  if (forward) audit('qbr.status', `qbr:${clientId}/${period}`, status);
+  else await audit('qbr.status', `qbr:${clientId}/${period}`, `override ${current} -> ${status}: ${reason}`);
+  return ok(saved);
+}
+
+/** Approve the narrative: advance-only, so a later-stage QBR keeps its status. */
+export async function approveNarrative(clientId: string, period: string): Promise<ApiResult> {
+  const existing = await getDataStore().getQbr(clientId, period);
+  const status = advanceStatus(existing?.status, 'narrative_approved');
+  if (existing && status === existing.status) return ok(existing);
+  const saved = await patchQbr(clientId, period, { status });
+  audit('qbr.narrative.approve', `qbr:${clientId}/${period}`, status);
   return ok(saved);
 }
 
@@ -1244,6 +1306,13 @@ export async function dispositionQbrSkipped(clientId: string, period: string, bo
     meetingSkipped: { at: new Date().toISOString(), ...(reason ? { reason } : {}) },
   });
   audit('qbr.disposition', `qbr:${clientId}/${period}`, `meeting skipped${reason ? ` — ${reason}` : ''}`);
+  return ok(saved);
+}
+
+/** The account manager confirms the report package went to the client. */
+export async function markPackageSent(clientId: string, period: string): Promise<ApiResult> {
+  const saved = await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() });
+  audit('qbr.package_sent', `qbr:${clientId}/${period}`);
   return ok(saved);
 }
 
@@ -1385,12 +1454,8 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
     attachments,
   });
   audit('qbr.email_draft', `qbr:${clientId}/${period}`, `${client?.primaryContact?.email ?? 'no recipient'} · ${attachments.length} attachment(s)`);
-  // Stamp the pipeline: generating the package marks the "send" step done.
-  try {
-    await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() });
-  } catch {
-    // Stamp is best-effort.
-  }
+  // Downloading a draft is not sending it: the "package sent" step is stamped
+  // only by the explicit markPackageSent action.
   return { status: 200, file: { bytes: eml, contentType: 'message/rfc822', filename: `QBR-${clientId}-${period}.eml` } };
 }
 
@@ -1867,6 +1932,7 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
   await ensureSeeded(store);
   const ds = storeDataSource(store);
   const current = resolveCurrent(currentOverride);
+  const now = Date.now();
   const candidates = lastPeriods(current, 4);
   const clients = (await store.listClients()).filter((c) => c.qbrEnabled !== false);
 
@@ -1886,6 +1952,33 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
       const prevScorecard = previous ? computeScorecard(previous) : undefined;
       const qbr = period ? await store.getQbr(client.id, period) : undefined;
       const opportunities = await store.listOpportunities(client.id).catch(() => []);
+
+      // Current-quarter workflow state drives triage; the row's `period` stays
+      // the newest quarter with data so existing dashboard fields keep working.
+      const currentQbr = period === current ? qbr : await store.getQbr(client.id, current);
+      const currentState = {
+        hasData: period === current,
+        status: currentQbr?.status ?? ('draft' as QbrStatus),
+        meetingAt: currentQbr?.meeting?.scheduledAt ?? null,
+        packageSentAt: currentQbr?.packageSentAt ?? null,
+        meetingSkipped: !!currentQbr?.meetingSkipped,
+      };
+      const triage = computeTriage({
+        hasData: currentState.hasData,
+        status: currentQbr?.status,
+        meetingAt: currentState.meetingAt ?? undefined,
+        packageSentAt: currentState.packageSentAt ?? undefined,
+        meetingSkipped: currentState.meetingSkipped,
+        now,
+      });
+      let lastCompletedPeriod: string | null = null;
+      for (const p of lastPeriods(current, 8)) {
+        const rec = p === current ? currentQbr : p === period ? qbr : await store.getQbr(client.id, p);
+        if (statusAtLeast(rec?.status, 'completed')) {
+          lastCompletedPeriod = p;
+          break;
+        }
+      }
 
       const mrr = snapshotNum(snapshot, 'finance.mrr');
       const spendNow = snapshotNum(snapshot, 'finance.quarter_invoiced');
@@ -1931,10 +2024,17 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
         roadmapValue: roadmap.annualValue,
         roadmapCount: roadmap.count,
         health: { score: health.score, rating: health.rating, drivers: health.drivers },
+        confidence: scorecard?.overall.confidence ?? 'low',
+        currentPeriod: current,
+        current: currentState,
+        lastCompletedPeriod,
+        triage,
       };
     }),
   );
-  return ok({ currentPeriod: current, clients: rows });
+  const quarterEnd = Date.parse(`${parsePeriod(current).end}T23:59:59.999Z`);
+  const quarterEndsInDays = Math.max(0, Math.ceil((quarterEnd - now) / 86_400_000));
+  return ok({ currentPeriod: current, quarterEndsInDays, clients: rows });
 }
 
 /** Which of the last 8 quarters have data for this client (store or seed). */

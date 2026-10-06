@@ -221,12 +221,12 @@ describe('QbrRecord field durability (pipeline stepper regression)', () => {
       metrics: [{ key: 'tickets.opened', label: 'Tickets opened', value: 40, source: 'halo', category: 'operations' }],
     });
 
-    // Generating the email draft stamps packageSentAt.
-    await h.getEmailDraft('anp', '2026-Q4', null); // no origin header → no link, still stamps
+    // Marking the package sent stamps packageSentAt.
+    await h.markPackageSent('anp', '2026-Q4');
     expect((await store.getQbr('anp', '2026-Q4'))?.packageSentAt).toBeTruthy();
 
     // A later status change (any other QBR writer) must NOT wipe the stamp.
-    await h.putStatus('anp', '2026-Q4', 'narrative_approved');
+    await h.putStatus('anp', '2026-Q4', { status: 'narrative_approved' });
     const after = await store.getQbr('anp', '2026-Q4');
     expect(after?.packageSentAt).toBeTruthy();
     expect(after?.status).toBe('narrative_approved');

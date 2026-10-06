@@ -1,7 +1,10 @@
 import { app, type HttpMethod, type HttpRequest, type HttpResponseInit } from '@azure/functions';
+import { contentDisposition } from './contentDisposition.js';
 import { SECURITY_HEADERS } from './static.js';
 import { actorFrom, principalFrom } from './auth.js';
 import { runWithActor } from './requestContext.js';
+import { gate } from './gate.js';
+import { INVALID_BODY, InvalidBodyError, parseBody } from './body.js';
 import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
@@ -15,7 +18,7 @@ function toResponse(r: ApiResult): HttpResponseInit {
   if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...sec }, body: r.html };
   if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf', ...sec }, body: r.pdf };
   if (r.pptx !== undefined) {
-    const cd = r.filename ? `attachment; filename="${r.filename.replace(/["\\]/g, '')}"` : 'attachment';
+    const cd = r.filename ? contentDisposition(r.filename) : 'attachment';
     return { status: r.status, headers: { 'Content-Type': PPTX, 'Content-Disposition': cd, ...sec }, body: r.pptx };
   }
   if (r.file !== undefined) {
@@ -23,7 +26,7 @@ function toResponse(r: ApiResult): HttpResponseInit {
       status: r.status,
       headers: {
         'Content-Type': r.file.contentType,
-        'Content-Disposition': `attachment; filename="${r.file.filename.replace(/["\\]/g, '')}"`,
+        'Content-Disposition': contentDisposition(r.file.filename),
         ...sec,
       },
       body: r.file.bytes,
@@ -33,15 +36,31 @@ function toResponse(r: ApiResult): HttpResponseInit {
 }
 
 const ai = (req: HttpRequest) => req.query.get('ai');
-const body = async (req: HttpRequest) => ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
+/** Parsed JSON object body; a malformed body throws and the route answers 400. */
+const body = async (req: HttpRequest) => {
+  const parsed = parseBody(await req.text().catch(() => ''));
+  if (parsed === null) throw new InvalidBodyError();
+  return parsed;
+};
+const guarded = async (fn: () => Promise<ApiResult> | ApiResult): Promise<ApiResult> => {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof InvalidBodyError) return INVALID_BODY;
+    throw e;
+  }
+};
 const headerGet = (req: HttpRequest) => (name: string) => req.headers.get(name);
 const route = (name: string, method: HttpMethod, r: string, fn: (req: HttpRequest) => Promise<ApiResult> | ApiResult) =>
   app.http(name, {
     route: r,
     methods: [method],
     authLevel: 'anonymous',
-    // Actor context lets handlers attribute audit entries to the Easy Auth user.
-    handler: async (req) => runWithActor(actorFrom(headerGet(req)), async () => toResponse(await fn(req))),
+    // The gate refuses non-public routes without an Easy Auth principal when
+    // auth is required (Azure, or QBR_AUTH_REQUIRED=1). Actor context lets
+    // handlers attribute audit entries to the Easy Auth user.
+    handler: async (req) =>
+      runWithActor(actorFrom(headerGet(req)), async () => toResponse(await gate(new URL(req.url).pathname, headerGet(req), () => guarded(() => fn(req))))),
   });
 
 // Clients + report
@@ -95,8 +114,12 @@ route('suggestAgenda', 'POST', 'api/clients/{clientId}/qbr/{period}/agenda', asy
 
 // Live pipeline + workflow
 route('syncQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/sync', (req) => h.syncQbr(req.params['clientId']!, req.params['period']!));
-route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) => h.putStatus(req.params['clientId']!, req.params['period']!, (await body(req))['status']));
+route('putStatus', 'PUT', 'api/clients/{clientId}/qbr/{period}/status', async (req) =>
+  h.putStatus(req.params['clientId']!, req.params['period']!, (await body(req)) as { status: unknown; force?: unknown; reason?: unknown }),
+);
+route('approveNarrative', 'POST', 'api/clients/{clientId}/qbr/{period}/narrative/approve', (req) => h.approveNarrative(req.params['clientId']!, req.params['period']!));
 route('dispositionSkipped', 'POST', 'api/clients/{clientId}/qbr/{period}/disposition', async (req) => h.dispositionQbrSkipped(req.params['clientId']!, req.params['period']!, (await body(req)) as { reason?: unknown }));
+route('packageSent', 'POST', 'api/clients/{clientId}/qbr/{period}/package/sent', (req) => h.markPackageSent(req.params['clientId']!, req.params['period']!));
 route('putSchedule', 'PUT', 'api/clients/{clientId}/qbr/{period}/schedule', async (req) => h.putSchedule(req.params['clientId']!, req.params['period']!, (await body(req)) as { scheduledAt?: string; joinUrl?: string }));
 route('pushAction', 'POST', 'api/clients/{clientId}/qbr/{period}/actions/push', async (req) => h.pushQbrAction(req.params['clientId']!, req.params['period']!, (await body(req)) as { actionId?: string; target: PushInput['target'] }));
 route('emailDraft', 'GET', 'api/clients/{clientId}/qbr/{period}/email.eml', (req) => h.getEmailDraft(req.params['clientId']!, req.params['period']!, ai(req), headerGet(req)));

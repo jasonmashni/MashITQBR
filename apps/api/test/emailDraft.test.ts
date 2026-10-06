@@ -1,5 +1,40 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { buildEmailDraft, qbrEmailBody } from '../src/emailDraft.js';
+
+let dir: string;
+beforeAll(() => {
+  dir = mkdtempSync(join(tmpdir(), 'qbr-email-'));
+  process.env['QBR_DATA_DIR'] = dir;
+  delete process.env['AzureWebJobsStorage'];
+});
+afterAll(() => {
+  rmSync(dir, { recursive: true, force: true });
+  delete process.env['QBR_DATA_DIR'];
+});
+
+describe('package sent stamp', () => {
+  it('downloading the email draft does not stamp; marking the package sent does', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    const res = await h.getEmailDraft('anp', '2026-Q1', null);
+    expect(res.status).toBe(200);
+    expect((await store.getQbr('anp', '2026-Q1'))?.packageSentAt).toBeUndefined();
+
+    // Without the stamp the skipped-meeting disposition is refused.
+    expect((await h.dispositionQbrSkipped('anp', '2026-Q1', { reason: 'client passed' })).status).toBe(409);
+
+    const sent = await h.markPackageSent('anp', '2026-Q1');
+    expect(sent.status).toBe(200);
+    const stamped = (await store.getQbr('anp', '2026-Q1'))?.packageSentAt;
+    expect(stamped).toBeTruthy();
+    expect((sent.json as { packageSentAt?: string }).packageSentAt).toBe(stamped);
+
+    expect((await h.dispositionQbrSkipped('anp', '2026-Q1', { reason: 'client passed' })).status).toBe(200);
+  });
+});
 
 describe('buildEmailDraft', () => {
   it('produces an unsent Outlook draft with recipient, subject and PDF attachment', () => {

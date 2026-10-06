@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Mash IT QBR tool — aggregate MSP-stack data and generate impactful, AI-drafted quarterly business reviews.",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "workspaces": [
     "packages/*",
