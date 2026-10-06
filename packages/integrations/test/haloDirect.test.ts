@@ -791,3 +791,90 @@ describe('listHaloClients / fetchHaloMeta / createHaloTicket', () => {
     ]);
   });
 });
+
+describe('ticket tallies require a successful period pull', () => {
+  const period = makePeriod(2026, 2);
+  const openRows = [{ id: 6, tickettype_name: 'Incident' }, { id: 7, tickettype_name: 'Service Request' }];
+  const finance = [
+    { match: (r: HttpRequest) => r.url.includes('/api/ClientContract'), respond: () => ({ status: 200, json: { contracts: [] } }) },
+    { match: (r: HttpRequest) => r.url.includes('/api/Invoice'), respond: () => ({ status: 200, json: { invoices: [] } }) },
+    { match: (r: HttpRequest) => r.url.includes('/api/Asset'), respond: () => ({ status: 200, json: { assets: [] } }) },
+  ];
+
+  it('emits no ticket tallies when the period pull fails but the open pull succeeds', async () => {
+    const { http } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => r.url.includes('/api/Tickets'),
+        respond: (r) => {
+          const u = new URL(r.url);
+          if (u.searchParams.get('open_only') === 'true') return { status: 200, json: { record_count: 2, tickets: openRows } };
+          return { status: 500, json: { error: 'boom' } };
+        },
+      },
+      ...finance,
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'anp', period, externalRef: '35' },
+      http,
+      { baseUrl: 'https://period-fail.halopsa.com', clientId: 'pf-1', clientSecret: 's' },
+    );
+    const keys = out.metrics.map((m) => m.key);
+    for (const k of ['tickets.total', 'tickets.incidents', 'tickets.service', 'tickets.changes', 'tickets.closed']) expect(keys).not.toContain(k);
+    expect(out.warnings.some((w) => /ticket volume unavailable/.test(w))).toBe(true);
+    // The open snapshot is independent and still measured.
+    expect(out.metrics.find((m) => m.key === 'tickets.open')?.value).toBe(2);
+  });
+
+  it('withholds tallies when one of two mapped ids fails, naming the failed id', async () => {
+    const { http } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => r.url.includes('/api/Tickets'),
+        respond: (r) => {
+          const u = new URL(r.url);
+          if (u.searchParams.get('client_id') === '62' && u.searchParams.get('datesearch')) return { status: 500, json: {} };
+          if (u.searchParams.get('open_only') === 'true') return { status: 200, json: { record_count: 0, tickets: [] } };
+          if (u.searchParams.get('datesearch') === 'dateoccurred') return { status: 200, json: { record_count: 1, tickets: [{ id: 1, tickettype_name: 'Incident' }] } };
+          return { status: 200, json: { record_count: 0, tickets: [] } };
+        },
+      },
+      ...finance,
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'mp', period, externalRef: '29, 62' },
+      http,
+      { baseUrl: 'https://period-partial.halopsa.com', clientId: 'pp-1', clientSecret: 's' },
+    );
+    const keys = out.metrics.map((m) => m.key);
+    for (const k of ['tickets.total', 'tickets.incidents', 'tickets.closed', 'sla.met_pct']) expect(keys).not.toContain(k);
+    expect(out.warnings.some((w) => /ticket volume unavailable/.test(w) && w.includes('62'))).toBe(true);
+  });
+
+  it('emits tallies as before when every mapped id succeeds', async () => {
+    const { http } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => r.url.includes('/api/Tickets'),
+        respond: (r) => {
+          const u = new URL(r.url);
+          if (u.searchParams.get('open_only') === 'true') return { status: 200, json: { record_count: 0, tickets: [] } };
+          if (u.searchParams.get('datesearch') === 'dateoccurred')
+            return { status: 200, json: { record_count: 1, tickets: [{ id: Number(u.searchParams.get('client_id')), tickettype_name: 'Incident' }] } };
+          return { status: 200, json: { record_count: 0, tickets: [] } };
+        },
+      },
+      ...finance,
+    ]);
+    const out = await collectHaloDirect(
+      { clientId: 'mp', period, externalRef: '29, 62' },
+      http,
+      { baseUrl: 'https://period-ok.halopsa.com', clientId: 'po-1', clientSecret: 's' },
+    );
+    const by = Object.fromEntries(out.metrics.map((m) => [m.key, m.value]));
+    expect(by['tickets.total']).toBe(2);
+    expect(by['tickets.incidents']).toBe(2);
+    expect(by['tickets.closed']).toBe(0);
+    expect(by['tickets.open']).toBe(0);
+  });
+});

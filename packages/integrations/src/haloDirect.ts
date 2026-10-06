@@ -753,7 +753,10 @@ function outsidePeriod(row: Json, fields: string[], startMs: number, endMs: numb
 }
 
 interface HaloIdTickets {
-  ok: boolean;
+  /** The opened/closed-in-period pull answered. Ticket tallies are only meaningful when this is true. */
+  periodOk: boolean;
+  /** The open-ticket snapshot pull answered (independent of the period pull). */
+  openOk: boolean;
   openedRows: Json[];
   openedTotal: number;
   closedRows: Json[];
@@ -774,7 +777,8 @@ interface HaloIdTickets {
 async function collectHaloForId(ctx: CollectorContext, http: HttpTransport, cfg: HaloCfg, haloId: string, warnings: string[], tag: string): Promise<HaloIdTickets> {
   const startMs = Date.parse(ctx.period.start);
   const endMs = Date.parse(ctx.period.end) + 24 * 3600 * 1000;
-  let ok = false;
+  let periodOk = false;
+  let openOk = false;
   let openedRows: Json[] = [];
   let openedTotal = 0;
   let closedRows: Json[] = [];
@@ -796,7 +800,6 @@ async function collectHaloForId(ctx: CollectorContext, http: HttpTransport, cfg:
       // against the unfiltered count and fall back to recent tickets.
       const probe = await haloGet(http, cfg, 'Tickets', { client_id: haloId, open_only: false, pageinate: true, page_size: 1, page_no: 1 });
       const totalTickets = recordCount(probe, toArray(probe, ['tickets']));
-      ok = true; // the API answered — a truly ticket-free client is an honest zero, not a failure
       if (totalTickets > 0) {
         const all = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: false, order: 'dateoccurred', orderdesc: true }, 'tickets', 10);
         openedRows = all.rows.filter((r) => inPeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
@@ -807,8 +810,9 @@ async function collectHaloForId(ctx: CollectorContext, http: HttpTransport, cfg:
           warnings.push(`Halo${tag}: the server date filter returned nothing — ticket tallies counted from the most recent ${all.rows.length} of ${all.total} tickets instead.`);
         }
       }
+      // Every call answered — a truly ticket-free client is an honest zero, not a failure.
+      periodOk = true;
     } else {
-      ok = true;
       openedRows = openedPull.rows.filter((r) => !outsidePeriod(r, TICKET_OPENED_FIELDS, startMs, endMs));
       openedTotal = openedPull.total;
       const closedPull = await haloPageAll(http, cfg, 'Tickets', {
@@ -822,8 +826,15 @@ async function collectHaloForId(ctx: CollectorContext, http: HttpTransport, cfg:
       if (openedPull.rows.length < openedPull.total || closedPull.rows.length < closedPull.total) {
         warnings.push(`Halo${tag}: ticket tallies counted from the first ${Math.max(openedPull.rows.length, closedPull.rows.length)} of ${Math.max(openedPull.total, closedPull.total)} in-period tickets.`);
       }
+      // Set only after BOTH windows answered: a closed-window failure must not
+      // leave opened counts next to a closed count of zero.
+      periodOk = true;
     }
   } catch (e) {
+    openedRows = [];
+    closedRows = [];
+    openedTotal = 0;
+    closedTotal = 0;
     warnings.push(`Halo${tag} ticket volume unavailable: ${e instanceof Error ? e.message : 'error'}`);
   }
 
@@ -834,7 +845,7 @@ async function collectHaloForId(ctx: CollectorContext, http: HttpTransport, cfg:
     const openPull = await haloPageAll(http, cfg, 'Tickets', { client_id: haloId, open_only: true }, 'tickets', 10);
     openRows = openPull.rows;
     openTotal = openPull.total;
-    ok = true;
+    openOk = true;
     if (openPull.rows.length < openPull.total) {
       warnings.push(`Halo${tag}: open-ticket snapshot read from the first ${openPull.rows.length} of ${openPull.total} open tickets.`);
     }
@@ -867,7 +878,7 @@ async function collectHaloForId(ctx: CollectorContext, http: HttpTransport, cfg:
     warnings.push(`Halo${tag} invoices unavailable (quarterly spend skipped): ${e instanceof Error ? e.message : 'error'}`);
   }
 
-  return { ok, openedRows, openedTotal, closedRows, closedTotal, openRows, openTotal, contracts, contractDetails, invoices };
+  return { periodOk, openOk, openedRows, openedTotal, closedRows, closedTotal, openRows, openTotal, contracts, contractDetails, invoices };
 }
 
 /**
@@ -895,14 +906,20 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
   const openRows: Json[] = [];
   let openedTotal = 0;
   let openTotal = 0;
-  let anyTicketData = false;
+  // Tallies need EVERY mapped id's period pull: summing the ids that answered
+  // would publish a partial quarter as if it were the whole one.
+  let allPeriodOk = true;
+  let allOpenOk = true;
+  const periodFailedIds: string[] = [];
   const contracts: Json[] = [];
   const contractDetails: Json[] = [];
   const invoices: Json[] = [];
   for (const haloId of ids) {
     const tag = ids.length > 1 ? ` [${haloId}]` : '';
     const t = await collectHaloForId(ctx, http, cfg, haloId, warnings, tag);
-    anyTicketData ||= t.ok;
+    allPeriodOk &&= t.periodOk;
+    allOpenOk &&= t.openOk;
+    if (!t.periodOk) periodFailedIds.push(haloId);
     openedRows.push(...t.openedRows);
     closedRows.push(...t.closedRows);
     openRows.push(...t.openRows);
@@ -923,9 +940,17 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
     }
   }
 
-  // Emit ticket tallies only when the API actually answered — a hard failure
-  // must read as "unavailable" in the warnings, not as a quarter of zeros.
-  if (anyTicketData) {
+  // Emit ticket tallies only when the period pull answered for every mapped id —
+  // a failure must read as "unavailable" in the warnings, not as a quarter of
+  // zeros (or a partial sum). The open snapshot stands on its own pull.
+  if (ids.length > 1 && periodFailedIds.length > 0) {
+    warnings.push(
+      `Halo ticket volume unavailable for client id(s) ${periodFailedIds.join(', ')} — ticket tallies withheld rather than reported from a partial pull.`,
+    );
+  }
+  const emitTallies = allPeriodOk;
+  const emitOpen = allOpenOk;
+  if (emitTallies || emitOpen) {
     // Resolve ticket-type names (rows carry only tickettype_id) so tickets can
     // be classified by ITIL type — the headline is human SERVICE-DESK work, not
     // the automated RMM/security alerts that dominate the raw count.
@@ -938,7 +963,7 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
 
     // An allowlist restricts on type id — but if the instance's rows carry no
     // type id at all, it can't be applied (would read as a quarter of zeros).
-    const everyRow = [...openedRows, ...closedRows, ...openRows];
+    const everyRow = [...(emitTallies ? [...openedRows, ...closedRows] : []), ...(emitOpen ? openRows : [])];
     if (allowed && everyRow.length > 0 && !everyRow.some((r) => ticketTypeIdOf(r) !== undefined)) {
       warnings.push(
         `Halo: ticket rows carry no ticket-type id, so the connection's ticket-type filter can't be applied — ticket metrics skipped (clear the filter to report on all tickets).`,
@@ -984,45 +1009,49 @@ export async function collectHaloDirect(ctx: CollectorContext, http: HttpTranspo
 
       // Every ticket metric carries its backing list so the Data tab / report
       // drill-downs open the actual tickets behind the number.
-      metrics.push({ ...op('tickets.total', 'Tickets opened', openedSvc.length, false), details: toDetail(openedSvc) });
-      metrics.push({ ...op('tickets.incidents', 'Incidents', incidentRows.length, false), details: toDetail(incidentRows) });
-      metrics.push({ ...op('tickets.service', 'Service requests', serviceRows.length), details: toDetail(serviceRows) });
-      metrics.push({ ...op('tickets.changes', 'Change requests', changeRows.length), details: toDetail(changeRows) });
-
-      // Automated alerts across ALL opened tickets — the RMM/security noise the
-      // MSP absorbs, surfaced separately so it never inflates the ticket count.
-      if (alertRows.length > 0) metrics.push({ ...op('tickets.alerts', 'Automated alerts', alertRows.length, false), details: toDetail(alertRows) });
-
-      metrics.push({ ...op('tickets.closed', 'Tickets closed', closedSvc.length, true), details: toDetail(closedSvc, TICKET_CLOSED_FIELDS, 'closed') });
-      metrics.push({
-        ...op('tickets.open', 'Open tickets', openCount, false),
-        // Open detail only when we classified from rows (not the count-only fallback).
-        ...(openRows.length > 0 ? { details: toDetail(openSvcRows) } : {}),
-      });
-
-      if (openedRows.length < openedTotal) {
-        warnings.push(`Ticket tallies sampled from the first ${openedRows.length} of ${openedTotal} opened tickets — the ITIL breakdown may be partial.`);
+      if (emitOpen) {
+        metrics.push({
+          ...op('tickets.open', 'Open tickets', openCount, false),
+          // Open detail only when we classified from rows (not the count-only fallback).
+          ...(openRows.length > 0 ? { details: toDetail(openSvcRows) } : {}),
+        });
       }
+      if (emitTallies) {
+        metrics.push({ ...op('tickets.total', 'Tickets opened', openedSvc.length, false), details: toDetail(openedSvc) });
+        metrics.push({ ...op('tickets.incidents', 'Incidents', incidentRows.length, false), details: toDetail(incidentRows) });
+        metrics.push({ ...op('tickets.service', 'Service requests', serviceRows.length), details: toDetail(serviceRows) });
+        metrics.push({ ...op('tickets.changes', 'Change requests', changeRows.length), details: toDetail(changeRows) });
 
-      // SLA outcomes over the service-desk tickets opened in the period (alerts
-      // auto-resolve and don't carry SLAs).
-      const sla = tallyHaloSla(openedSvc);
-      if (sla.met + sla.breached > 0) {
-        metrics.push(
-          metric('sla.met_pct', 'SLA met', Math.round((1000 * sla.met) / (sla.met + sla.breached)) / 10, {
-            category: 'operations',
-            source: 'halo',
-            unit: '%',
-            higherIsBetter: true,
-          }),
-        );
-        if (sla.breached > 0) metrics.push({ ...op('sla.breaches', 'SLA breaches', sla.breached, false), details: toDetail(sla.breachedRows) });
-      } else if (openedSvc.length > 0) {
-        warnings.push(
-          `Halo SLA state not recognized on ticket rows — SLA reporting needs tuning against this instance${
-            sla.seenKeys.length ? ` (SLA-ish fields seen: ${sla.seenKeys.join(', ')})` : ' (no SLA/deadline fields present on the rows)'
-          }.`,
-        );
+        // Automated alerts across ALL opened tickets — the RMM/security noise the
+        // MSP absorbs, surfaced separately so it never inflates the ticket count.
+        if (alertRows.length > 0) metrics.push({ ...op('tickets.alerts', 'Automated alerts', alertRows.length, false), details: toDetail(alertRows) });
+
+        metrics.push({ ...op('tickets.closed', 'Tickets closed', closedSvc.length, true), details: toDetail(closedSvc, TICKET_CLOSED_FIELDS, 'closed') });
+
+        if (openedRows.length < openedTotal) {
+          warnings.push(`Ticket tallies sampled from the first ${openedRows.length} of ${openedTotal} opened tickets — the ITIL breakdown may be partial.`);
+        }
+
+        // SLA outcomes over the service-desk tickets opened in the period (alerts
+        // auto-resolve and don't carry SLAs).
+        const sla = tallyHaloSla(openedSvc);
+        if (sla.met + sla.breached > 0) {
+          metrics.push(
+            metric('sla.met_pct', 'SLA met', Math.round((1000 * sla.met) / (sla.met + sla.breached)) / 10, {
+              category: 'operations',
+              source: 'halo',
+              unit: '%',
+              higherIsBetter: true,
+            }),
+          );
+          if (sla.breached > 0) metrics.push({ ...op('sla.breaches', 'SLA breaches', sla.breached, false), details: toDetail(sla.breachedRows) });
+        } else if (openedSvc.length > 0) {
+          warnings.push(
+            `Halo SLA state not recognized on ticket rows — SLA reporting needs tuning against this instance${
+              sla.seenKeys.length ? ` (SLA-ish fields seen: ${sla.seenKeys.join(', ')})` : ' (no SLA/deadline fields present on the rows)'
+            }.`,
+          );
+        }
       }
     }
   }
