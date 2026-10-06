@@ -1,5 +1,10 @@
 // Frontend mirrors of the API response shapes (kept small and local so the web
-// app has no build dependency on the server packages).
+// app has no build dependency on the server packages). The QBR status
+// vocabulary is the exception: it comes from core so labels and ordering
+// match the API exactly.
+import type { QbrStatus } from '@mashit/core';
+
+export type { QbrStatus };
 
 export type Rating = 'green' | 'amber' | 'red' | 'unknown';
 
@@ -150,7 +155,7 @@ export interface ReportModel {
 export interface QbrMeta {
   clientId: string;
   period: string;
-  status: string;
+  status: QbrStatus;
   meeting?: { scheduledAt?: string; joinUrl?: string; heldAt?: string };
   /** When the QBR package (email draft) was last generated. */
   packageSentAt?: string;
@@ -188,6 +193,8 @@ export interface ReportConfig {
   narrativeGuidance?: string;
   /** Per-section comments applied to that section's summary on regenerate. */
   sectionGuidance?: Record<string, string>;
+  /** Metric keys left out of the report. */
+  excludedMetrics?: string[];
 }
 
 export interface DiscussionItem {
