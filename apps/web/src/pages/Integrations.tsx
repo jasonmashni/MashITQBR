@@ -269,9 +269,9 @@ function MappingModal({ conn, onClose }: { conn: ConnectionView; onClose: (saved
         <Text size="sm" c="dimmed">
           Match each QBR client to its record in {typeDef(conn.type)?.label ?? conn.type}
           {orgs
-            ? ', pick from the organizations found in the tool.'
-            : `, the tool's organization list couldn't be loaded, so type each client's ${typeDef(conn.type)?.label ?? conn.type} id manually (or fix the connection and reopen).`}
-          {multi && ' You can pick multiple Halo entities per client (e.g. a service + a billing entity), their numbers are combined.'}
+            ? '. Pick from the organizations found in the tool.'
+            : `. The tool's organization list could not be loaded, so type each client's ${typeDef(conn.type)?.label ?? conn.type} id by hand, or fix the connection and reopen.`}
+          {multi && ' You can pick multiple Halo entities per client (for example a service and a billing entity). Their numbers are combined.'}
         </Text>
         {orgError && <Text size="sm" c="red.7">{orgError}</Text>}
         {loading ? (

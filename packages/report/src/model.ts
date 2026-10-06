@@ -187,6 +187,7 @@ const CLIENT_CAVEAT_ALLOW: RegExp[] = [
   /excluded\b.*ended contract/i,
   /billing period/i,
   /\bpartial\b/i,
+  /\bunderstated\b/i,
 ];
 
 /** Clauses that are operator setup or troubleshooting notes, never client copy. */
@@ -251,7 +252,11 @@ export function clientCaveats(
     const cut = cutErrorDetail(tagless);
     // Clause by clause: drop operator asides and instructions, keep the fact.
     const clauses = cut
-      .replace(/\s*\(([^)]*)\)/g, (m: string, inner: string) => (OPERATOR_CLAUSE.test(inner) ? '' : m))
+      // Parentheticals that carry operator detail or an identifier (a tenant
+      // scope, raw response field names) never reach a client.
+      .replace(/\s*\(([^)]*)\)/g, (m: string, inner: string) =>
+        OPERATOR_CLAUSE.test(inner) || /\bscope\b|response fields|\btenant\b|\bcustomer id\b|\bid\b/i.test(inner) ? '' : m,
+      )
       .split(/\s*—\s*|;\s+/)
       .map((c) => c.trim().replace(/[.,]+$/, ''))
       .filter((c) => c && !OPERATOR_CLAUSE.test(c));

@@ -370,7 +370,7 @@ export function Settings() {
         </Group>
         {system?.inboxLastPoll && (
           <Text size="xs" c={system.inboxLastPoll.ok ? 'dimmed' : 'red.7'} mb={6}>
-            Last check {new Date(system.inboxLastPoll.at).toLocaleString()}, {system.inboxLastPoll.detail}
+            Last check {new Date(system.inboxLastPoll.at).toLocaleString()}. {system.inboxLastPoll.detail}
           </Text>
         )}
         {!system?.reportsMailbox && system?.inboxEnvSeen && (

@@ -65,3 +65,23 @@ describe('client deliverables carry only client caveats', () => {
     }
   });
 });
+
+describe('clientCaveats residuals from the final review', () => {
+  it('never prints a tenant scope or raw response fields, even inside a kept caveat', () => {
+    const out = clientCaveats(
+      [
+        'Check Point returned no email events for 2026-07-01 to 2026-09-30 (scope acme-tenant-42) — email security metrics not reported; confirm the tenant mapping.',
+        'Check Point returned no email events in a recognized format (response fields: foo, bar) — email security metrics not reported.',
+      ],
+      none,
+    );
+    expect(out.join(' ')).not.toMatch(/acme-tenant-42|scope|response fields|foo/);
+    expect(out.length).toBe(2);
+    expect(out[0]).toMatch(/metrics not reported/);
+  });
+
+  it('keeps an "understated" caveat the client should read', () => {
+    const out = clientCaveats(['2 Halo contract(s) had no recognizable monthly value field — MRR may be understated.'], none);
+    expect(out).toEqual(['2 Halo contract(s) had no recognizable monthly value field, MRR may be understated.']);
+  });
+});

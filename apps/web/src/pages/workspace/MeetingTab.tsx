@@ -382,7 +382,7 @@ function BookingLinkCard({
           <Text size="sm">
             <b>{booking.attendeeName}</b> ({booking.attendeeEmail}) booked{' '}
             <b>{booking.start?.replace('T', ' at ')}</b> ({booking.timezone})
-            {booking.eventId ? ', Teams invite sent to everyone.' : ', calendar not connected, send the invite manually.'}
+            {booking.eventId ? '. A Teams invite went to everyone.' : '. The calendar is not connected, so send the invite yourself.'}
           </Text>
           <Button size="compact-sm" variant="light" color="act" loading={cancelling} onClick={cancelMeeting}>
             Cancel / reschedule
