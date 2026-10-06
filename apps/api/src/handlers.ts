@@ -174,7 +174,14 @@ async function resolveMcp(): Promise<McpTransport | undefined> {
   );
 }
 
+let _integrationsOverride: (() => Promise<Integrations>) | undefined;
+/** Test seam: substitute fake integrations for the live ones (undefined restores). */
+export function __setIntegrationsForTests(factory: (() => Promise<Integrations>) | undefined): void {
+  _integrationsOverride = factory;
+}
+
 async function buildIntegrations(): Promise<Integrations> {
+  if (_integrationsOverride) return _integrationsOverride();
   return { store: getDataStore(), secrets: getSecretStore(), mcp: await resolveMcp(), http: new FetchHttpTransport() };
 }
 
@@ -491,7 +498,7 @@ export async function getMetrics(clientId: string, period: string): Promise<ApiR
   const snapshot = await storeDataSource(store).getSnapshot(clientId, period);
   if (!snapshot) return err(404, `No metric snapshot for ${clientId} ${period} — run a Sync first.`);
   const config = await store.getReportConfig(clientId);
-  return ok({ snapshot, excluded: config?.excludedMetrics ?? [] });
+  return ok({ snapshot, excluded: config?.excludedMetrics ?? [], warnings: snapshot.warnings ?? [] });
 }
 
 
@@ -1203,7 +1210,11 @@ export async function importHalo(): Promise<ApiResult> {
 
 export async function syncQbr(clientId: string, period: string): Promise<ApiResult> {
   try {
-    const { snapshot, warnings, documents } = await syncClientMetrics(await buildIntegrations(), clientId, period);
+    const { snapshot, warnings, documents, allFailed } = await syncClientMetrics(await buildIntegrations(), clientId, period);
+    if (allFailed) {
+      audit('qbr.sync', `qbr:${clientId}/${period}`, 'every collector failed; previous data kept');
+      return err(409, 'Every connected tool failed; previous data kept. ' + warnings.join(' '));
+    }
     // Vendor-published report files (e.g. the Huntress quarterly PDF) attach automatically.
     await attachSyncDocuments(clientId, period, documents, warnings);
     const store = getDataStore();
