@@ -31,3 +31,28 @@ export function advanceStatus(current: QbrStatus | undefined, candidate: QbrStat
   if (effective === 'archived') return effective;
   return rank(candidate) > rank(effective) ? candidate : effective;
 }
+
+/**
+ * Human labels for every lifecycle stage. The only vocabulary that may reach
+ * a screen or a deliverable; enum strings stay internal.
+ */
+export const QBR_STATUS_LABELS: Record<QbrStatus, string> = {
+  draft: 'Not started',
+  data_synced: 'Data pulled',
+  narrative_approved: 'Narrative approved',
+  scheduled: 'Meeting booked',
+  completed: 'Review complete',
+  dispositioned: 'Decisions captured',
+  actions_pushed: 'Actions pushed',
+  archived: 'Archived',
+};
+
+/** Label for a status; unknown or missing values read as "Not started". */
+export function qbrStatusLabel(status: QbrStatus | string | undefined): string {
+  return isQbrStatus(status) ? QBR_STATUS_LABELS[status] : QBR_STATUS_LABELS.draft;
+}
+
+/** True when `current` has reached `target` in the lifecycle (unset counts as draft). */
+export function statusAtLeast(current: QbrStatus | undefined, target: QbrStatus): boolean {
+  return rank(current ?? 'draft') >= rank(target);
+}

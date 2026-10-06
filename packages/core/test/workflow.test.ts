@@ -1,5 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { advanceStatus, isQbrStatus, QBR_STATUS_ORDER } from '../src/workflow.js';
+import { advanceStatus, isQbrStatus, QBR_STATUS_ORDER, QBR_STATUS_LABELS, qbrStatusLabel, statusAtLeast } from '../src/workflow.js';
+import { scorecardConfidence } from '../src/scorecard.js';
+
+describe('status labels and ordering helpers', () => {
+  it('maps every status to a human label', () => {
+    expect(qbrStatusLabel('data_synced')).toBe('Data pulled');
+    expect(qbrStatusLabel('completed')).toBe('Review complete');
+    expect(qbrStatusLabel(undefined)).toBe('Not started');
+    expect(qbrStatusLabel('bogus')).toBe('Not started');
+    expect(Object.keys(QBR_STATUS_LABELS)).toHaveLength(8);
+  });
+
+  it('statusAtLeast compares by lifecycle rank', () => {
+    expect(statusAtLeast('completed', 'narrative_approved')).toBe(true);
+    expect(statusAtLeast('data_synced', 'scheduled')).toBe(false);
+    expect(statusAtLeast(undefined, 'draft')).toBe(true);
+    expect(statusAtLeast('scheduled', 'scheduled')).toBe(true);
+  });
+
+  it('scorecardConfidence buckets coverage', () => {
+    expect(scorecardConfidence(0.39)).toBe('low');
+    expect(scorecardConfidence(0.4)).toBe('medium');
+    expect(scorecardConfidence(0.69)).toBe('medium');
+    expect(scorecardConfidence(0.7)).toBe('high');
+  });
+});
 
 describe('QBR_STATUS_ORDER / isQbrStatus', () => {
   it('lists all eight lifecycle stages in order', () => {

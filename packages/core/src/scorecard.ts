@@ -322,9 +322,17 @@ export function computeScorecard(
   return {
     clientId: snapshot.clientId,
     period: snapshot.period,
-    overall: { score: overallScore, rating: ratingFor(overallScore), coverage },
+    overall: { score: overallScore, rating: ratingFor(overallScore), coverage, confidence: scorecardConfidence(coverage) },
     functions,
     safeguards,
     remediations,
   };
+}
+
+/**
+ * How much to trust an overall score given the measured share of safeguard
+ * weight: below 0.4 the score is withheld, below 0.7 it is provisional.
+ */
+export function scorecardConfidence(coverage: number): 'low' | 'medium' | 'high' {
+  return coverage < 0.4 ? 'low' : coverage < 0.7 ? 'medium' : 'high';
 }
