@@ -98,16 +98,18 @@ async function queryAll(
   extraParams: Record<string, string | number>,
   maxPages = 5,
 ): Promise<{ rows: Json[]; truncated: boolean }> {
+  const pageSize = 1000;
   const out: Json[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < maxPages; page++) {
-    const params: Record<string, string | number> = { ...extraParams, pageSize: 1000 };
+    const params: Record<string, string | number> = { ...extraParams, pageSize };
     if (cursor) params['cursor'] = cursor;
     const json = (await ninjaGet(http, cfg, path, params)) as Json | null;
     const rows = toArray<Json>(json, ['results']);
     out.push(...rows);
     const next = ((json?.['cursor'] as Json | undefined)?.['name'] ?? json?.['cursor']) as string | undefined;
-    if (!next || typeof next !== 'string' || rows.length === 0) return { rows: out, truncated: false };
+    // A short page is the end of the list even if a (stale) cursor rides along.
+    if (!next || typeof next !== 'string' || rows.length < pageSize) return { rows: out, truncated: false };
     cursor = next;
   }
   return { rows: out, truncated: true };
@@ -297,9 +299,13 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
   // Query rows carry deviceId — scope them to the role-filtered device set.
   const scoped = (rows: Json[]) => (allowedIds ? rows.filter((r) => allowedIds.has(String(r['deviceId'] ?? r['id'] ?? ''))) : rows);
   // Run an org query, scope it, and say so when the page cap cut it short.
+  const truncatedLabels = new Set<string>();
   const query = async (path: string, params: Record<string, string | number>, label: string): Promise<Json[]> => {
     const { rows, truncated } = await queryAll(http, cfg, path, params);
-    if (truncated) warnings.push(`NinjaOne ${label} query truncated at ${rows.length} rows (page cap reached) — the figure is a lower bound.`);
+    if (truncated) {
+      truncatedLabels.add(label);
+      warnings.push(`NinjaOne ${label} query truncated at ${rows.length} rows (page cap reached) — the figure is a lower bound.`);
+    }
     return scoped(rows);
   };
 
@@ -330,9 +336,16 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
       { ...df, status: 'FAILED', installedAfter: ctx.period.start, installedBefore: ctx.period.end },
       'failed-patch history',
     );
-    metrics.push(...normalizeNinjaPatchQuarter(installed.length, failed.length));
+    const historyTruncated = truncatedLabels.has('installed-patch history') || truncatedLabels.has('failed-patch history');
+    // Each side is capped independently, so a ratio of two lower bounds can be
+    // skewed either way: keep the raw counts, drop the rate.
+    metrics.push(
+      ...normalizeNinjaPatchQuarter(installed.length, failed.length).filter((m) => !(historyTruncated && m.key === 'patch.compliance_pct')),
+    );
     const events = installed.length + failed.length;
-    if (events < MIN_PATCH_EVENTS) {
+    if (historyTruncated) {
+      warnings.push('NinjaOne patch success rate not reported: the install history was truncated at the page cap, so installed vs failed counts are incomplete.');
+    } else if (events < MIN_PATCH_EVENTS) {
       warnings.push(`NinjaOne: too few patch events this quarter (${events}, need ${MIN_PATCH_EVENTS}) for a meaningful patch success rate — rate not reported.`);
     }
   } catch (e) {

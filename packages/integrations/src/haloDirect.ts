@@ -181,7 +181,9 @@ export async function fetchTicketTypeMap(http: HttpTransport, cfg: HaloCfg): Pro
     // resolution for every client synced in the next hour.
     return map;
   }
-  ticketTypeCache.set(cfg.baseUrl, { at: Date.now(), map });
+  // An empty map (e.g. a 200 with an unexpected shape) is not cached either:
+  // it would read as "no types" for every client synced in the next hour.
+  if (map.size > 0) ticketTypeCache.set(cfg.baseUrl, { at: Date.now(), map });
   return map;
 }
 
