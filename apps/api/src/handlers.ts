@@ -43,6 +43,7 @@ import {
   type OpportunityRecord,
   type OpportunityStatus,
   type PackageRecord,
+  type PackageStage,
   type QbrRecord,
 } from './store/index.js';
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
@@ -73,7 +74,7 @@ import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from '.
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 import { computeTriage } from './triage.js';
 import { dataLocked, refuseIfLocked } from './locks.js';
-import { latestPackage, loadPackageFile, loadPackageModel, type StoredModel } from './packages.js';
+import { latestPackage, loadPackageFile, loadPackageModel, storePackage, type StoredModel } from './packages.js';
 
 export interface ApiResult {
   status: number;
@@ -327,13 +328,71 @@ export async function getReportHtml(clientId: string, period: string, ai: string
 /** The full QBR PDF: the designed report with attached PDF reports appended. */
 async function buildFullPdf(clientId: string, period: string, ai: string | null): Promise<{ bytes: Buffer; filename: string }> {
   const report = await buildReportFor(clientId, period, ai);
-  const pdf = await renderPdf(report.model);
-  // Vendor reports ride at the back of the deliverable (appendix lists them).
-  const attachments = await loadPdfAttachments(getDataStore(), getDocStore(), clientId, period).catch(() => []);
   return {
-    bytes: await appendPdfAttachments(pdf, attachments),
+    bytes: await renderFullPdf(clientId, period, report.model),
     filename: deliverableFilename(report.model.client.name, report.model.period.label, 'pdf'),
   };
+}
+
+/** Render an already-built model to the full PDF (vendor reports appended). */
+async function renderFullPdf(clientId: string, period: string, model: StoredModel): Promise<Buffer> {
+  const pdf = await renderPdf(model);
+  // Vendor reports ride at the back of the deliverable (appendix lists them).
+  const attachments = await loadPdfAttachments(getDataStore(), getDocStore(), clientId, period).catch(() => []);
+  return appendPdfAttachments(pdf, attachments);
+}
+
+/**
+ * Build the report once, render the PDF, deck and HTML from that single build
+ * and store them as the next package version. Shared by lock 1 and lock 2.
+ */
+async function freezePackage(clientId: string, period: string, stage: PackageStage) {
+  const report = await buildReportFor(clientId, period, null);
+  const model: StoredModel = report.model;
+  const pkg = await storePackage(getDataStore(), getDocStore(), {
+    clientId,
+    period,
+    stage,
+    createdBy: currentActor(),
+    artifacts: {
+      model,
+      verification: report.narrative.verification.ok,
+      warnings: report.warnings,
+      pdf: await renderFullPdf(clientId, period, model),
+      pptx: await renderDeck(model),
+      html: renderQbrHtml({ ...report, model }),
+    },
+  });
+  return { report, pkg };
+}
+
+/**
+ * Page-one decisions become planned agenda items so the meeting starts from
+ * them. Items already on the agenda (same topic) are left alone.
+ */
+async function seedReportDecisions(clientId: string, period: string, decisions: Array<{ ask: string; why?: string }> | undefined): Promise<void> {
+  const asks = (decisions ?? []).filter((d) => typeof d?.ask === 'string' && d.ask.trim());
+  if (asks.length === 0) return;
+  const store = getDataStore();
+  const existing = await store.getDiscussion(clientId, period);
+  const items = [...(existing?.items ?? [])];
+  const topics = new Set(items.map((i) => i.topic.trim().toLowerCase()));
+  for (const d of asks) {
+    const topic = d.ask.trim();
+    if (topics.has(topic.toLowerCase())) continue;
+    topics.add(topic.toLowerCase());
+    items.push({
+      id: Math.random().toString(36).slice(2, 10),
+      topic,
+      response: d.why?.trim() || undefined,
+      status: 'planned',
+      includeInReport: true,
+      source: 'report',
+      sourceRef: 'page-one',
+    });
+  }
+  if (items.length === (existing?.items.length ?? 0)) return;
+  await store.putDiscussion({ clientId, period, items, notes: existing?.notes });
 }
 
 export async function getReportPdf(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
@@ -1410,10 +1469,27 @@ export async function markPackageSent(clientId: string, period: string): Promise
   if (!(await ds.getSnapshot(clientId, period))) return err(409, `No metric snapshot for ${clientId} ${period}; there is no report to send.`);
   const existing = await store.getQbr(clientId, period);
   if (existing?.status === 'archived') return err(409, 'This QBR is archived; un-archive it before marking the package sent.');
-  // Idempotent: the first send date is the one that counts.
-  if (existing?.packageSentAt) return ok(existing);
-  const saved = await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() });
-  audit('qbr.package_sent', `qbr:${clientId}/${period}`);
+  // Idempotent: a locked quarter already has its package; the first send date counts.
+  if (dataLocked(existing)) {
+    return ok(existing?.packageSentAt ? existing : await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() }));
+  }
+  // Lock 1: build once, store the pre-read package, freeze data and narrative.
+  let frozen;
+  try {
+    frozen = await freezePackage(clientId, period, 'preread');
+  } catch (e) {
+    return mapBuildError(e);
+  }
+  const { report, pkg } = frozen;
+  const now = new Date().toISOString();
+  const saved = await patchQbr(clientId, period, {
+    packageSentAt: existing?.packageSentAt ?? now,
+    locks: { ...existing?.locks, preread: { at: now, by: currentActor(), version: pkg.version } },
+  });
+  // `decisions` arrives with the report v2 narrative contract (workstream C).
+  await seedReportDecisions(clientId, period, (report.narrative.output as { decisions?: Array<{ ask: string; why?: string }> }).decisions);
+  if (!existing?.packageSentAt) audit('qbr.package_sent', `qbr:${clientId}/${period}`);
+  await audit('qbr.lock', `qbr:${clientId}/${period}`, `preread v${pkg.version}`);
   return ok(saved);
 }
 

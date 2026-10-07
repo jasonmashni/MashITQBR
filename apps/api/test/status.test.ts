@@ -1,8 +1,30 @@
-import { beforeAll, afterAll, describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import type { QbrRecord } from '../src/store/index.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// With ANTHROPIC_API_KEY set, the handlers' Claude factory returns this
+// grounded stub, which also carries page-one decisions (workstream C adds the
+// field to the narrative contract; lock 1 seeds them onto the agenda).
+const narrativeStub = vi.hoisted(() => ({ calls: 0 }));
+vi.mock('@mashit/narrative', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@mashit/narrative')>();
+  return {
+    ...actual,
+    createClaudeNarrativeModel: () => async () => {
+      narrativeStub.calls++;
+      return {
+        headline: 'A steady quarter',
+        summary_paragraphs: ['The quarter was steady.'],
+        highlights: [],
+        recommendations: [],
+        figures_referenced: [],
+        decisions: [{ ask: 'Approve the firewall refresh', why: 'The current units reach end of support.' }],
+      };
+    },
+  };
+});
 
 let dir: string;
 beforeAll(() => {
@@ -179,5 +201,40 @@ describe('locked quarters refuse writes', () => {
     expect(await h.putDiscussion('anp', '2024-Q1', { items: [], notes: 'Too late' })).toEqual({ status: 409, json: { error: 'locked', stage: 'final' } });
     expect((await h.putSchedule('anp', '2024-Q1', { scheduledAt: '2024-03-11T15:00:00Z' })).status).toBe(409);
     expect((await h.syncQbr('anp', '2024-Q1')).json).toEqual({ error: 'locked', stage: 'final' });
+  });
+});
+
+describe('lock 1: package sent', () => {
+  it('stores the pre-read package once, sets locks.preread and seeds decisions', async () => {
+    const h = await import('../src/handlers.js');
+    const { getDataStore, getDocStore } = await import('../src/store/index.js');
+    const store = getDataStore();
+    await h.putStatus('mp', '2026-Q1', { status: 'narrative_approved' });
+    process.env['ANTHROPIC_API_KEY'] = 'test-key';
+    try {
+      const res = await h.markPackageSent('mp', '2026-Q1');
+      expect(res.status).toBe(200);
+      const rec = res.json as QbrRecord;
+      expect(rec.locks?.preread?.version).toBe(1);
+      expect(rec.packageSentAt).toBeTruthy();
+
+      const pkgs = await store.listPackages('mp', '2026-Q1');
+      expect(pkgs.map((p) => [p.version, p.stage])).toEqual([[1, 'preread']]);
+      expect((await getDocStore().get(pkgs[0]!.files.html))?.toString('utf8').startsWith('<!doctype html>')).toBe(true);
+
+      const again = await h.markPackageSent('mp', '2026-Q1');
+      expect(again.json).toEqual(rec);
+      expect(await store.listPackages('mp', '2026-Q1')).toHaveLength(1);
+
+      const items = (await store.getDiscussion('mp', '2026-Q1'))?.items ?? [];
+      const seeded = items.filter((i) => i.source === 'report');
+      expect(seeded).toHaveLength(1);
+      expect(seeded[0]).toMatchObject({ topic: 'Approve the firewall refresh', response: 'The current units reach end of support.', status: 'planned', includeInReport: true, sourceRef: 'page-one' });
+
+      const events = ((await h.getAudit('50')).json as { events: Array<{ action: string; detail?: string }> }).events;
+      expect(events.some((e) => e.action === 'qbr.lock' && e.detail === 'preread v1')).toBe(true);
+    } finally {
+      delete process.env['ANTHROPIC_API_KEY'];
+    }
   });
 });
