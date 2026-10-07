@@ -255,6 +255,41 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
   });
 });
 
+describe('since last quarter in the service', () => {
+  const previousDiscussion = [
+    { id: 'p1', topic: 'Clock-in tablet', disposition: 'create_ticket' as const, status: 'discussed' as const, externalRef: { system: 'halo' as const, id: '41882', status: 'Open' } },
+    { id: 'p2', topic: 'Studio 5000 access', status: 'planned' as const },
+  ];
+
+  it('looks up live Halo statuses for pushed items and passes revisedAt', async () => {
+    const asked: string[] = [];
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      previousDiscussion,
+      lookupTicketStatus: async (id) => {
+        asked.push(id);
+        return 'Closed';
+      },
+      revisedAt: '2026-10-09',
+    });
+    expect(asked).toEqual(['41882']);
+    expect(report.model.sinceLastQuarter.map((r) => [r.topic, r.status])).toEqual([
+      ['Clock-in tablet', 'done'],
+      ['Studio 5000 access', 'waiting'],
+    ]);
+    expect(report.model.revisedAt).toBe('2026-10-09');
+  });
+
+  it('falls back to the stored status when the lookup fails', async () => {
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      previousDiscussion,
+      lookupTicketStatus: async () => {
+        throw new Error('Halo down');
+      },
+    });
+    expect(report.model.sinceLastQuarter[0]!.status).toBe('in_progress');
+  });
+});
+
 describe('narrativeEditsFromBody', () => {
   it('keeps every prose field and drops blanks', () => {
     const edits = narrativeEditsFromBody({

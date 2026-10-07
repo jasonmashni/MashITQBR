@@ -171,6 +171,17 @@ describe('extractQbrDocument stores findings', () => {
       { name: 'Synology Active Backup.pdf', source: 'upload', findings: [{ text: 'One lab PC has not backed up in 389 days', severity: 'act' }] },
     ]);
   });
+
+  it('loadReportInputs carries the previous quarter discussion for Since last quarter', async () => {
+    const { getDataStore, loadReportInputs } = await import('../src/store/index.js');
+    const store = getDataStore();
+    expect((await loadReportInputs(store, 'clinic', '2026-Q2')).previousDiscussion).toBeUndefined();
+    await store.putDiscussion({ clientId: 'clinic', period: '2026-Q1', items: [{ id: 'p1', topic: 'Firewall refresh', status: 'discussed' }] });
+    const inputs = await loadReportInputs(store, 'clinic', '2026-Q2');
+    expect(inputs.previousDiscussion?.map((d) => d.topic)).toEqual(['Firewall refresh']);
+    // Nothing was pushed to Halo, so no lookup is built.
+    expect(inputs.lookupTicketStatus).toBeUndefined();
+  });
 });
 
 describe('pdfSourceSlug', () => {

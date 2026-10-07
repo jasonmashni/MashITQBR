@@ -4,6 +4,7 @@ import {
   computeTrends,
   indexTrends,
   parsePeriod,
+  protectionRows,
   ticketInsightRecommendations,
   type Brand,
   type Client,
@@ -15,6 +16,7 @@ import {
   type MetricSnapshot,
   type MetricTrend,
   type MetricValue,
+  type ProtectionRow,
   type ReportConfig,
 } from '@mashit/core';
 import type { NarrativeOutput } from '@mashit/narrative';
@@ -32,6 +34,52 @@ export interface ReportSection {
   summary?: string;
   rows: ReportSectionRow[];
 }
+
+/** Where a discussion item stands, for the page three chip. */
+export type ConversationStatus = 'on_plan' | 'in_progress' | 'waiting' | 'done' | 'closed';
+
+/** One "Since last quarter" row on page one. */
+export interface SinceLastRow {
+  topic: string;
+  status: 'done' | 'in_progress' | 'waiting' | 'closed';
+  detail?: string;
+}
+
+/** A protection question with its scorecard status and the narrative's prose. */
+export type ReportProtectionRow = ProtectionRow & { inPlace?: string; thisQuarter?: string };
+
+const CLOSED_STATUS = /closed|resolved|complete/i;
+
+/**
+ * Where a discussion item stands: a ticket pushed to Halo and still open is
+ * in progress; no action is closed; a planned item nobody answered is
+ * waiting; a discussed item (or pushed ticket) whose external status is
+ * closed, resolved or complete is done; anything else is on plan.
+ */
+export function conversationStatus(item: DiscussionItem): ConversationStatus {
+  const external = item.externalRef?.status?.trim();
+  const externalClosed = !!external && CLOSED_STATUS.test(external);
+  if (item.disposition === 'no_action') return 'closed';
+  if (externalClosed && (item.status === 'discussed' || item.disposition === 'create_ticket')) return 'done';
+  if (item.disposition === 'create_ticket' && external && !externalClosed) return 'in_progress';
+  if (item.status === 'planned' && !item.response?.trim()) return 'waiting';
+  return 'on_plan';
+}
+
+/** Apply live Halo ticket statuses (externalRef id -> status) to discussion items. */
+function withLiveStatus(items: DiscussionItem[], statuses: Record<string, string> | undefined): DiscussionItem[] {
+  if (!statuses) return items;
+  return items.map((d) =>
+    d.externalRef?.system === 'halo' && statuses[d.externalRef.id] ? { ...d, externalRef: { ...d.externalRef, status: statuses[d.externalRef.id] } } : d,
+  );
+}
+
+/** Reportable items in agenda order. */
+function reportable(items: DiscussionItem[]): DiscussionItem[] {
+  return items.filter((d) => d.includeInReport !== false).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+}
+
+const SINCE_LAST_MAX = 5;
 
 export interface ReportModel {
   client: { name: string; primaryContact?: string; industry?: string; hipaa?: boolean; complianceStandard?: string };
@@ -52,6 +100,12 @@ export interface ReportModel {
   customSections: CustomSection[];
   /** Captured discussion points / client responses from the review. */
   discussion: DiscussionItem[];
+  /** What happened to last quarter's discussion items (page one); empty hides the block. */
+  sinceLastQuarter: SinceLastRow[];
+  /** The five protection questions (page two), in order. */
+  protection: ReportProtectionRow[];
+  /** Set when a reopened quarter was locked again: the footer says "Revised on". */
+  revisedAt?: string;
   /** General meeting notes. */
   notes?: string;
   recommendations: string[];
@@ -93,6 +147,12 @@ export function buildReportModel(args: {
   documents?: Array<{ name: string; source: string }>;
   /** Labels of metrics reviewed out (their caveats stay off the report). */
   excludedLabels?: string[];
+  /** The previous quarter's discussion, for "Since last quarter". */
+  previousDiscussion?: DiscussionItem[];
+  /** Live Halo ticket statuses by externalRef id; they refine the stored status. */
+  ticketStatuses?: Record<string, string>;
+  /** When a reopened quarter was locked again. */
+  revisedAt?: string;
 }): ReportModel {
   const { client, current, previous, narrative, config } = args;
   const period = parsePeriod(current.period);
@@ -152,9 +212,22 @@ export function buildReportModel(args: {
     sections,
     customSections: config?.customSections ?? [],
     // Only items marked for the report, in agenda order.
-    discussion: (args.discussion ?? [])
-      .filter((d) => d.includeInReport !== false)
-      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)),
+    discussion: reportable(withLiveStatus(args.discussion ?? [], args.ticketStatuses)),
+    sinceLastQuarter:
+      config?.showSinceLastQuarter === false
+        ? []
+        : reportable(withLiveStatus(args.previousDiscussion ?? [], args.ticketStatuses))
+            .slice(0, SINCE_LAST_MAX)
+            .map((d) => {
+              const status = conversationStatus(d);
+              const detail = d.response?.trim() || (d.externalRef?.system === 'halo' ? `Ticket ${d.externalRef.id}` : undefined);
+              return { topic: d.topic, status: status === 'on_plan' ? 'in_progress' : status, ...(detail ? { detail } : {}) };
+            }),
+    protection: protectionRows(scorecard).map((row) => {
+      const prose = narrative?.protection?.find((p) => p.question === row.id);
+      return prose ? { ...row, inPlace: prose.inPlace, thisQuarter: prose.thisQuarter } : row;
+    }),
+    ...(args.revisedAt ? { revisedAt: args.revisedAt } : {}),
     notes: args.notes,
     recommendations,
     documents: args.documents ?? [],

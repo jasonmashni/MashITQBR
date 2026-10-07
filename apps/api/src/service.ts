@@ -14,8 +14,12 @@ import {
   type NarrativeResult,
   type PlanItem,
 } from '@mashit/narrative';
+import { FetchHttpTransport, haloGet, type HttpTransport } from '@mashit/integrations';
 import { buildReportModel, renderReportHtml, type ReportModel } from '@mashit/report';
+import { resolveSecret } from './connections.js';
 import type { QbrDataSource } from './dataSource.js';
+import { directHaloConn } from './integrationsService.js';
+import type { DataStore, SecretStore } from './store/index.js';
 
 /**
  * Persistent cache for AI narratives, keyed by an input hash. The hash covers
@@ -130,6 +134,15 @@ export interface BuildQbrOptions {
   /** Captured review discussion + notes. */
   discussion?: DiscussionItem[];
   notes?: string;
+  /** The previous quarter's discussion, for "Since last quarter". */
+  previousDiscussion?: DiscussionItem[];
+  /**
+   * Live status of a pushed Halo ticket by id. Failures and undefined fall
+   * back to the stored status. Injected so tests never reach Halo.
+   */
+  lookupTicketStatus?: (id: string) => Promise<string | undefined>;
+  /** When a reopened quarter was locked again (footer "Revised on"). */
+  revisedAt?: string;
   /** Attached vendor reports / uploads (rendered as the appendix); findings feed the narrative. */
   documents?: Array<{ name: string; source: string; findings?: Array<{ text: string; severity: 'info' | 'watch' | 'act' }> }>;
 }
@@ -318,10 +331,30 @@ export async function buildQbrReport(
   };
   narrative = { ...narrative, output: legacyFields(narrative.output) };
 
+  // Pushed Halo tickets: ask Halo where each one stands now, so "Since last
+  // quarter" and the conversations table do not report a stale status.
+  const ticketStatuses: Record<string, string> = {};
+  if (opts.lookupTicketStatus) {
+    const ids = new Set(
+      [...(opts.previousDiscussion ?? []), ...(opts.discussion ?? [])]
+        .filter((d) => d.externalRef?.system === 'halo' && d.externalRef.id)
+        .map((d) => d.externalRef!.id),
+    );
+    await Promise.all(
+      [...ids].map(async (id) => {
+        const status = await opts.lookupTicketStatus!(id).catch(() => undefined);
+        if (status) ticketStatuses[id] = status;
+      }),
+    );
+  }
+
   const model = buildReportModel({
     client,
     current,
     previous,
+    previousDiscussion: opts.previousDiscussion,
+    ticketStatuses: Object.keys(ticketStatuses).length ? ticketStatuses : undefined,
+    revisedAt: opts.revisedAt,
     narrative: narrative.output,
     heldBy: opts.heldBy,
     generatedLabel: opts.generatedLabel,
@@ -352,6 +385,35 @@ export async function buildQbrReport(
   }
 
   return { clientId, period: periodId, model, narrative, warnings };
+}
+
+/**
+ * A Halo ticket status lookup over the direct Halo connection, or undefined
+ * when none is configured. Reads `status_name`, else `status`; any failure
+ * answers undefined so the stored status is used.
+ */
+export async function haloTicketStatusLookup(
+  store: DataStore,
+  secrets: SecretStore,
+  http: HttpTransport = new FetchHttpTransport(),
+): Promise<((id: string) => Promise<string | undefined>) | undefined> {
+  const conn = await directHaloConn(store);
+  if (!conn) return undefined;
+  const cfg = {
+    baseUrl: conn.config['baseUrl'] ?? '',
+    clientId: conn.config['clientId'] ?? '',
+    clientSecret: (await resolveSecret(secrets, conn, 'clientSecret')) ?? '',
+    tenant: conn.config['tenant'] || undefined,
+  };
+  return async (id) => {
+    try {
+      const ticket = (await haloGet(http, cfg, `Tickets/${encodeURIComponent(id)}`)) as Record<string, unknown> | undefined;
+      const status = ticket?.['status_name'] ?? ticket?.['status'];
+      return typeof status === 'string' && status.trim() ? status.trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  };
 }
 
 export function renderQbrHtml(report: QbrReport): string {

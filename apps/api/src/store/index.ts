@@ -1,4 +1,4 @@
-import { SEED_CLIENTS, SEED_SNAPSHOTS, findSeedSnapshot, type DiscussionItem, type ReportConfig } from '@mashit/core';
+import { SEED_CLIENTS, SEED_SNAPSHOTS, findSeedSnapshot, previousPeriod, type DiscussionItem, type ReportConfig } from '@mashit/core';
 import type { QbrDataSource } from '../dataSource.js';
 import type { NarrativeCache } from '../service.js';
 import { JsonDataStore } from './jsonStore.js';
@@ -97,6 +97,10 @@ export interface ReportInputs {
   discussion?: DiscussionItem[];
   notes?: string;
   narrativeEdits?: import('./types.js').NarrativeEdits;
+  /** The previous quarter's discussion, for "Since last quarter". */
+  previousDiscussion?: DiscussionItem[];
+  /** Live Halo ticket status lookup, present only when an item was pushed to Halo and a direct connection exists. */
+  lookupTicketStatus?: (id: string) => Promise<string | undefined>;
   documents?: Array<{ name: string; source: string; findings?: import('./types.js').DocumentFinding[] }>;
 }
 
@@ -106,12 +110,27 @@ export async function loadReportInputs(store: DataStore, clientId: string, perio
   const org = await store.getReportConfig(ORG_SETTINGS_ID);
   const d = await store.getDiscussion(clientId, period);
   const narrative = await store.getNarrative(clientId, period);
+  const previous = await store.getDiscussion(clientId, previousPeriod(period).id).catch(() => undefined);
+  const pushed = [...(previous?.items ?? []), ...(d?.items ?? [])].some((i) => i.externalRef?.system === 'halo');
+  // Lazy import: the Halo transport is only loaded when there is a ticket to ask about.
+  const lookupTicketStatus = pushed
+    ? await import('../service.js').then((m) => m.haloTicketStatusLookup(store, getSecretStore())).catch(() => undefined)
+    : undefined;
   const documents = (await store.listDocuments(clientId, period)).map((doc) => ({
     name: doc.name,
     source: doc.source,
     ...(doc.findings?.length ? { findings: doc.findings } : {}),
   }));
-  return { config, orgBrand: org?.brand, discussion: d?.items, notes: d?.notes, narrativeEdits: narrative?.edits, documents };
+  return {
+    config,
+    orgBrand: org?.brand,
+    discussion: d?.items,
+    notes: d?.notes,
+    narrativeEdits: narrative?.edits,
+    documents,
+    ...(previous?.items?.length ? { previousDiscussion: previous.items } : {}),
+    ...(lookupTicketStatus ? { lookupTicketStatus } : {}),
+  };
 }
 
 /**
