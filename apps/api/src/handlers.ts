@@ -73,8 +73,8 @@ import { createClaudeResearcher, type ResearchModel } from './research.js';
 import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 import { computeTriage } from './triage.js';
-import { dataLocked, refuseIfLocked } from './locks.js';
-import { latestPackage, loadPackageFile, loadPackageModel, storePackage, type StoredModel } from './packages.js';
+import { dataLocked, isFinal, refuseIfLocked } from './locks.js';
+import { loadPackageFile, loadPackageModel, storePackage, type StoredModel } from './packages.js';
 
 export interface ApiResult {
   status: number;
@@ -263,15 +263,17 @@ type Served =
   | { ok: false; result: ApiResult };
 
 /**
- * When the quarter is locked, the newest stored package of the highest stage.
- * Undefined means "not locked, build as usual". A lock without its stored
- * files answers 503: rebuilding silently would break the freeze.
+ * When the quarter is locked, the package the current lock names (final if
+ * set, else preread). Undefined means "not locked, build as usual". A lock
+ * without its stored files answers 503: rebuilding silently would break the
+ * freeze. Older versions kept after a reopen are never served.
  */
 async function servedPackage(clientId: string, period: string): Promise<Served | undefined> {
   const store = getDataStore();
   const meta = await store.getQbr(clientId, period);
   if (!dataLocked(meta) || !meta) return undefined;
-  const record = await latestPackage(store, clientId, period);
+  const version = meta.locks?.final?.version ?? meta.locks?.preread?.version;
+  const record = (await store.listPackages(clientId, period)).find((p) => p.version === version);
   const stored = record ? await loadPackageModel(getDocStore(), record) : undefined;
   if (!record || !stored) return { ok: false, result: PACKAGE_MISSING };
   return { ok: true, meta, record, ...stored };
@@ -1430,11 +1432,18 @@ export async function putStatus(
       return ok(await lockFinal(clientId, period));
     } catch (e) {
       // Nothing to freeze (no snapshot) or a render failure: the status change
-      // stands, the quarter stays open and the dashboard asks for Finalize.
-      await audit('qbr.lock', `qbr:${clientId}/${period}`, `final failed: ${e instanceof Error ? e.message : 'error'}`);
+      // stands, the quarter stays open and the author is told to Finalize.
+      return ok(await finalLockFailed(clientId, period, saved, e));
     }
   }
   return ok(saved);
+}
+
+/** The record plus a retry hint when lock 2 could not store its package. */
+async function finalLockFailed(clientId: string, period: string, saved: QbrRecord, e: unknown): Promise<QbrRecord & { warning: string }> {
+  const reason = e instanceof Error ? e.message : 'unknown error';
+  await audit('qbr.lock', `qbr:${clientId}/${period}`, `final failed: ${reason}`);
+  return { ...saved, warning: `The final package could not be stored: ${reason}. Press Finalize to retry.` };
 }
 
 /**
@@ -1526,8 +1535,7 @@ export async function dispositionQbrSkipped(clientId: string, period: string, bo
   try {
     return ok(await lockFinal(clientId, period));
   } catch (e) {
-    await audit('qbr.lock', `qbr:${clientId}/${period}`, `final failed: ${e instanceof Error ? e.message : 'error'}`);
-    return ok(saved);
+    return ok(await finalLockFailed(clientId, period, saved, e));
   }
 }
 
@@ -1686,17 +1694,21 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
     // Draft still works without the attachment.
   }
   // Every attached report also rides along as its own file (size-capped).
-  try {
-    const docsStore = getDocStore();
-    let total = attachments.reduce((n, a) => n + a.bytes.length, 0);
-    for (const doc of await store.listDocuments(clientId, period)) {
-      const bytes = await docsStore.get(docPath(clientId, period, doc.id, doc.name)).catch(() => undefined);
-      if (!bytes || total + bytes.length > MAX_EMAIL_ATTACHMENT_TOTAL) continue;
-      attachments.push({ name: doc.name, contentType: doc.contentType, bytes });
-      total += bytes.length;
+  // A locked quarter mails only the stored PDF: documents filed after the
+  // lock must not change what was frozen.
+  if (!served) {
+    try {
+      const docsStore = getDocStore();
+      let total = attachments.reduce((n, a) => n + a.bytes.length, 0);
+      for (const doc of await store.listDocuments(clientId, period)) {
+        const bytes = await docsStore.get(docPath(clientId, period, doc.id, doc.name)).catch(() => undefined);
+        if (!bytes || total + bytes.length > MAX_EMAIL_ATTACHMENT_TOTAL) continue;
+        attachments.push({ name: doc.name, contentType: doc.contentType, bytes });
+        total += bytes.length;
+      }
+    } catch {
+      // Attachments are best-effort.
     }
-  } catch {
-    // Attachments are best-effort.
   }
 
   const subject = `${brand.orgName} QBR — ${client?.name ?? clientId} ${model.period.label}`;
@@ -1845,6 +1857,10 @@ export async function publicBook(token: string, body: Record<string, unknown>): 
   const booking = await store.getBooking(token);
   if (!booking) return err(404, 'Unknown link');
   if (booking.status !== 'open') return err(409, 'This link has already been used — contact your account manager to reschedule.');
+  // A finalized quarter takes no new meeting; the client sees a plain message.
+  if (isFinal(await store.getQbr(booking.clientId, booking.period))) {
+    return err(409, 'This review is already closed. Please contact your account manager.');
+  }
 
   const start = typeof body['start'] === 'string' ? body['start'] : '';
   const name = typeof body['name'] === 'string' ? body['name'].trim().slice(0, 120) : '';
@@ -1978,6 +1994,8 @@ function escapeHtml(s: string): string {
  * or the author can set a new time by hand.
  */
 export async function cancelQbrMeeting(clientId: string, period: string): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'final');
+  if (locked) return locked;
   const store = getDataStore();
   const existing = await store.getQbr(clientId, period);
   if (!existing?.meeting?.scheduledAt && !existing?.meeting?.eventId) {
@@ -2108,6 +2126,8 @@ export async function createMeeting(
 ): Promise<ApiResult> {
   const auth = graphToken(header);
   if ('error' in auth) return auth.error;
+  const locked = await refuseIfLocked(clientId, period, 'final');
+  if (locked) return locked;
   const start = body.start && Number.isFinite(Date.parse(body.start)) ? new Date(body.start).toISOString() : undefined;
   if (!start) return err(400, 'A valid start date/time is required.');
   const end =

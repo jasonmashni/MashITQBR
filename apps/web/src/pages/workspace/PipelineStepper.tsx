@@ -41,7 +41,6 @@ export function PipelineStepper({
   const [skipReason, setSkipReason] = useState('');
   const [skipping, setSkipping] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
-  const [closing, setClosing] = useState(false);
 
   return (
     <Card padding="md">
@@ -140,30 +139,50 @@ export function PipelineStepper({
           )}
         </Group>
       )}
-      <ConfirmModal
-        opened={confirmClose}
-        title={`Finalize ${period}?`}
-        confirmLabel="Finalize"
-        color="good"
-        loading={closing}
-        onCancel={() => setConfirmClose(false)}
-        onConfirm={async () => {
-          setClosing(true);
-          try {
-            await onFinalize();
-            setConfirmClose(false);
-          } finally {
-            setClosing(false);
-          }
-        }}
-      >
-        <Text size="sm">
-          This stores the final package with the captured decisions and makes {period} read-only. The dashboard will count this client as done for {period}.
-        </Text>
-        <Text size="sm" c="dimmed" mt="xs">
-          Reopening later needs a reason and is audited.
-        </Text>
-      </ConfirmModal>
+      <FinalizeConfirm opened={confirmClose} period={period} onClose={() => setConfirmClose(false)} onFinalize={onFinalize} />
     </Card>
+  );
+}
+
+/** The one Finalize confirmation, shared by the stepper and the header's primary button. */
+export function FinalizeConfirm({
+  opened,
+  period,
+  onClose,
+  onFinalize,
+}: {
+  opened: boolean;
+  period: string;
+  onClose: () => void;
+  onFinalize: () => Promise<void>;
+}) {
+  const [finalizing, setFinalizing] = useState(false);
+  return (
+    <ConfirmModal
+      opened={opened}
+      title={`Finalize ${period}?`}
+      confirmLabel="Finalize"
+      color="good"
+      loading={finalizing}
+      onCancel={onClose}
+      onConfirm={async () => {
+        setFinalizing(true);
+        try {
+          await onFinalize();
+          onClose();
+        } catch {
+          // The caller already showed the error; the dialog stays open.
+        } finally {
+          setFinalizing(false);
+        }
+      }}
+    >
+      <Text size="sm">
+        This stores the final package with the captured decisions and makes {period} read-only. The dashboard will count this client as done for {period}.
+      </Text>
+      <Text size="sm" c="dimmed" mt="xs">
+        Reopening later needs a reason and is audited.
+      </Text>
+    </ConfirmModal>
   );
 }

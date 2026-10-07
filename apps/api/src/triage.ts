@@ -27,15 +27,16 @@ const SOON_MS = 7 * 86_400_000;
 /**
  * Current-quarter triage. Rules are evaluated in order; the first match wins.
  * A skipped meeting counts as "meeting time passed" when no time was booked.
- * A completed quarter without its final package is nagged a week after the
- * meeting (straight away when no meeting time was booked).
+ * A quarter whose meeting is more than seven days past, or that is completed,
+ * is nagged until its final package is stored (archived quarters excepted).
  */
 export function computeTriage(i: TriageInput): Triage {
   const at = i.meetingAt ? Date.parse(i.meetingAt) : NaN;
   const hasMeeting = Number.isFinite(at);
   const meetingPassed = hasMeeting ? at <= i.now : !!i.meetingSkipped;
 
-  if (statusAtLeast(i.status, 'completed') && i.status !== 'archived' && !i.locks?.final && (!hasMeeting || at <= i.now - SOON_MS)) {
+  const meetingLongPast = hasMeeting && at <= i.now - SOON_MS;
+  if ((meetingLongPast || statusAtLeast(i.status, 'completed')) && !i.locks?.final && i.status !== 'archived') {
     return 'needs_finalizing';
   }
   if (statusAtLeast(i.status, 'completed')) return 'done';

@@ -8,7 +8,7 @@ import type { Client, Discussion, PackageStage, QbrResponse, SystemInfo } from '
 import { useResource } from '../hooks/useResource.js';
 import { toastError, toastOk } from '../toast.js';
 import { WorkspaceHeader } from './workspace/WorkspaceHeader.js';
-import { PipelineStepper } from './workspace/PipelineStepper.js';
+import { FinalizeConfirm, PipelineStepper } from './workspace/PipelineStepper.js';
 import { OverviewTab } from './workspace/OverviewTab.js';
 import { DataTab } from './workspace/DataTab.js';
 import { ReportsTab } from './workspace/ReportsTab.js';
@@ -63,6 +63,7 @@ export function Workspace() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [primaryBusy, setPrimaryBusy] = useState(false);
+  const [confirmFinalize, setConfirmFinalize] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [tab, setTab] = useState<string>('overview');
   // Unsaved-work guards: a refresh must not clobber a mid-meeting agenda, and
@@ -250,10 +251,7 @@ export function Workspace() {
         else setTab('overview');
         return;
       case 'finalize':
-        setPrimaryBusy(true);
-        void onFinalize()
-          .catch(() => undefined)
-          .finally(() => setPrimaryBusy(false));
+        setConfirmFinalize(true);
         return;
       default:
         setTab(step.tab);
@@ -297,6 +295,7 @@ export function Workspace() {
         lockNotice={notice}
         onReopen={onReopen}
       />
+      <FinalizeConfirm opened={confirmFinalize} period={period} onClose={() => setConfirmFinalize(false)} onFinalize={onFinalize} />
 
       {notice && (
         <Alert color={finalized ? 'good' : 'navy'} variant="light" icon={<IconLock size={18} />}>

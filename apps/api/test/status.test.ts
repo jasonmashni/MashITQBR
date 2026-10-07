@@ -327,3 +327,66 @@ describe('reopen', () => {
     expect(await store.listPackages('anp', '2023-Q3')).toHaveLength(3);
   });
 });
+
+describe('locked reads serve the version the lock names', () => {
+  const seedSnapshot = async (period: string) => {
+    const { SEED_SNAPSHOTS } = await import('@mashit/core');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    const seed = SEED_SNAPSHOTS.find((s) => s.clientId === 'anp' && s.metrics.length > 1)!;
+    await store.putSnapshot({ ...seed, period });
+  };
+  /** Mark each stored PDF with its version so the served bytes are unambiguous. */
+  const markPdfs = async (period: string) => {
+    const { getDataStore, getDocStore } = await import('../src/store/index.js');
+    for (const p of await getDataStore().listPackages('anp', period)) {
+      await getDocStore().put(p.files.pdf, Buffer.from(`%PDF-v${p.version}`), 'application/pdf');
+    }
+  };
+  const emlText = (r: { file?: { bytes: Buffer } }) => r.file!.bytes.toString('utf8').replace(/\r\n/g, '');
+
+  it('after reopening everything and sending again, reads and the email serve the new pre-read package', async () => {
+    const h = await import('../src/handlers.js');
+    await seedSnapshot('2022-Q1');
+    expect((await h.markPackageSent('anp', '2022-Q1')).status).toBe(200);
+    expect((await h.finalizeQbr('anp', '2022-Q1')).status).toBe(200);
+    expect((await h.reopenQbr('anp', '2022-Q1', { stage: 'preread', reason: 'Wrong data' })).status).toBe(200);
+    const resent = await h.markPackageSent('anp', '2022-Q1');
+    expect((resent.json as QbrRecord).locks?.preread?.version).toBe(3);
+    await markPdfs('2022-Q1');
+
+    const qbr = (await h.getQbr('anp', '2022-Q1', null)).json as { package: { version: number; stage: string } };
+    expect(qbr.package).toMatchObject({ version: 3, stage: 'preread' });
+    expect((await h.getReportPdf('anp', '2022-Q1', null)).pdf?.toString()).toBe('%PDF-v3');
+
+    // A report filed after the lock does not ride along: only the stored PDF goes out.
+    await h.storeDocument({ clientId: 'anp', period: '2022-Q1', name: 'late-vendor-report.pdf', contentType: 'application/pdf', bytes: Buffer.from('%PDF-late'), source: 'email' });
+    const eml = emlText(await h.getEmailDraft('anp', '2022-Q1', null));
+    expect(eml).toContain(Buffer.from('%PDF-v3').toString('base64'));
+    expect(eml).not.toContain(Buffer.from('%PDF-v2').toString('base64'));
+    expect(eml).not.toContain('late-vendor-report.pdf');
+  });
+
+  it('after reopening final only, reads serve the pre-read version named on locks.preread', async () => {
+    const h = await import('../src/handlers.js');
+    await seedSnapshot('2022-Q2');
+    await h.markPackageSent('anp', '2022-Q2');
+    await h.finalizeQbr('anp', '2022-Q2');
+    expect((await h.reopenQbr('anp', '2022-Q2', { stage: 'final', reason: 'More decisions' })).status).toBe(200);
+    await markPdfs('2022-Q2');
+    const qbr = (await h.getQbr('anp', '2022-Q2', null)).json as { package: { version: number; stage: string } };
+    expect(qbr.package).toMatchObject({ version: 1, stage: 'preread' });
+    expect((await h.getReportPdf('anp', '2022-Q2', null)).pdf?.toString()).toBe('%PDF-v1');
+  });
+});
+
+describe('a failed lock 2 says so', () => {
+  it('putStatus to dispositioned with nothing to freeze returns the record with a retry warning', async () => {
+    const h = await import('../src/handlers.js');
+    const res = await h.putStatus('anp', '2019-Q3', { status: 'dispositioned' });
+    expect(res.status).toBe(200);
+    const json = res.json as QbrRecord & { warning?: string };
+    expect(json.status).toBe('dispositioned');
+    expect(json.locks?.final).toBeUndefined();
+    expect(json.warning).toMatch(/^The final package could not be stored: .+\. Press Finalize to retry\.$/);
+  });
+});
