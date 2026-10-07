@@ -1,11 +1,15 @@
 import { extractNumbers, matchesAllowed, stripAllowedQuotes } from './numbers.js';
+import { limitIssues } from './limits.js';
 import type { NarrativeOutput } from './schema.js';
 
 export interface FigureCheck {
   label: string;
   value: string;
-  /** Numbers extracted from the value that did not match any allowed figure. */
-  unmatched: number[];
+  /**
+   * Numbers extracted from the value that did not match any allowed figure.
+   * For the `limits` entry, the limit breaches (`'headline: 13 words (limit 12)'`).
+   */
+  unmatched: Array<number | string>;
   ok: boolean;
 }
 
@@ -72,9 +76,9 @@ export const STYLE_BANNED: readonly string[] = [
 ];
 
 /**
- * Em dashes, en dashes and banned phrases in every string field of the
- * narrative (strings, arrays of strings, arrays of objects with string values).
- * One entry per hit, `"<field>: <phrase>"`.
+ * Em dashes, en dashes and banned phrases in every string of the narrative,
+ * however deeply nested (the v4 plan is an object of arrays of objects). One
+ * entry per hit, `"<top-level field>: <phrase>"`.
  */
 export function styleIssues(output: NarrativeOutput): string[] {
   const issues: string[] = [];
@@ -83,32 +87,48 @@ export function styleIssues(output: NarrativeOutput): string[] {
     const lower = text.toLowerCase();
     for (const phrase of STYLE_BANNED) if (lower.includes(phrase)) issues.push(`${field}: ${phrase}`);
   };
-  for (const [field, value] of Object.entries(output)) {
+  const walk = (field: string, value: unknown) => {
     if (typeof value === 'string') scan(field, value);
-    else if (Array.isArray(value)) {
-      for (const v of value) {
-        if (typeof v === 'string') scan(field, v);
-        else if (v && typeof v === 'object') for (const s of Object.values(v)) if (typeof s === 'string') scan(field, s);
-      }
-    }
-  }
+    else if (Array.isArray(value)) for (const v of value) walk(field, v);
+    else if (value && typeof value === 'object') for (const v of Object.values(value)) walk(field, v);
+  };
+  for (const [field, value] of Object.entries(output)) walk(field, value);
   return issues;
 }
 
 /**
  * The prose fields of a narrative as {label, value} pairs, labeled by where
- * they sit in the output: `headline`, `summary_paragraphs[0]`,
- * `highlights[2]`, `recommendations[1]`, `section_summaries.security`.
+ * they sit in the output: `headline`, `lede`, `did[0]`, `saw[2]`,
+ * `decisions[0].ask` (not `by`, a date), `plan.next[1].action`, `protection.recover.thisQuarter`,
+ * `section_summaries.security`, plus the deprecated v3 lists when present.
  */
 function proseFields(output: NarrativeOutput): NarrativeOutput['figures_referenced'] {
-  const fields: NarrativeOutput['figures_referenced'] = [{ label: 'headline', value: output.headline }];
-  const lists = ['summary_paragraphs', 'highlights', 'recommendations'] as const;
-  for (const key of lists) {
-    output[key].forEach((value, i) => fields.push({ label: `${key}[${i}]`, value }));
+  const fields: NarrativeOutput['figures_referenced'] = [];
+  const add = (label: string, value: string | undefined) => {
+    if (typeof value === 'string') fields.push({ label, value });
+  };
+  add('headline', output.headline);
+  add('lede', output.lede);
+  for (const key of ['did', 'saw'] as const) (output[key] ?? []).forEach((v, i) => add(`${key}[${i}]`, v));
+  (output.decisions ?? []).forEach((d, i) => {
+    add(`decisions[${i}].ask`, d.ask);
+    add(`decisions[${i}].why`, d.why);
+    // `by` is a deadline ("Nov 15"), not a figure, so it is not number-checked.
+  });
+  for (const column of ['now', 'next', 'later'] as const) {
+    (output.plan?.[column] ?? []).forEach((p, i) => {
+      add(`plan.${column}[${i}].action`, p.action);
+      add(`plan.${column}[${i}].owner`, p.owner);
+    });
   }
-  for (const s of output.section_summaries ?? []) {
-    fields.push({ label: `section_summaries.${s.category}`, value: s.summary });
+  for (const p of output.protection ?? []) {
+    add(`protection.${p.question}.inPlace`, p.inPlace);
+    add(`protection.${p.question}.thisQuarter`, p.thisQuarter);
   }
+  for (const key of ['summary_paragraphs', 'highlights', 'recommendations'] as const) {
+    (output[key] ?? []).forEach((value, i) => add(`${key}[${i}]`, value));
+  }
+  for (const s of output.section_summaries ?? []) add(`section_summaries.${s.category}`, s.summary);
   return fields;
 }
 
@@ -124,12 +144,22 @@ export function verifyNarrative(
   allowed: Iterable<number>,
   opts?: VerifyOptions,
 ): VerificationResult {
-  return { ...verifyFigures([...output.figures_referenced, ...proseFields(output)], allowed, opts), style: styleIssues(output) };
+  const figures = verifyFigures([...output.figures_referenced, ...proseFields(output)], allowed, opts);
+  const limits = limitIssues(output);
+  const checks: FigureCheck[] = limits.length
+    ? [...figures.checks, { label: 'limits', value: limits.join('; '), unmatched: limits, ok: false }]
+    : figures.checks;
+  const failures = checks.filter((c) => !c.ok);
+  return { ok: failures.length === 0, checks, failures, style: styleIssues(output) };
 }
 
 /** Human-readable summary of failures, for retry prompts and audit logs. */
 export function describeFailures(result: VerificationResult): string {
   return result.failures
-    .map((f) => `- "${f.label}": value "${f.value}" contains unverifiable number(s): ${f.unmatched.join(', ')}`)
+    .map((f) =>
+      f.label === 'limits'
+        ? `- Over a length or count limit, shorten or trim: ${f.unmatched.join('; ')}`
+        : `- "${f.label}": value "${f.value}" contains unverifiable number(s): ${f.unmatched.join(', ')}`,
+    )
     .join('\n');
 }

@@ -78,6 +78,12 @@ export function draftOfflineNarrative(input: NarrativeInput): NarrativeOutput {
 
   return {
     headline,
+    lede: paragraphs.join(' '),
+    did: highlights,
+    saw: [],
+    decisions: [],
+    plan: { now: recommendations.map((action) => ({ action, owner: 'Mash IT' })), next: [], later: [] },
+    protection: [],
     summary_paragraphs: paragraphs,
     highlights,
     recommendations,

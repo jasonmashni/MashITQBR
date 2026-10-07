@@ -19,9 +19,9 @@ export function buildUserContent(input: NarrativeInput): string {
 /** Build a corrective instruction appended on a regeneration after a failed verification. */
 export function buildCorrectionContent(failureSummary: string): string {
   return [
-    `The previous draft cited figures that are NOT present in the provided metrics:`,
+    `The previous draft failed review:`,
     failureSummary,
     ``,
-    `Rewrite the narrative using ONLY figures from the <metrics> block. Remove or correct every flagged number.`,
+    `Rewrite the narrative using ONLY figures from the <metrics> block. Remove or correct every flagged number, and bring every field within its length and count limits.`,
   ].join('\n');
 }
