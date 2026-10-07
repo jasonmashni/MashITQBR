@@ -551,7 +551,7 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
           },
     footer: (page: number, pages: number) => ({
       columns: [
-        { text: `Prepared by ${brand.orgName}. Confidential.`, color: GRAY, fontSize: 8 },
+        { text: `Prepared by ${brand.orgName}. ${m.client.hipaa ? 'Contains confidential client information (HIPAA).' : 'Confidential.'}`, color: GRAY, fontSize: 8 },
         { text: `Page ${page} of ${pages}`, color: GRAY, fontSize: 8, alignment: 'right' },
       ],
       margin: [52, 18, 52, 0],
