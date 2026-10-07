@@ -97,9 +97,23 @@ export interface QbrRecord {
   updatedAt: string;
 }
 
-/** Human edits overlaid on the generated narrative (undefined field = keep AI text). */
+/**
+ * Human edits overlaid on the generated narrative (undefined field = keep AI
+ * text). Covers every v4 prose field; the v3 lists remain for edits saved
+ * before v4.
+ */
 export interface NarrativeEdits {
   headline?: string;
+  lede?: string;
+  did?: string[];
+  saw?: string[];
+  decisions?: Array<{ ask: string; why?: string; by?: string }>;
+  plan?: {
+    now: Array<{ action: string; owner: string; decision?: boolean }>;
+    next: Array<{ action: string; owner: string; decision?: boolean }>;
+    later: Array<{ action: string; owner: string; decision?: boolean }>;
+  };
+  protection?: Array<{ question: 'get_in' | 'know' | 'recover' | 'keep_up' | 'run_well'; inPlace: string; thisQuarter: string }>;
   summary_paragraphs?: string[];
   highlights?: string[];
   recommendations?: string[];

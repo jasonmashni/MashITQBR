@@ -3,6 +3,7 @@ import type { Client, MetricSnapshot } from '@mashit/core';
 import type { NarrativeResult } from '@mashit/narrative';
 import { seedDataSource, type QbrDataSource } from '../src/dataSource.js';
 import { buildQbrReport } from '../src/service.js';
+import { v4Narrative } from './narrativeFixture.js';
 
 const SUBJECTS = ['Windows 11 rollout', 'Firewall rule for site 2', 'Printer swap at front desk'];
 
@@ -48,19 +49,18 @@ afterEach(() => {
 describe('buildQbrReport narrative verification (verifyNarrative)', () => {
   it('an offline draft that quotes a subject like “Windows 11 rollout” still verifies', async () => {
     const report = await buildQbrReport(source(plain), 'acme', '2026-Q3');
-    expect(report.narrative.output.recommendations.join(' ')).toContain('“Windows 11 rollout”');
+    expect(report.narrative.output.plan.now.map((p) => p.action).join(' ')).toContain('“Windows 11 rollout”');
+    expect(report.model.recommendations.join(' ')).toContain('“Windows 11 rollout”');
     expect(report.narrative.verification.ok).toBe(true);
   });
 
   it('re-verifies a cached narrative: a headline number not in the data is reported', async () => {
     const stale: NarrativeResult = {
-      output: {
+      output: v4Narrative({
         headline: 'Tickets fell 987% this quarter',
-        summary_paragraphs: ['Patch compliance held at 89%.'],
-        highlights: [],
-        recommendations: [],
+        lede: 'Patch compliance held at 89%.',
         figures_referenced: [{ label: 'patch', value: '89%' }],
-      },
+      }),
       // Cached before prose was checked: only figures_referenced was verified.
       verification: { ok: true, checks: [], failures: [], style: [] },
       attempts: 1,
@@ -101,7 +101,7 @@ describe('buildQbrReport PHI handling (NARRATIVE_ALLOW_PHI)', () => {
     await buildQbrReport(source(client), client.id, '2026-Q3', {
       narrativeModel: async (messages) => {
         seen = messages.map((m) => m.content).join('\n');
-        return { headline: 'Quarter in review', summary_paragraphs: [], highlights: [], recommendations: [], figures_referenced: [] };
+        return v4Narrative({ headline: 'Quarter in review' });
       },
     });
     return seen;

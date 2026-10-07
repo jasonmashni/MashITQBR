@@ -84,7 +84,7 @@ describe('JsonDataStore', () => {
     expect(await s.getNarrative('c1', '2026-Q1')).toBeUndefined();
 
     const result = {
-      output: { headline: 'H', summary_paragraphs: [], highlights: [], recommendations: [], figures_referenced: [] },
+      output: { headline: 'H', lede: '', did: [], saw: [], decisions: [], plan: { now: [], next: [], later: [] }, protection: [], figures_referenced: [] },
       verification: { ok: true, checks: [], failures: [], style: [] },
       attempts: 1,
     };

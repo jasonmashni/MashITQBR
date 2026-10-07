@@ -7,9 +7,12 @@ import {
   draftOfflineNarrative,
   generateNarrative,
   NARRATIVE_MODEL_ID,
+  PROTECTION_QUESTION_IDS,
   verifyNarrative,
   type NarrativeModel,
+  type NarrativeOutput,
   type NarrativeResult,
+  type PlanItem,
 } from '@mashit/narrative';
 import { buildReportModel, renderReportHtml, type ReportModel } from '@mashit/report';
 import type { QbrDataSource } from './dataSource.js';
@@ -24,12 +27,91 @@ export interface NarrativeCache {
   put(hash: string, result: NarrativeResult): Promise<void>;
 }
 
-/** Human narrative overrides (undefined field = keep the generated text). */
+/**
+ * Human narrative overrides (undefined field = keep the generated text). The
+ * v4 fields cover every prose field; the v3 lists survive for edits saved
+ * before v4 and win over what is derived from the v4 fields.
+ */
 export interface NarrativeEditFields {
   headline?: string;
+  lede?: string;
+  did?: string[];
+  saw?: string[];
+  decisions?: NarrativeOutput['decisions'];
+  plan?: NarrativeOutput['plan'];
+  protection?: NarrativeOutput['protection'];
   summary_paragraphs?: string[];
   highlights?: string[];
   recommendations?: string[];
+}
+
+const PLAN_COLUMNS = ['now', 'next', 'later'] as const;
+
+/**
+ * Parse a narrative-edit request body into edit fields: strings trimmed,
+ * blanks and malformed entries dropped, undefined when nothing was edited.
+ * The PUT narrative handler stores what this returns (plus editedBy/At).
+ */
+export function narrativeEditsFromBody(body: Record<string, unknown>): NarrativeEditFields | undefined {
+  const text = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  const lines = (v: unknown): string[] | undefined => {
+    if (!Array.isArray(v)) return undefined;
+    const out = v.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean);
+    return out.length ? out : undefined;
+  };
+  const rec = (v: unknown): Record<string, unknown> | undefined => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined);
+
+  const decisions = Array.isArray(body['decisions'])
+    ? body['decisions']
+        .map(rec)
+        .filter((d): d is Record<string, unknown> => !!d && !!text(d['ask']))
+        .map((d) => ({ ask: text(d['ask'])!, ...(text(d['why']) ? { why: text(d['why']) } : {}), ...(text(d['by']) ? { by: text(d['by']) } : {}) }))
+    : [];
+  const planBody = rec(body['plan']);
+  const planItems = (v: unknown): PlanItem[] =>
+    Array.isArray(v)
+      ? v
+          .map(rec)
+          .filter((p): p is Record<string, unknown> => !!p && !!text(p['action']))
+          .map((p) => ({ action: text(p['action'])!, owner: text(p['owner']) ?? 'Mash IT', ...(p['decision'] === true ? { decision: true } : {}) }))
+      : [];
+  const plan = planBody ? { now: planItems(planBody['now']), next: planItems(planBody['next']), later: planItems(planBody['later']) } : undefined;
+  const protection = Array.isArray(body['protection'])
+    ? body['protection']
+        .map(rec)
+        .filter((p): p is Record<string, unknown> => !!p && (PROTECTION_QUESTION_IDS as readonly unknown[]).includes(p['question']))
+        .map((p) => ({ question: p['question'] as NarrativeOutput['protection'][number]['question'], inPlace: text(p['inPlace']) ?? '', thisQuarter: text(p['thisQuarter']) ?? '' }))
+    : [];
+
+  const edits: NarrativeEditFields = {
+    headline: text(body['headline']),
+    lede: text(body['lede']),
+    did: lines(body['did']),
+    saw: lines(body['saw']),
+    decisions: decisions.length ? decisions : undefined,
+    plan: plan && PLAN_COLUMNS.some((c) => plan[c].length) ? plan : undefined,
+    protection: protection.length ? protection : undefined,
+    summary_paragraphs: lines(body['summary_paragraphs']),
+    highlights: lines(body['highlights']),
+    recommendations: lines(body['recommendations']),
+  };
+  const kept = Object.fromEntries(Object.entries(edits).filter(([, v]) => v !== undefined)) as NarrativeEditFields;
+  return Object.keys(kept).length ? kept : undefined;
+}
+
+/**
+ * The v3 fields, derived from the v4 ones: `summary_paragraphs = [lede]`,
+ * `highlights = [...did, ...saw]`, `recommendations` = the plan flattened as
+ * "{action} ({owner})". Fields already present (a v3 edit) are kept.
+ */
+export function legacyFields(output: NarrativeOutput): NarrativeOutput {
+  const plan = PLAN_COLUMNS.flatMap((c) => output.plan?.[c] ?? []).map((p) => `${p.action} (${p.owner})`);
+  return {
+    ...output,
+    summary_paragraphs: output.summary_paragraphs ?? (output.lede ? [output.lede] : []),
+    highlights: output.highlights ?? [...(output.did ?? []), ...(output.saw ?? [])],
+    recommendations: output.recommendations ?? plan,
+  };
 }
 
 export interface BuildQbrOptions {
@@ -163,11 +245,12 @@ export async function buildQbrReport(
     // on. Cache failures must never fail a build; concurrent misses may both
     // call the model (last write wins) — acceptable for this traffic.
     // Bump `v` whenever the narrative output contract changes shape (v2:
-    // section summaries; v3: strategic-goals alignment in the input) so
+    // section summaries; v3: strategic-goals alignment in the input; v4:
+    // headline, lede, did, saw, decisions, plan and protection) so
     // pre-upgrade cached prose regenerates instead of missing the new fields
     // forever.
     const hash = createHash('sha256')
-      .update(JSON.stringify({ v: 3, model: NARRATIVE_MODEL_ID, input }))
+      .update(JSON.stringify({ v: 4, model: NARRATIVE_MODEL_ID, input }))
       .digest('hex');
     const cached = await opts.narrativeCache?.get(hash).catch(() => undefined);
     if (cached) {
@@ -211,6 +294,12 @@ export async function buildQbrReport(
       output: {
         ...narrative.output,
         ...(edits.headline !== undefined && edits.headline !== '' ? { headline: edits.headline } : {}),
+        ...(edits.lede ? { lede: edits.lede } : {}),
+        ...(edits.did?.length ? { did: edits.did } : {}),
+        ...(edits.saw?.length ? { saw: edits.saw } : {}),
+        ...(edits.decisions?.length ? { decisions: edits.decisions } : {}),
+        ...(edits.plan && PLAN_COLUMNS.some((c) => edits.plan![c]?.length) ? { plan: edits.plan } : {}),
+        ...(edits.protection?.length ? { protection: edits.protection } : {}),
         ...(edits.summary_paragraphs?.length ? { summary_paragraphs: edits.summary_paragraphs } : {}),
         ...(edits.highlights?.length ? { highlights: edits.highlights } : {}),
         ...(edits.recommendations?.length ? { recommendations: edits.recommendations } : {}),
@@ -221,7 +310,13 @@ export async function buildQbrReport(
   // Verify what will actually ship: the prose as well as figures_referenced.
   // A cached narrative may predate prose checking, and author edits can add
   // numbers, so the stored verification is never trusted as-is.
-  narrative = { ...narrative, verification: verifyNarrative(narrative.output, allowed, { allowedQuotes }) };
+  // The v3 fields are derived after verification so the same prose is not
+  // checked twice under two labels.
+  narrative = {
+    ...narrative,
+    verification: verifyNarrative(narrative.output, allowed, { allowedQuotes }),
+  };
+  narrative = { ...narrative, output: legacyFields(narrative.output) };
 
   const model = buildReportModel({
     client,
@@ -242,10 +337,15 @@ export async function buildQbrReport(
   if (aiFailure) warnings.push(aiFailure);
   if (!narrative.verification.ok) {
     // Neutral wording: the text may be the AI's or an author's edit.
-    const detail = narrative.verification.failures
-      .map((f) => `${f.label} (${f.unmatched.join(', ')})`)
-      .join('; ');
-    warnings.push(`The narrative cites a figure that does not match the data: ${detail}. Review before sending.`);
+    const figureFailures = narrative.verification.failures.filter((f) => f.label !== 'limits');
+    const limitFailure = narrative.verification.failures.find((f) => f.label === 'limits');
+    if (figureFailures.length) {
+      const detail = figureFailures.map((f) => `${f.label} (${f.unmatched.join(', ')})`).join('; ');
+      warnings.push(`The narrative cites a figure that does not match the data: ${detail}. Review before sending.`);
+    }
+    if (limitFailure) {
+      warnings.push(`The narrative is over a length or count limit: ${limitFailure.unmatched.join('; ')}. Shorten before sending.`);
+    }
   }
   if (!previous) {
     warnings.push('No prior-quarter snapshot found — quarter-over-quarter trends are unavailable.');
