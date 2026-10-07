@@ -286,3 +286,44 @@ describe('lock 2: decisions captured or Finalize', () => {
     expect((await h.finalizeQbr('anp', '2019-Q2')).status).toBe(404);
   });
 });
+
+describe('reopen', () => {
+  it('reopens final, versions the next package with revisedAt, then reopens everything', async () => {
+    const h = await import('../src/handlers.js');
+    const { getDataStore, getDocStore } = await import('../src/store/index.js');
+    const { loadPackageModel } = await import('../src/packages.js');
+    const store = getDataStore();
+    // 2023-Q3 carries preread v1 and final v2 from the lock 2 tests.
+    expect((await store.getQbr('anp', '2023-Q3'))?.locks?.final?.version).toBe(2);
+
+    expect((await h.reopenQbr('anp', '2023-Q3', { stage: 'final' })).status).toBe(400);
+    expect((await h.reopenQbr('anp', '2023-Q3', { stage: 'final', reason: '   ' })).status).toBe(400);
+    expect((await h.reopenQbr('anp', '2023-Q3', { stage: 'nope', reason: 'x' })).status).toBe(400);
+
+    const res = await h.reopenQbr('anp', '2023-Q3', { stage: 'final', reason: 'Client sent revised decisions' });
+    expect(res.status).toBe(200);
+    const rec = res.json as QbrRecord;
+    expect(rec.locks?.final).toBeUndefined();
+    expect(rec.locks?.preread?.version).toBe(1);
+    expect(rec.reopened).toHaveLength(1);
+    expect(rec.reopened?.[0]).toMatchObject({ stage: 'final', reason: 'Client sent revised decisions' });
+    expect((await h.reopenQbr('anp', '2023-Q3', { stage: 'final', reason: 'again' })).status).toBe(409);
+
+    const events = ((await h.getAudit('50')).json as { events: Array<{ action: string; detail?: string }> }).events;
+    expect(events.some((e) => e.action === 'qbr.reopen' && e.detail === 'final: Client sent revised decisions')).toBe(true);
+
+    const fin = await h.finalizeQbr('anp', '2023-Q3');
+    expect((fin.json as QbrRecord).locks?.final?.version).toBe(3);
+    const pkgs = await store.listPackages('anp', '2023-Q3');
+    expect(pkgs.map((p) => p.version)).toEqual([1, 2, 3]);
+    const stored = await loadPackageModel(getDocStore(), pkgs[2]!);
+    expect(stored?.model.revisedAt).toBe(rec.reopened?.[0]?.at);
+    expect((await loadPackageModel(getDocStore(), pkgs[1]!))?.model.revisedAt).toBeUndefined();
+
+    const all = await h.reopenQbr('anp', '2023-Q3', { stage: 'preread', reason: 'Data was wrong' });
+    expect(all.status).toBe(200);
+    expect((all.json as QbrRecord).locks).toEqual({});
+    expect((all.json as QbrRecord).reopened).toHaveLength(2);
+    expect(await store.listPackages('anp', '2023-Q3')).toHaveLength(3);
+  });
+});

@@ -348,7 +348,9 @@ async function renderFullPdf(clientId: string, period: string, model: StoredMode
  */
 async function freezePackage(clientId: string, period: string, stage: PackageStage) {
   const report = await buildReportFor(clientId, period, null);
-  const model: StoredModel = report.model;
+  // After a reopen, the next package says when it was revised (footer, workstream C).
+  const revisedAt = (await getDataStore().getQbr(clientId, period))?.reopened?.at(-1)?.at;
+  const model: StoredModel = revisedAt ? { ...report.model, revisedAt } : report.model;
   const pkg = await storePackage(getDataStore(), getDocStore(), {
     clientId,
     period,
@@ -1451,6 +1453,25 @@ async function lockFinal(clientId: string, period: string): Promise<QbrRecord> {
   });
   await audit('qbr.lock', `qbr:${clientId}/${period}`, `final v${pkg.version}`);
   return saved;
+}
+
+/**
+ * Reopen a locked quarter (audited, reason required). Reopening `final`
+ * clears lock 2 only; reopening `preread` clears both. Stored packages are
+ * kept; the next lock stores a new version that carries `revisedAt`.
+ */
+export async function reopenQbr(clientId: string, period: string, body: { stage?: unknown; reason?: unknown }): Promise<ApiResult> {
+  const stage = body.stage === 'preread' || body.stage === 'final' ? body.stage : undefined;
+  if (!stage) return err(400, 'stage must be preread or final');
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!reason) return err(400, 'A reason is required to reopen a quarter.');
+  const existing = await getDataStore().getQbr(clientId, period);
+  if (!existing?.locks?.[stage]) return err(409, `This quarter has no ${stage} lock to reopen.`);
+  const locks = stage === 'preread' ? {} : { preread: existing.locks.preread };
+  const at = new Date().toISOString();
+  const saved = await patchQbr(clientId, period, { locks, reopened: [...(existing.reopened ?? []), { at, by: currentActor(), stage, reason }] });
+  await audit('qbr.reopen', `qbr:${clientId}/${period}`, `${stage}: ${reason}`);
+  return ok(saved);
 }
 
 /** Finalize: lock 2 on demand (no meeting outcome needed). Idempotent. */
