@@ -1,13 +1,45 @@
 import type { DiscussionItem, MetricTrend } from '@mashit/core';
-import { discussionOutcome, ratingColor, ratingWord, trendDeltaText, goalStatusLabel, goalStatusColor, SEMANTIC } from './format.js';
+import { ratingColor, ratingWord, trendDeltaText, goalStatusLabel, goalStatusColor, SEMANTIC } from './format.js';
 import { formatValue } from './format.js';
+import { selectKpiTiles } from './charts.js';
 import { imageDims } from './images.js';
-import type { ReportModel, ReportSection } from './model.js';
+import { conversationStatus, type ReportModel, type ReportSection } from './model.js';
+import {
+  basisText,
+  BUDGET_CATEGORY_LABEL,
+  conversationColor,
+  CONVERSATION_LABEL,
+  DECISIONS_LEDE,
+  functionScoresText,
+  hasPlan,
+  howWeScore,
+  investmentLede,
+  investmentTiles,
+  money,
+  PAGE_TITLES,
+  PLAN_COLUMNS,
+  planningDecisions,
+  PLANNING_LEDE,
+  planningTitle,
+  planVsActualText,
+  PROTECTION_SUBTITLE,
+  protectionInPlace,
+  protectionStatusWord,
+  protectionThisQuarter,
+  ringNote,
+  showDecisionsPage,
+  showInvestmentPage,
+  sinceLabel,
+  whatToFixFirst,
+} from './pages.js';
 
 export { imageDims } from './images.js';
 
 /**
- * The meeting PowerPoint deck, rebuilt for presentation quality:
+ * The meeting PowerPoint deck, one slide per report page in the same order
+ * and with the same titles (cover, page one, protection, decisions and the
+ * next 90 days, investment, the planning outlook in the planning quarter,
+ * quarter in numbers as appendix slides, appendix), built for presentation:
  * - a slide master (brand footer bar + slide numbers) instead of naked slides
  * - every text box carries explicit x/y/w/h + valign so nothing overlaps
  * - native, editable charts (doughnut score, radar functions, QoQ bars)
@@ -167,77 +199,22 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     );
   }
 
-  // ── Executive summary ───────────────────────────────────────────────────
-  if (model.executive.headline || model.executive.paragraphs.length || model.executive.highlights.length) {
-    const s = pptx.addSlide({ masterName: 'QBR' });
-    heading(s, 'Executive Summary');
-    let y = BODY_Y;
-    if (model.executive.headline) {
-      s.addText(model.executive.headline, { x: CONTENT_X, y, w: CONTENT_W, h: 0.85, fontFace: FONT, fontSize: 18, color: PRIMARY, bold: true, valign: 'top', fit: 'shrink' });
-      y += 1.0;
-    }
-    // The slide shows a few crisp talking points (highlights, or a first
-    // sentence per paragraph), never the full prose, which overflowed the
-    // page. The complete narrative goes into the speaker notes below.
-    const points = (model.executive.highlights.length ? model.executive.highlights : model.executive.paragraphs.map(firstSentence)).slice(0, 5);
-    const confidenceH = model.dataConfidence.length ? 0.9 : 0;
-    if (points.length) {
-      s.addText(
-        points.map((t, i) => ({ text: t, options: { bullet: { code: '2022' }, color: TEXT, paraSpaceAfter: i === points.length - 1 ? 0 : 12 } })),
-        { x: CONTENT_X, y, w: CONTENT_W, h: FOOTER_Y - 0.2 - y - confidenceH, fontFace: FONT, fontSize: 16, valign: 'top', fit: 'shrink' },
-      );
-    }
-    if (model.dataConfidence.length) {
-      s.addShape('rect', {
-        x: CONTENT_X, y: FOOTER_Y - 0.2 - confidenceH, w: CONTENT_W, h: confidenceH - 0.1,
-        fill: { color: hex(SEMANTIC.watchBg) }, line: { type: 'none' },
-      });
-      s.addText(
-        [
-          { text: 'Data confidence: ', options: { bold: true, color: hex(SEMANTIC.watch) } },
-          { text: model.dataConfidence.join(' '), options: { color: TEXT } },
-        ],
-        { x: CONTENT_X + 0.15, y: FOOTER_Y - 0.2 - confidenceH, w: CONTENT_W - 0.3, h: confidenceH - 0.1, fontFace: FONT, fontSize: 10, valign: 'middle', fit: 'shrink' },
-      );
-    }
-    notes(
-      s,
-      [
-        model.executive.headline,
-        '',
-        ...model.executive.paragraphs,
-        ...(model.executive.highlights.length ? ['', 'Highlights:', ...model.executive.highlights.map((h) => `• ${h}`)] : []),
-        ...(model.dataConfidence.length ? ['', 'Data confidence (say this out loud before the numbers):', ...model.dataConfidence.map((w) => `• ${w}`)] : []),
-      ]
-        .filter((l) => l !== undefined)
-        .join('\n'),
-    );
-  }
-
-  // ── Strategic goals & IT alignment ──────────────────────────────────────
-  if (model.goals.length) {
-    const header = ['Goal', 'How we support it', 'Status'];
-    const rows = model.goals.map((g) => [
-      { text: g.targetPeriod ? `${g.title}\n(target ${g.targetPeriod})` : g.title, options: { fontFace: FONT, fontSize: 11, bold: true } },
-      { text: g.alignment ?? 'Not described yet', options: { fontFace: FONT, fontSize: 11 } },
-      { text: goalStatusLabel(g.status), options: { fontFace: FONT, fontSize: 11, bold: true, color: 'FFFFFF', fill: { color: hex(goalStatusColor(g.status)) } } },
-    ]);
-    addTableSlides(pptx, theme, {
-      title: 'Strategic Goals & IT Alignment',
-      header,
-      rows,
-      colW: [4.4, 5.6, 2.13],
-      rowsPerSlide: 6,
-      notes: `Tie the quarter's work back to what the client is trying to achieve. Walk each goal, confirm the status is still right, and ask what's changed on their side. Goals: ${model.goals
-        .map((g) => `${g.title} (${goalStatusLabel(g.status)})`)
-        .join('; ')}.`,
+  // Client-authored custom sections (paragraph-paged), placed where the author put them.
+  const addCustomSlides = (cs: { title: string; body: string }) => {
+    const paras = cs.body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    const pages = chunkParagraphs(paras, 900);
+    pages.forEach((page, idx) => {
+      const s = pptx.addSlide({ masterName: 'QBR' });
+      heading(s, idx === 0 ? cs.title : `${cs.title} (cont.)`);
+      s.addText(page.join('\n\n'), { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: FOOTER_Y - 0.2 - BODY_Y, fontFace: FONT, fontSize: 13, color: TEXT, valign: 'top', fit: 'shrink' });
+      if (idx === 0) notes(s, cs.body);
     });
-  }
+  };
 
-  // ── Maturity scorecard: doughnut + radar ────────────────────────────────
-  {
+  // The score visual (doughnut + radar) rides with the numbers as an appendix slide.
+  const addMaturitySlide = () => {
     const s = pptx.addSlide({ masterName: 'QBR' });
-    heading(s, 'Security & Risk Maturity');
+    heading(s, 'Security maturity score');
     const sc = model.scorecard;
     const { score, rating, coverage, confidence } = sc.overall;
     const withheld = score === null || confidence === 'low';
@@ -336,107 +313,337 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
         withheld ? 'not yet scored; say why (coverage) and what connecting the remaining tools unlocks' : `${Math.round(score)}/100 (${ratingWord(rating)})`
       }.${weakest.length ? ` Point the conversation at where to invest next: ${weakest.map((f) => FUNCTION_NAME[f.function] ?? f.function).join(' and ')}.` : ''}`,
     );
-  }
+    };
 
-  // ── Service desk, quarter over quarter (coherent ticket counts only) ─────
-  const qoq = operationalQoQ(model.trends);
-  if (qoq.length >= 2) {
+  // ── Page one: headline, lede, tiles, did / saw / need, since last quarter ─
+  {
     const s = pptx.addSlide({ masterName: 'QBR' });
-    heading(s, 'Service Desk, Quarter over Quarter');
-    s.addChart(
-      pptx.ChartType.bar,
-      [
-        { name: model.previousPeriod?.label ?? 'Previous', labels: qoq.map((t) => t.label), values: qoq.map((t) => t.previous ?? 0) },
-        { name: model.period.label, labels: qoq.map((t) => t.label), values: qoq.map((t) => t.current ?? 0) },
-      ],
-      {
-        x: CONTENT_X, y: BODY_Y + 0.1, w: CONTENT_W, h: 4.7,
-        barDir: 'col',
-        chartColors: [RULE, ACCENT],
-        showLegend: true,
-        legendPos: 'b',
-        legendFontFace: FONT,
-        catAxisLabelFontFace: FONT,
-        catAxisLabelFontSize: 11,
-        valAxisLabelFontSize: 9,
-        dataLabelFontFace: FONT,
-        showValue: true,
-        dataLabelFontSize: 10,
-        dataLabelColor: TEXT,
-      },
+    heading(s, model.executive.headline || PAGE_TITLES.fallbackHeadline);
+    let y = BODY_Y;
+    if (model.executive.lede) {
+      s.addText(model.executive.lede, { x: CONTENT_X, y, w: CONTENT_W, h: 0.8, fontFace: FONT, fontSize: 14, color: TEXT, valign: 'top', fit: 'shrink' });
+      y += 0.88;
+    }
+    const tiles = selectKpiTiles(model);
+    if (tiles.length >= 2) {
+      const gap = 0.15;
+      const tw = (CONTENT_W - gap * (tiles.length - 1)) / tiles.length;
+      tiles.forEach((t, i) => {
+        const x = CONTENT_X + i * (tw + gap);
+        s.addShape('rect', { x, y, w: tw, h: 0.82, fill: { color: hex(SEMANTIC.canvas) }, line: { type: 'none' } });
+        s.addText(
+          [
+            { text: t.value, options: { bold: true, fontSize: 20, color: hex(t.color), breakLine: true } },
+            { text: t.label, options: { fontSize: 10, color: TEXT, breakLine: !!t.note } },
+            ...(t.note ? [{ text: t.note, options: { fontSize: 10, color: GRAY } }] : []),
+          ],
+          { x: x + 0.12, y, w: tw - 0.24, h: 0.82, fontFace: FONT, valign: 'middle', fit: 'shrink' },
+        );
+      });
+      y += 0.97;
+    }
+    const sinceH = model.sinceLastQuarter.length ? 0.32 + 0.24 * model.sinceLastQuarter.length : 0;
+    const colH = FOOTER_Y - 0.15 - y - (sinceH ? sinceH + 0.12 : 0);
+    const colW = (CONTENT_W - 0.4) / 3;
+    const bullets = (items: string[]) =>
+      items.length
+        ? items.map((t, i) => ({ text: t, options: { bullet: { code: '2022' }, color: TEXT, paraSpaceAfter: i === items.length - 1 ? 0 : 6 } }))
+        : [{ text: 'Nothing to report this quarter.', options: { color: GRAY } }];
+    const column = (i: number, title: string, body: Array<{ text: string; options: Record<string, unknown> }>, need = false) => {
+      const x = CONTENT_X + i * (colW + 0.2);
+      if (need) s.addShape('rect', { x, y, w: colW, h: colH, fill: { color: hex(SEMANTIC.watchBg) }, line: { type: 'none' } });
+      s.addShape('rect', { x, y, w: colW, h: 0.04, fill: { color: need ? hex(SEMANTIC.watch) : RULE }, line: { type: 'none' } });
+      s.addText(title, { x: x + (need ? 0.1 : 0), y: y + 0.08, w: colW - 0.2, h: 0.32, fontFace: FONT, fontSize: 13, bold: true, color: need ? hex(SEMANTIC.watch) : PRIMARY, valign: 'top' });
+      s.addText(body, { x: x + (need ? 0.1 : 0), y: y + 0.45, w: colW - 0.2, h: colH - 0.5, fontFace: FONT, fontSize: 12, valign: 'top', fit: 'shrink' });
+    };
+    column(0, 'What we did', bullets(model.executive.did));
+    column(1, 'What we saw', bullets(model.executive.saw));
+    column(
+      2,
+      'What we need from you',
+      model.decisions.length
+        ? model.decisions.flatMap((d, i) => {
+            const sub = [d.by, d.why].filter(Boolean).join('. ');
+            return [
+              { text: `□  ${d.ask}`, options: { color: TEXT, breakLine: true } },
+              ...(sub ? [{ text: sub, options: { color: GRAY, fontSize: 10, breakLine: i < model.decisions.length - 1 } }] : []),
+            ];
+          })
+        : [{ text: 'Nothing needs your decision this quarter.', options: { color: TEXT } }],
+      true,
     );
-    s.addText('Support ticket volume this quarter versus last. Automated system alerts are excluded so the human-facing work is comparable.', {
-      x: CONTENT_X, y: FOOTER_Y - 0.55, w: CONTENT_W, h: 0.4, fontFace: FONT, fontSize: 10, color: GRAY, italic: true, valign: 'top',
-    });
+    if (model.sinceLastQuarter.length) {
+      const sy = FOOTER_Y - 0.15 - sinceH;
+      s.addShape('rect', { x: CONTENT_X, y: sy, w: CONTENT_W, h: sinceH, fill: { color: hex(SEMANTIC.canvas) }, line: { type: 'none' } });
+      s.addShape('rect', { x: CONTENT_X, y: sy, w: 0.06, h: sinceH, fill: { color: PRIMARY }, line: { type: 'none' } });
+      s.addText(
+        [
+          { text: 'Since last quarter', options: { bold: true, color: hex(SEMANTIC.ink), breakLine: true } },
+          ...model.sinceLastQuarter.map((r, i) => ({
+            text: `${r.topic}: ${sinceLabel(r)}`,
+            options: { color: TEXT, breakLine: i < model.sinceLastQuarter.length - 1 },
+          })),
+        ],
+        { x: CONTENT_X + 0.2, y: sy, w: CONTENT_W - 0.3, h: sinceH, fontFace: FONT, fontSize: 11, valign: 'middle', fit: 'shrink' },
+      );
+    }
     notes(
       s,
-      `Talk to the trend, not the bars. ${qoq
-        .map((t) => `${t.label}: ${t.previous ?? 0} to ${t.current ?? 0}`)
-        .join(', ')}. Frame improvement as the value of proactive management; frame any increase honestly and say what you're doing about it.`,
+      [
+        model.executive.headline ?? '',
+        '',
+        model.executive.lede ?? '',
+        ...(model.dataConfidence.length ? ['', 'Data confidence (say this out loud before the numbers):', ...model.dataConfidence.map((w) => `- ${w}`)] : []),
+      ].join('\n'),
     );
   }
 
-  // ── One slide per metric section (styled, hand-paged tables) ────────────
-  for (const section of model.sections) {
-    addSectionSlides(pptx, section, theme);
-  }
-
-  // ── Client-authored custom sections (paragraph-paged) ───────────────────
-  for (const cs of model.customSections) {
-    const paras = cs.body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-    const pages = chunkParagraphs(paras, 900);
-    pages.forEach((page, idx) => {
-      const s = pptx.addSlide({ masterName: 'QBR' });
-      heading(s, idx === 0 ? cs.title : `${cs.title} (cont.)`);
-      s.addText(page.join('\n\n'), { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: FOOTER_Y - 0.2 - BODY_Y, fontFace: FONT, fontSize: 13, color: TEXT, valign: 'top', fit: 'shrink' });
-      if (idx === 0) notes(s, cs.body);
-    });
-  }
-
-  // ── Discussion & decisions ──────────────────────────────────────────────
-  if (model.discussion.length) {
+  // ── Strategic goals & IT alignment ──────────────────────────────────────
+  if (model.goals.length) {
+    const header = ['Goal', 'How we support it', 'Status'];
+    const rows = model.goals.map((g) => [
+      { text: g.targetPeriod ? `${g.title}\n(target ${g.targetPeriod})` : g.title, options: { fontFace: FONT, fontSize: 11, bold: true } },
+      { text: g.alignment ?? 'Not described yet', options: { fontFace: FONT, fontSize: 11 } },
+      { text: goalStatusLabel(g.status), options: { fontFace: FONT, fontSize: 11, bold: true, color: 'FFFFFF', fill: { color: hex(goalStatusColor(g.status)) } } },
+    ]);
     addTableSlides(pptx, theme, {
-      title: 'Active & Pending Conversations',
-      header: ['Discussion / decision', 'Response & notes', 'Outcome'],
-      rows: model.discussion.map((d: DiscussionItem) => [
-        { text: d.topic, options: { fontFace: FONT, fontSize: 11, bold: true } },
-        { text: d.response ?? 'To discuss', options: { fontFace: FONT, fontSize: 11 } },
-        { text: discussionOutcome(d), options: { fontFace: FONT, fontSize: 11, color: ACCENT, bold: true } },
-      ]),
+      title: PAGE_TITLES.goals,
+      header,
+      rows,
       colW: [4.4, 5.6, 2.13],
-      rowsPerSlide: 7,
-      notes: `Work through each item live: capture the client's response and the agreed outcome. Topics: ${model.discussion.map((d) => d.topic).join('; ')}.`,
+      rowsPerSlide: 6,
+      notes: `Tie the quarter's work back to what the client is trying to achieve. Walk each goal, confirm the status is still right, and ask what's changed on their side. Goals: ${model.goals
+        .map((g) => `${g.title} (${goalStatusLabel(g.status)})`)
+        .join('; ')}.`,
     });
-  } else if (model.notes) {
-    const s = pptx.addSlide({ masterName: 'QBR' });
-    heading(s, 'Active & Pending Conversations');
-    s.addText(model.notes, { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: 4.5, fontFace: FONT, fontSize: 12, color: TEXT, italic: true, valign: 'top', fit: 'shrink' });
-    notes(s, 'Use this space to capture decisions and client responses during the meeting.');
+  }
+  for (const cs of model.customSections.filter((c) => c.placement === 'after-summary')) addCustomSlides(cs);
+
+  // ── How we are protecting you: the five questions ───────────────────────
+  addTableSlides(pptx, theme, {
+    title: PAGE_TITLES.protection,
+    header: ['The question', 'What is in place', 'This quarter', 'Status'],
+    rows: model.protection.map((row) => [
+      { text: `${row.question}\n${PROTECTION_SUBTITLE[row.id] ?? ''}`, options: { fontFace: FONT, fontSize: 11, bold: true, color: hex(SEMANTIC.ink) } },
+      { text: protectionInPlace(row), options: { fontFace: FONT, fontSize: 11 } },
+      { text: protectionThisQuarter(row), options: { fontFace: FONT, fontSize: 11 } },
+      {
+        text: `${protectionStatusWord(row)}\n${functionScoresText(row)}`,
+        options: { fontFace: FONT, fontSize: 11, bold: true, color: 'FFFFFF', fill: { color: hex(ratingColor(row.rating)) } },
+      },
+    ]),
+    colW: [2.5, 4.0, 3.6, 2.03],
+    rowsPerSlide: 5,
+    notes: [ringNote(model), whatToFixFirst(model) ? `What to fix first: ${whatToFixFirst(model)}` : ''].filter(Boolean).join('\n\n'),
+  });
+
+  // ── Decisions and the next 90 days ──────────────────────────────────────
+  if (showDecisionsPage(model)) {
+    if (model.discussion.length) {
+      addTableSlides(pptx, theme, {
+        title: PAGE_TITLES.decisions,
+        header: ['Topic', 'Where it stands', 'Owner', 'Status'],
+        rows: model.discussion.map((d: DiscussionItem) => {
+          const status = conversationStatus(d);
+          return [
+            { text: d.topic, options: { fontFace: FONT, fontSize: 11, bold: true } },
+            { text: d.response?.trim() || 'To discuss', options: { fontFace: FONT, fontSize: 11 } },
+            { text: d.owner ?? '', options: { fontFace: FONT, fontSize: 11 } },
+            { text: CONVERSATION_LABEL[status], options: { fontFace: FONT, fontSize: 11, bold: true, color: 'FFFFFF', fill: { color: hex(conversationColor(status, brand.primary)) } } },
+          ];
+        }),
+        colW: [3.4, 5.4, 1.6, 1.73],
+        rowsPerSlide: 6,
+        notes: `${DECISIONS_LEDE} Work through each item live: capture the client's response and the agreed outcome.${model.notes ? `\n\nMeeting notes: ${model.notes}` : ''}`,
+      });
+    } else if (model.notes && !hasPlan(model)) {
+      const s = pptx.addSlide({ masterName: 'QBR' });
+      heading(s, PAGE_TITLES.decisions);
+      s.addText(model.notes, { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: 4.5, fontFace: FONT, fontSize: 12, color: TEXT, italic: true, valign: 'top', fit: 'shrink' });
+      notes(s, 'Use this space to capture decisions and client responses during the meeting.');
+    }
+    if (hasPlan(model)) {
+      const depth = Math.max(...PLAN_COLUMNS.map((c) => model.plan[c.key].length));
+      const cell = (key: (typeof PLAN_COLUMNS)[number]['key'], i: number) => {
+        const p = model.plan[key][i];
+        return {
+          text: p ? `${p.action}\n${p.owner}${p.decision ? '\nYour decision' : ''}` : '',
+          options: { fontFace: FONT, fontSize: 11, color: TEXT },
+        };
+      };
+      addTableSlides(pptx, theme, {
+        title: model.discussion.length || model.notes ? 'The next 90 days' : PAGE_TITLES.decisions,
+        header: PLAN_COLUMNS.map((c) => `${c.title} (${c.span})`),
+        rows: Array.from({ length: depth }, (_, i) => PLAN_COLUMNS.map((c) => cell(c.key, i))),
+        colW: [CONTENT_W / 3, CONTENT_W / 3, CONTENT_W / 3],
+        rowsPerSlide: 3,
+        notes: 'Land the meeting on next steps: agree an owner and a rough timeframe for each item, and get a yes or no on every item marked "Your decision". These flow to the Actions tab for follow-through.',
+      });
+    }
   }
 
-  // ── Recommendations / next 90 days ──────────────────────────────────────
-  if (model.recommendations.length) {
+  // ── Your IT investment ──────────────────────────────────────────────────
+  const inv = model.investment;
+  if (showInvestmentPage(inv)) {
     const s = pptx.addSlide({ masterName: 'QBR' });
-    heading(s, 'Recommendations & Next 90 Days');
+    heading(s, PAGE_TITLES.investment);
+    let y = BODY_Y;
+    const lede = investmentLede(inv);
+    if (lede) {
+      s.addText(lede, { x: CONTENT_X, y, w: CONTENT_W, h: 0.55, fontFace: FONT, fontSize: 14, color: TEXT, valign: 'top', fit: 'shrink' });
+      y += 0.62;
+    }
+    if (inv.invoiced > 0) {
+      const tw = (CONTENT_W - 0.3) / 3;
+      investmentTiles(inv).forEach((t, i) => {
+        const x = CONTENT_X + i * (tw + 0.15);
+        s.addShape('rect', { x, y, w: tw, h: 0.9, fill: { color: hex(SEMANTIC.canvas) }, line: { type: 'none' } });
+        s.addText(
+          [
+            { text: t.value, options: { bold: true, fontSize: 22, color: PRIMARY, breakLine: true } },
+            { text: t.label, options: { fontSize: 11, color: TEXT, breakLine: !!t.note } },
+            ...(t.note ? [{ text: t.note, options: { fontSize: 10, color: GRAY } }] : []),
+          ],
+          { x: x + 0.12, y, w: tw - 0.24, h: 0.9, fontFace: FONT, valign: 'middle', fit: 'shrink' },
+        );
+      });
+      y += 1.05;
+    }
+    const bars = inv.breakdown.slice(0, 7);
+    const rightX = CONTENT_X + CONTENT_W * 0.58;
+    if (bars.length) {
+      s.addText('Where it went', { x: CONTENT_X, y, w: 6, h: 0.35, fontFace: FONT, fontSize: 14, bold: true, color: PRIMARY, valign: 'top' });
+      s.addChart(
+        pptx.ChartType.bar,
+        [{ name: 'Invoiced', labels: bars.map((b) => b.label), values: bars.map((b) => b.amount) }],
+        {
+          x: CONTENT_X, y: y + 0.35, w: CONTENT_W * 0.56, h: FOOTER_Y - 0.2 - y - 0.35,
+          barDir: 'bar',
+          chartColors: [PRIMARY],
+          showLegend: false,
+          catAxisOrientation: 'maxMin',
+          catAxisLabelFontFace: FONT,
+          catAxisLabelFontSize: 10,
+          valAxisHidden: true,
+          valGridLine: { style: 'none' },
+          showValue: true,
+          dataLabelFormatCode: '$#,##0',
+          dataLabelFontSize: 10,
+          dataLabelColor: TEXT,
+        },
+      );
+    }
+    const side: Array<{ text: string; options: Record<string, unknown> }> = [];
+    if (inv.planVsActual) {
+      side.push({ text: `${inv.planVsActual.fiscalYearLabel} plan versus actual`, options: { bold: true, color: hex(SEMANTIC.ink), breakLine: true } });
+      side.push({ text: planVsActualText(inv.planVsActual), options: { color: TEXT, breakLine: true, paraSpaceAfter: 10 } });
+    }
+    if (inv.comingUp.length) {
+      side.push({ text: 'Coming up', options: { bold: true, color: hex(SEMANTIC.ink), breakLine: true } });
+      inv.comingUp.forEach((c, i) => side.push({ text: c, options: { bullet: { code: '2022' }, color: TEXT, breakLine: i < inv.comingUp.length - 1 } }));
+    }
+    if (side.length) {
+      s.addText(side, { x: bars.length ? rightX : CONTENT_X, y, w: bars.length ? CONTENT_X + CONTENT_W - rightX : CONTENT_W, h: FOOTER_Y - 0.2 - y, fontFace: FONT, fontSize: 12, valign: 'top', fit: 'shrink' });
+    }
+    notes(s, 'Walk the money plainly: what was invoiced, how much is the steady recurring agreement, and what was project or hourly work. Then preview what is coming so nothing in next year\'s budget is a surprise.');
+  }
+
+  // ── Planning your FY IT budget (planning quarter only) ──────────────────
+  if (inv?.outlook) {
+    const o = inv.outlook;
+    const cell = (text: string, opts: Record<string, unknown> = {}) => ({ text, options: { fontFace: FONT, fontSize: 11, ...opts } });
+    addTableSlides(pptx, theme, {
+      title: planningTitle(o),
+      header: ['Category', 'Low', 'Expected', 'High', 'Based on'],
+      rows: [
+        ...o.lines.map((l) => [
+          cell(BUDGET_CATEGORY_LABEL[l.category] ?? l.category, { bold: true }),
+          cell(money(l.low), { align: 'right' }),
+          cell(money(l.expected), { align: 'right' }),
+          cell(money(l.high), { align: 'right' }),
+          cell(basisText(l)),
+        ]),
+        [cell('Total', { bold: true }), cell(money(o.totals.low), { align: 'right', bold: true }), cell(money(o.totals.expected), { align: 'right', bold: true }), cell(money(o.totals.high), { align: 'right', bold: true }), cell('')],
+      ],
+      colW: [2.4, 1.4, 1.4, 1.4, 5.53],
+      rowsPerSlide: 8,
+      notes: `${PLANNING_LEDE}${o.caveats.length ? `\n\nCaveats: ${o.caveats.join(' ')}` : ''}`,
+    });
+    const s = pptx.addSlide({ masterName: 'QBR' });
+    heading(s, `${planningTitle(o)} (cont.)`);
     s.addText(
-      model.recommendations.map((t, i) => ({ text: t, options: { bullet: { code: '2022' }, color: TEXT, paraSpaceAfter: i === model.recommendations.length - 1 ? 0 : 10 } })),
+      [
+        ...(o.assumptions.length ? [{ text: 'What we assumed with you. ', options: { bold: true, color: hex(SEMANTIC.ink) } }, { text: o.assumptions.join(' '), options: { color: TEXT, breakLine: true, paraSpaceAfter: 12 } }] : []),
+        ...(o.movers.length ? [{ text: 'What would move it. ', options: { bold: true, color: hex(SEMANTIC.ink) } }, { text: o.movers.join(' '), options: { color: TEXT, breakLine: true, paraSpaceAfter: 12 } }] : []),
+        { text: 'Decisions for the plan', options: { bold: true, color: PRIMARY, breakLine: true } },
+        ...planningDecisions(o).map((d) => ({ text: d, options: { bullet: { code: '2022' }, color: TEXT } })),
+      ],
       { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: FOOTER_Y - 0.2 - BODY_Y, fontFace: FONT, fontSize: 14, valign: 'top', fit: 'shrink' },
     );
-    notes(
-      s,
-      'Land the meeting on next steps: for each recommendation, agree an owner and a rough timeframe, and note which ones become tickets or opportunities. These flow to the Actions tab for follow-through.',
-    );
   }
 
-  // ── Appendix: attached reports ──────────────────────────────────────────
-  if (model.documents.length) {
+  // ── Quarter in numbers (appendix slides) ────────────────────────────────
+  const qoq = operationalQoQ(model.trends);
+  if (model.sections.length || qoq.length >= 2) {
     const s = pptx.addSlide({ masterName: 'QBR' });
-    heading(s, 'Appendix: Attached Reports');
+    heading(s, PAGE_TITLES.numbers);
+    if (qoq.length >= 2) {
+      s.addChart(
+        pptx.ChartType.bar,
+        [
+          { name: model.previousPeriod?.label ?? 'Previous', labels: qoq.map((t) => t.label), values: qoq.map((t) => t.previous ?? 0) },
+          { name: model.period.label, labels: qoq.map((t) => t.label), values: qoq.map((t) => t.current ?? 0) },
+        ],
+        {
+          x: CONTENT_X, y: BODY_Y + 0.1, w: CONTENT_W, h: 4.7,
+          barDir: 'col',
+          chartColors: [RULE, ACCENT],
+          showLegend: true,
+          legendPos: 'b',
+          legendFontFace: FONT,
+          catAxisLabelFontFace: FONT,
+          catAxisLabelFontSize: 11,
+          valAxisLabelFontSize: 10,
+          dataLabelFontFace: FONT,
+          showValue: true,
+          dataLabelFontSize: 10,
+          dataLabelColor: TEXT,
+        },
+      );
+      s.addText('Support ticket volume this quarter versus last. Automated system alerts are excluded so the human-facing work is comparable.', {
+        x: CONTENT_X, y: FOOTER_Y - 0.55, w: CONTENT_W, h: 0.4, fontFace: FONT, fontSize: 10, color: GRAY, italic: true, valign: 'top',
+      });
+      notes(
+        s,
+        `Talk to the trend, not the bars. ${qoq
+          .map((t) => `${t.label}: ${t.previous ?? 0} to ${t.current ?? 0}`)
+          .join(', ')}. Frame improvement as the value of proactive management; frame any increase honestly and say what you're doing about it.`,
+      );
+    } else {
+      const lines = model.sections.map((sec) => `${sec.title}${sec.summary ? `: ${sec.summary}` : ''}`);
+      s.addText(
+        lines.map((t, i) => ({ text: t, options: { bullet: { code: '2022' }, color: TEXT, paraSpaceAfter: i === lines.length - 1 ? 0 : 10 } })),
+        { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: FOOTER_Y - 0.2 - BODY_Y, fontFace: FONT, fontSize: 14, valign: 'top', fit: 'shrink' },
+      );
+      notes(s, 'The detailed tables follow as appendix slides; skim them only if the client asks.');
+    }
+    addMaturitySlide();
+    for (const section of model.sections) addSectionSlides(pptx, section, theme);
+  }
+  for (const cs of model.customSections.filter((c) => (c.placement ?? 'in-body') === 'in-body')) addCustomSlides(cs);
+  for (const cs of model.customSections.filter((c) => c.placement === 'end')) addCustomSlides(cs);
+
+  // ── Appendix: attached reports and how we score ─────────────────────────
+  {
+    const s = pptx.addSlide({ masterName: 'QBR' });
+    heading(s, model.documents.length ? PAGE_TITLES.appendixWithReports : PAGE_TITLES.appendixScoring);
+    const docs = model.documents.map((d) => ({ text: `${d.name}  (${d.source})`, options: { bullet: { code: '2022' }, color: TEXT, breakLine: true } }));
     s.addText(
-      model.documents.map((d, i) => ({
-        text: `${d.name}  (${d.source})`,
-        options: { bullet: { code: '2022' }, color: TEXT, paraSpaceAfter: i === model.documents.length - 1 ? 0 : 8 },
-      })),
+      [
+        ...docs,
+        ...(docs.length ? [{ text: 'How we score', options: { bold: true, color: PRIMARY, breakLine: true, paraSpaceBefore: 12 } }] : []),
+        { text: howWeScore(model), options: { color: TEXT } },
+      ],
       { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: FOOTER_Y - 0.2 - BODY_Y, fontFace: FONT, fontSize: 13, valign: 'top', fit: 'shrink' },
     );
     notes(s, 'These vendor reports travel with the PDF package; offer to walk through any of them if the client wants the detail.');

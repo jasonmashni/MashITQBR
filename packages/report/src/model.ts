@@ -20,7 +20,7 @@ import {
   type ProtectionRow,
   type ReportConfig,
 } from '@mashit/core';
-import type { NarrativeOutput } from '@mashit/narrative';
+import type { NarrativeDecision, NarrativeOutput, PlanItem } from '@mashit/narrative';
 import { resolveBrand, type BrandTokens } from './brand.js';
 import { formatCurrency } from './format.js';
 
@@ -171,7 +171,16 @@ export interface ReportModel {
   heldBy?: string;
   /** Resolved branding (Mash IT defaults merged with any per-client override). */
   brand: BrandTokens;
-  executive: { headline?: string; paragraphs: string[]; highlights: string[] };
+  /**
+   * Page one. `lede`, `did` and `saw` come from the v4 narrative; a v3
+   * narrative falls back to its paragraphs and highlights. `paragraphs` and
+   * `highlights` stay for older consumers.
+   */
+  executive: { headline?: string; paragraphs: string[]; highlights: string[]; lede?: string; did: string[]; saw: string[] };
+  /** What the client must decide (page one, third column). */
+  decisions: NarrativeDecision[];
+  /** The next 90 days (page three); falls back to the recommendations in Now. */
+  plan: { now: PlanItem[]; next: PlanItem[]; later: PlanItem[] };
   scorecard: MaturityScorecard;
   trends: MetricTrend[];
   /** Strategic client goals + how IT aligns to them (qualitative; opens the report). */
@@ -286,9 +295,19 @@ export function buildReportModel(args: {
     brand: resolveBrand(config?.brand, args.orgBrand),
     executive: {
       headline: narrative?.headline,
-      paragraphs: narrative?.summary_paragraphs ?? [],
-      highlights: narrative?.highlights ?? [],
+      paragraphs: narrative?.summary_paragraphs ?? (narrative?.lede ? [narrative.lede] : []),
+      highlights: narrative?.highlights ?? [...(narrative?.did ?? []), ...(narrative?.saw ?? [])],
+      lede: narrative?.lede || (narrative?.summary_paragraphs?.length ? narrative.summary_paragraphs.join(' ') : undefined),
+      did: narrative?.did?.length ? narrative.did : (narrative?.highlights ?? []),
+      saw: narrative?.saw ?? [],
     },
+    decisions: narrative?.decisions ?? [],
+    plan: (() => {
+      const plan = narrative?.plan;
+      if (plan && (plan.now.length || plan.next.length || plan.later.length)) return { now: plan.now, next: plan.next, later: plan.later };
+      // A narrative with no plan: the recommendations (or their fallbacks) become the Now column.
+      return { now: recommendations.slice(0, 3).map((action) => ({ action, owner: 'Mash IT' })), next: [], later: [] };
+    })(),
     scorecard,
     trends,
     // Only goals with a real title; ordered planned/on-track before at-risk/achieved

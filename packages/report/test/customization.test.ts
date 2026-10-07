@@ -94,17 +94,22 @@ describe('renderReportHtml customization', () => {
     expect(html).not.toContain('#123456');
   });
 
-  it('renders the custom section and omits the hidden spend section', () => {
+  it('renders the custom section and omits the hidden spend section and its investment page', () => {
     expect(html).toContain('Strategic Roadmap');
     expect(html).toContain('Phase one.');
     expect(html).not.toContain('IT Spend Overview');
+    expect(html).not.toContain('Your IT investment');
+    // The after-summary section sits between page one and the protection page.
+    expect(html.indexOf('Strategic Roadmap')).toBeGreaterThan(html.indexOf('What we need from you'));
+    expect(html.indexOf('Strategic Roadmap')).toBeLessThan(html.indexOf('How we are protecting you'));
   });
 
-  it('renders the discussion/responses capture with disposition and owner', () => {
-    expect(html).toContain('Active &amp; Pending Conversations');
+  it('renders the discussion/responses capture with status and owner', () => {
+    expect(html).toContain('Decisions and the next 90 days');
     expect(html).toContain('Remove OpenVPN?');
     expect(html).toContain('Anne to remove except AnneNB2');
-    expect(html).toContain('No action');
+    expect(html).toContain('Closed'); // no action reads as closed
+    expect(html).toContain('<td>Anne</td>');
     expect(html).toContain('follow up on warranties');
   });
 });

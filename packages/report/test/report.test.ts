@@ -6,8 +6,12 @@ import { buildReportModel, renderReportHtml } from '@mashit/report';
 const anp = SEED_CLIENTS.find((c) => c.id === 'anp')!;
 const narrative: NarrativeOutput = {
   headline: 'A high-activity, security-forward quarter',
-  summary_paragraphs: ['Ticket volume rose to 141, up 200% from 47 last quarter.'],
-  highlights: ['22 email threats blocked before reaching inboxes'],
+  lede: 'Ticket volume rose to 141, up 200% from 47 last quarter.',
+  did: ['22 email threats blocked before reaching inboxes', 'Handled every support request.', 'Kept monitoring running.'],
+  saw: ['Ticket volume tripled.', 'Four devices are past warranty.', 'Backups ran.'],
+  decisions: [],
+  plan: { now: [{ action: 'Plan the May hardware refresh', owner: 'Mash IT' }], next: [{ action: 'Replace ANP-LAP-006', owner: 'Mash IT', decision: true }], later: [] },
+  protection: [],
   recommendations: ['Plan the May hardware refresh', 'Replace ANP-LAP-006'],
   figures_referenced: [],
 };
@@ -30,9 +34,37 @@ describe('buildReportModel', () => {
     expect(tickets.trend?.deltaPct).toBe(200);
   });
 
-  it('carries the narrative into the executive section', () => {
+  it('carries the narrative into the executive section and the plan', () => {
     expect(model.executive.headline).toMatch(/security-forward/);
+    expect(model.executive.lede).toMatch(/up 200% from 47/);
+    expect(model.executive.did[0]).toMatch(/22 email threats/);
     expect(model.recommendations).toContain('Plan the May hardware refresh');
+    expect(model.plan.next[0]).toEqual({ action: 'Replace ANP-LAP-006', owner: 'Mash IT', decision: true });
+  });
+
+  it('a narrative without a plan puts the recommendations in the Now column', () => {
+    const noPlan = buildReportModel({
+      client: anp,
+      current: findSeedSnapshot('anp', '2026-Q1')!,
+      narrative: { ...narrative, plan: { now: [], next: [], later: [] } },
+    });
+    expect(noPlan.plan.now.map((p) => p.action)).toEqual(['Plan the May hardware refresh', 'Replace ANP-LAP-006']);
+  });
+
+  it('escapes narrative and discussion text in the HTML', () => {
+    const hostile = buildReportModel({
+      client: anp,
+      current: findSeedSnapshot('anp', '2026-Q1')!,
+      narrative: { ...narrative, headline: '<script>alert(1)</script>', did: ['<b>bold</b>', 'b', 'c'] },
+      discussion: [{ id: 'x', topic: '<img src=x onerror=alert(1)>', status: 'discussed' }],
+      previousDiscussion: [{ id: 'y', topic: '<i>old</i>', status: 'discussed' }],
+    });
+    const out = renderReportHtml(hostile);
+    expect(out).not.toContain('<script>alert(1)</script>');
+    expect(out).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(out).not.toContain('<img src=x');
+    expect(out).not.toContain('<b>bold</b>');
+    expect(out).not.toContain('<i>old</i>');
   });
 
   it('includes a computed maturity scorecard', () => {

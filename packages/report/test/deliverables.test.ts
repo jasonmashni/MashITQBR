@@ -15,9 +15,12 @@ import {
 const anp = SEED_CLIENTS.find((c) => c.id === 'anp')!;
 const narrative: NarrativeOutput = {
   headline: 'A high-activity, security-forward quarter',
-  summary_paragraphs: ['Ticket volume rose to 141, up 200% from 47 last quarter.'],
-  highlights: ['22 email threats blocked before reaching inboxes'],
-  recommendations: ['Plan the May hardware refresh'],
+  lede: 'Ticket volume rose to 141, up 200% from 47 last quarter.',
+  did: ['22 email threats blocked before reaching inboxes', 'Handled every support request.', 'Kept monitoring running.'],
+  saw: ['Ticket volume tripled.', 'Four devices are past warranty.', 'Backups ran.'],
+  decisions: [{ ask: 'Approve the May hardware refresh', by: 'May 1' }],
+  plan: { now: [{ action: 'Plan the May hardware refresh', owner: 'Mash IT', decision: true }], next: [], later: [] },
+  protection: [],
   section_summaries: [
     { category: 'operations', summary: 'The team resolved a heavy quarter of support work without backlog growth.' },
     // Capitalized on purpose — the model matches categories case-insensitively.
@@ -75,14 +78,14 @@ describe('report model — discussion + documents + section summaries', () => {
 });
 
 describe('designed PDF (pdfmake)', () => {
-  it('builds a definition with cover, scorecard visuals, discussions and appendix', () => {
+  it('builds a definition with cover, protection, decisions and appendix', () => {
     const def = buildPdfDefinition(model);
     const text = JSON.stringify(def);
     expect(text).toContain('ANP Enertech');
     expect(text).toContain('Quarterly business review');
-    expect(text).toContain('Security & Risk Maturity');
-    expect(text).toContain('Active & Pending Conversations');
-    expect(text).toContain('Appendix: Attached Reports');
+    expect(text).toContain('How we are protecting you');
+    expect(text).toContain('Decisions and the next 90 days');
+    expect(text).toContain('Appendix: Attached reports');
     expect(text).toContain('"svg"'); // score visuals are inline SVG
     // Design round: section summaries, the KPI band, and page backgrounds.
     expect(text).toContain('heavy quarter');
@@ -213,7 +216,7 @@ describe('rebuilt deck (pptxgenjs)', () => {
       const xml = await zip.file(f)!.async('string');
       const texts = [...xml.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((m) => m[1]!.trim()).filter(Boolean);
       expect(texts.length, `${f} has no text`).toBeGreaterThan(0);
-      if (texts.some((t) => t.startsWith('Active & Pending Conversations') || t.startsWith('Active &amp; Pending Conversations'))) conversationSlides += 1;
+      if (texts.some((t) => t.startsWith('Decisions and the next 90 days'))) conversationSlides += 1;
     }
     expect(conversationSlides).toBeGreaterThanOrEqual(2);
   });
