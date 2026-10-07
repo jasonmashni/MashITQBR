@@ -20,6 +20,7 @@ import type {
   Overview,
   PackageStage,
   PeriodInfo,
+  SuggestedConversationsResponse,
   QbrMeta,
   QbrResponse,
   QbrStatus,
@@ -185,8 +186,9 @@ export const api = {
   putConfig: (clientId: string, config: ReportConfig) => send('PUT', `/api/clients/${clientId}/config`, config).then(json<ReportConfig>),
   getDiscussion: (clientId: string, period: string) =>
     send('GET', `/api/clients/${clientId}/qbr/${period}/discussion`).then(json<Discussion>),
-  putDiscussion: (clientId: string, period: string, disc: Discussion) =>
-    send('PUT', `/api/clients/${clientId}/qbr/${period}/discussion`, disc).then(json<Discussion>),
+  /** knownIds: every item id this client has seen, so items added elsewhere (the inbox) survive the save. */
+  putDiscussion: (clientId: string, period: string, disc: Discussion, knownIds?: string[]) =>
+    send('PUT', `/api/clients/${clientId}/qbr/${period}/discussion`, knownIds ? { ...disc, knownIds } : disc).then(json<Discussion>),
 
   // Attached documents (vendor reports + uploads)
   listDocuments: (clientId: string, period: string) =>
@@ -321,6 +323,8 @@ export const api = {
     send('POST', `/api/clients/${clientId}/qbr/${period}/agenda`, { exclude }).then(
       json<{ suggestions: Array<{ topic: string; rationale: string }>; source: 'ai' | 'offline'; note?: string }>,
     ),
+  suggestedConversations: (clientId: string, period: string) =>
+    send('GET', `/api/clients/${clientId}/qbr/${period}/conversations/suggested`).then(json<SuggestedConversationsResponse>),
 
   // In-portal notifications (bell)
   notifications: (limit = 30) =>

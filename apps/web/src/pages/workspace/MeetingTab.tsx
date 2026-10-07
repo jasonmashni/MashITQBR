@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Title,
   Group,
@@ -30,9 +30,11 @@ import {
   IconArrowDown,
   IconBulb,
   IconSparkles,
+  IconMessages,
 } from '@tabler/icons-react';
 import { api } from '../../api.js';
-import type { Discussion, DiscussionItem, QbrResponse } from '../../types.js';
+import type { Discussion, DiscussionItem, QbrResponse, SuggestedConversationsResponse } from '../../types.js';
+import { conversationItem, needsHipaaRewrite, pendingConversations } from './conversations.js';
 import { uid } from '../../ui.js';
 import { toastError } from '../../toast.js';
 import { QBR_STATUS_ORDER, isQbrStatus, qbrStatusLabel, statusAtLeast, type QbrStatus } from '@mashit/core';
@@ -63,6 +65,49 @@ export function MeetingTab({
   const [suggesting, setSuggesting] = useState(false);
   const [suggested, setSuggested] = useState<Array<{ topic: string; rationale: string }> | null>(null);
   const [suggestSource, setSuggestSource] = useState<'ai' | 'offline'>('ai');
+  const [convos, setConvos] = useState<SuggestedConversationsResponse | null>(null);
+  const [convosLoading, setConvosLoading] = useState(false);
+  const [convosError, setConvosError] = useState<string | null>(null);
+  const [convosReload, setConvosReload] = useState(0);
+  const finalLocked = Boolean(meta?.locks?.final);
+
+  // Every item id this tab has seen for the quarter. Sent with the save so the
+  // server keeps items added behind our back (a forwarded email) instead of
+  // treating them as deleted.
+  const seenIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    seenIds.current = new Set();
+  }, [clientId, period]);
+  useEffect(() => {
+    for (const it of disc.items) seenIds.current.add(it.id);
+  }, [disc]);
+
+  // Conversations from Halo for this quarter (requests, opportunities, CRM notes).
+  useEffect(() => {
+    let live = true;
+    setConvosLoading(true);
+    setConvosError(null);
+    api
+      .suggestedConversations(clientId, period)
+      .then((r) => live && setConvos(r))
+      .catch((e) => {
+        if (!live) return;
+        setConvos(null);
+        setConvosError(e instanceof Error ? e.message : 'Could not load conversations from Halo');
+      })
+      .finally(() => live && setConvosLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [clientId, period, convosReload]);
+
+  const pendingConvos = convos ? pendingConversations(convos.items, disc.items) : [];
+
+  function addConversation(c: SuggestedConversationsResponse['items'][number]) {
+    if (finalLocked) return;
+    setDisc({ ...disc, items: [...disc.items, conversationItem(c, convos?.hipaa === true, uid())] });
+    notifications.show({ color: 'good', message: 'Added to the agenda, expand on it below, then Save agenda.' });
+  }
 
   function addTopic() {
     const topic = newTopic.trim();
@@ -137,8 +182,8 @@ export function MeetingTab({
     try {
       // Agenda order is the on-screen order.
       const items = disc.items.map((it, i) => ({ ...it, sortOrder: i }));
-      await api.putDiscussion(clientId, period, { ...disc, items });
-      setDisc({ ...disc, items });
+      const saved = await api.putDiscussion(clientId, period, { ...disc, items }, [...seenIds.current]);
+      setDisc({ ...disc, items: saved.items ?? items });
       notifications.show({ color: 'good', message: 'Agenda saved, answered items flow onto the final report.' });
       onSavedDiscussion?.();
       onChanged();
@@ -207,6 +252,51 @@ export function MeetingTab({
           )}
         </Card>
 
+        <Card withBorder radius="sm" padding="sm" mb="md">
+          <Group justify="space-between" wrap="nowrap" align="flex-start">
+            <div>
+              <Group gap={6}>
+                <IconMessages size={16} color="var(--mantine-color-navy-7)" />
+                <Text size="sm" fw={600}>Conversations from Halo and email</Text>
+              </Group>
+              <Text size="xs" c="dimmed">
+                Requests from the primary contact or VIPs, opportunities and CRM notes from this quarter. Emails forwarded to the
+                client's report address land on the agenda below as drafts.
+              </Text>
+            </div>
+            <Button size="compact-sm" variant="light" loading={convosLoading} onClick={() => setConvosReload((n) => n + 1)}>
+              Refresh
+            </Button>
+          </Group>
+          {convosError && <Text size="xs" c="act" mt="xs">{convosError}</Text>}
+          {convos && convos.hipaa && pendingConvos.length > 0 && (
+            <Text size="xs" c="dimmed" mt="xs">HIPAA client: added items stay off the report until you tick On report.</Text>
+          )}
+          {convos && !convosLoading && pendingConvos.length === 0 && !convosError && (
+            <Text size="xs" c="dimmed" mt="xs">Nothing new from Halo for this quarter.</Text>
+          )}
+          {pendingConvos.length > 0 && (
+            <Stack gap={6} mt="sm">
+              {pendingConvos.map((c) => (
+                <Group key={c.ref} justify="space-between" wrap="nowrap" align="flex-start" p="xs" style={{ borderRadius: 6, background: 'var(--mantine-color-gray-0)' }}>
+                  <div style={{ flex: 1 }}>
+                    <Text size="sm" fw={600}>{c.topic}</Text>
+                    <Text size="xs" c="dimmed">
+                      {[{ halo_ticket: 'Ticket', halo_opportunity: 'Opportunity', halo_note: 'CRM note' }[c.source], c.when, c.detail].filter(Boolean).join(', ')}
+                    </Text>
+                  </div>
+                  <Tooltip label="This quarter is final. Reopen it to change the agenda." disabled={!finalLocked}>
+                    <Button size="compact-xs" variant="light" color="good" disabled={finalLocked} onClick={() => addConversation(c)}>Add</Button>
+                  </Tooltip>
+                </Group>
+              ))}
+            </Stack>
+          )}
+          {convos && convos.warnings.length > 0 && (
+            <Text size="xs" c="dimmed" mt="xs">{convos.warnings.join(' ')}</Text>
+          )}
+        </Card>
+
         <Group mb="md" wrap="nowrap">
           <TextInput
             style={{ flex: 1 }}
@@ -265,6 +355,9 @@ export function MeetingTab({
                 <Checkbox size="xs" label="On report" checked={it.includeInReport !== false} onChange={(e) => update(i, { includeInReport: e.currentTarget.checked })} />
                 {it.externalRef && <Badge color="good" variant="light">{it.externalRef.system} #{it.externalRef.id}</Badge>}
               </Group>
+              {needsHipaaRewrite(it, convos?.hipaa === true) && (
+                <Text size="xs" c="watch" mt={4}>Rewrite this topic before putting it on the report.</Text>
+              )}
             </Fieldset>
           ))}
         </Stack>

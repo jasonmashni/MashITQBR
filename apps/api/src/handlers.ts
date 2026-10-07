@@ -16,6 +16,7 @@ import {
   roadmapValue,
   statusAtLeast,
   type ClientGoal,
+  type DiscussionItem,
   type MetricCategory,
   type MetricValue,
   type QbrStatus,
@@ -502,7 +503,16 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   if (locked) return locked;
   if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const store = getDataStore();
-  const items = Array.isArray(body['items']) ? (body['items'] as never[]) : [];
+  const items: DiscussionItem[] = Array.isArray(body['items']) ? (body['items'] as DiscussionItem[]) : [];
+  // knownIds = the ids the client loaded. A stored item in neither the body
+  // nor knownIds was added behind the client's back (the email inbox), so it
+  // is kept rather than erased. Without knownIds the body replaces the list.
+  if (Array.isArray(body['knownIds'])) {
+    const known = new Set((body['knownIds'] as unknown[]).filter((x): x is string => typeof x === 'string'));
+    const inBody = new Set(items.map((i) => i?.id));
+    const stored = (await store.getDiscussion(clientId, period))?.items ?? [];
+    items.push(...stored.filter((i) => !inBody.has(i.id) && !known.has(i.id)));
+  }
   const saved = await store.putDiscussion({ clientId, period, items, notes: body['notes'] as string | undefined });
   audit('discussion.save', `qbr:${clientId}/${period}`, `${saved.items.length} item(s)`);
 
@@ -1117,13 +1127,13 @@ export async function pollInbox(log?: (message: string) => void): Promise<ApiRes
     _lastInboxPoll = {
       at: new Date().toISOString(),
       ok: true,
-      detail: `${result.filed} attachment(s) filed, ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed} unread message(s)${folderNote ? `; ${folderNote}` : ''}`,
+      detail: `${result.filed} attachment(s) filed, ${result.agenda} agenda item(s), ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed} unread message(s)${folderNote ? `; ${folderNote}` : ''}`,
     };
-    if (result.filed > 0 || result.unrouted > 0 || (result.untrusted ?? 0) > 0 || (result.failed?.length ?? 0) > 0) {
+    if (result.filed > 0 || result.agenda > 0 || result.unrouted > 0 || (result.untrusted ?? 0) > 0 || (result.failed?.length ?? 0) > 0) {
       audit(
         'inbox.poll',
         `mailbox:${cfg.mailbox}`,
-        `${result.filed} filed, ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed}`,
+        `${result.filed} filed, ${result.agenda} agenda, ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed}`,
       );
     }
     if (result.filed > 0) {

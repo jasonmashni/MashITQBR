@@ -9,6 +9,7 @@ import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
 import type { PushInput } from './actions.js';
+import { suggestedConversations } from './conversations.js';
 import './spa.js'; // registers the catch-all route that serves the React SPA
 
 const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
@@ -131,6 +132,11 @@ route('createMeeting', 'POST', 'api/clients/{clientId}/qbr/{period}/meeting', as
 route('finalizeQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/finalize', (req) => h.finalizeQbr(req.params['clientId']!, req.params['period']!));
 route('reopenQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/reopen', async (req) =>
   h.reopenQbr(req.params['clientId']!, req.params['period']!, (await body(req)) as { stage?: unknown; reason?: unknown }),
+);
+
+// Workstream E: conversations
+route('suggestedConversations', 'GET', 'api/clients/{clientId}/qbr/{period}/conversations/suggested', (req) =>
+  suggestedConversations(req.params['clientId']!, req.params['period']!),
 );
 
 // Integrations

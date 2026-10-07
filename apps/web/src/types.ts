@@ -329,6 +329,22 @@ export interface DiscussionItem {
   source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report';
   sourceRef?: string;
 }
+/** A conversation from Halo the Meeting tab offers to add to the agenda. */
+export interface SuggestedConversation {
+  topic: string;
+  detail?: string;
+  source: 'halo_ticket' | 'halo_opportunity' | 'halo_note';
+  /** Unique across sources (`ticket:{id}`, `opportunity:{id}`, `note:{id}`); becomes the item's sourceRef. */
+  ref: string;
+  /** YYYY-MM-DD, or '' when unknown. */
+  when: string;
+}
+export interface SuggestedConversationsResponse {
+  items: SuggestedConversation[];
+  warnings: string[];
+  /** The client is HIPAA-covered: added items default to off the report. */
+  hipaa?: boolean;
+}
 export interface Discussion {
   clientId: string;
   period: string;
