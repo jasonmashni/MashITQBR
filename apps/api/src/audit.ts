@@ -1,7 +1,7 @@
 import { getDataStore } from './store/index.js';
 import { currentActor } from './requestContext.js';
 
-/** Fire-and-forget compliance audit entry — a storage hiccup never fails the mutation. */
+/** Fire-and-forget compliance audit entry; a storage hiccup never fails the mutation. */
 export function audit(action: string, target: string, detail?: string): Promise<void> {
   return getDataStore()
     .appendAudit({

@@ -256,3 +256,17 @@ describe('cleanContextItems', () => {
     expect(out).toEqual([{ title: 'A', insight: 'B', askClient: 'C?', sourceName: undefined, sourceUrl: undefined }]);
   });
 });
+
+describe('client fiscal year start month', () => {
+  it('updateClient saves a month 1..12 and ignores anything else', async () => {
+    const h = await import('../src/handlers.js');
+    const s = await store();
+    await s.upsertClient({ id: 'fyedit', name: 'FY Edit' });
+    expect((await h.updateClient('fyedit', { fiscalYearStartMonth: 7 })).status).toBe(200);
+    expect((await s.getClient('fyedit'))?.fiscalYearStartMonth).toBe(7);
+    await h.updateClient('fyedit', { fiscalYearStartMonth: 13 });
+    await h.updateClient('fyedit', { fiscalYearStartMonth: 'July' });
+    await h.updateClient('fyedit', { fiscalYearStartMonth: 2.5 });
+    expect((await s.getClient('fyedit'))?.fiscalYearStartMonth).toBe(7);
+  });
+});

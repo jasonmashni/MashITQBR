@@ -189,13 +189,16 @@ export async function listClients(): Promise<ApiResult> {
 }
 
 /** Fields a client PUT may change — everything else in the body is ignored. */
-const CLIENT_PATCH_FIELDS = ['name', 'industry', 'hipaa', 'complianceStandard', 'qbrEnabled', 'integrationRefs', 'primaryContact'] as const;
+const CLIENT_PATCH_FIELDS = ['name', 'industry', 'hipaa', 'complianceStandard', 'qbrEnabled', 'integrationRefs', 'primaryContact', 'fiscalYearStartMonth'] as const;
 
 export async function updateClient(id: string, patch: Record<string, unknown>): Promise<ApiResult> {
   const store = getDataStore();
   const existing = (await store.getClient(id)) ?? { id, name: id };
   const allowed = Object.fromEntries(
-    Object.entries(patch).filter(([k]) => (CLIENT_PATCH_FIELDS as readonly string[]).includes(k)),
+    Object.entries(patch)
+      .filter(([k]) => (CLIENT_PATCH_FIELDS as readonly string[]).includes(k))
+      // The fiscal year start month is a whole month 1..12; anything else is ignored.
+      .filter(([k, v]) => k !== 'fiscalYearStartMonth' || (typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 12)),
   );
   const merged = { ...existing, ...allowed, id };
   await store.upsertClient(merged as typeof existing);
