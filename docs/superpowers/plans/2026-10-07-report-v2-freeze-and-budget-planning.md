@@ -866,7 +866,7 @@ it('labels fiscal years by the year they end', () => {
 });
 it('finds the review quarter before the fiscal year turns', () => {
   expect(planningPeriodFor(2027, 1)).toBe('2026-Q3');
-  expect(planningPeriodFor(2027, 4)).toBe('2026-Q4');
+  expect(planningPeriodFor(2027, 4)).toBe('2025-Q4');
   expect(planningPeriodFor(2027, 7)).toBe('2026-Q1');
   expect(planningPeriodFor(2027, 10)).toBe('2026-Q2');
   expect(isPlanningPeriod('2026-Q3', 1)).toBe(true);
@@ -944,9 +944,9 @@ export function planVsActual(plannedExpected: number, spentByPeriod: number[]): 
 
 Formulas per the spec table. `BudgetAnswers`, `BudgetLine`, `BudgetSource` and `BudgetOutlook` already live in `packages/core/src/types.ts` (S0).
 
-- [ ] **Step 1: Write the failing tests**: the worked example (MRR 5,460; 2 hires at 165; 32 seats at 34.65; Copilot 10 at 30; 15 devices at 1,650 with `at_warranty_end`; projects 9,000 to 18,000; variable quarters 2,000, 3,400, 2,100, 4,000; `balanced`) yields managed 65,520 / 65,520 / 69,480, hardware 21,037.5 / 24,750 / 28,462.5, support 8,000 / 11,500 / 16,000, contingency 0 / 10% of expected / same; Review Focus 3: no MRR yields a zero managed line with basis note "No recurring value on Halo contracts" and `caveats` containing "Managed services could not be computed from Halo; the total is understated."; `planVsActual(118000, [30578, 21019])` gives `pct 44` and a note starting "Under plan".
+- [ ] **Step 1: Write the failing tests**: the worked example (MRR 5,460; 2 hires at 165; 32 seats at 34.65; Copilot 10 at 30; 15 devices at 1,650 with `at_warranty_end`; projects 9,000 to 18,000; variable quarters 2,000, 3,400, 2,100, 4,000; `balanced`) yields managed 65,520 / 65,520 / 69,480, hardware 21,038 / 24,750 / 28,463 (rounded to whole dollars), support 8,000 / 11,500 / 16,000, contingency 0 / 10% of expected / same; Review Focus 3: no MRR yields a zero managed line with basis note "No recurring value on Halo contracts" and `caveats` containing "Managed services could not be computed from Halo; the total is understated."; `planVsActual(118000, [30578, 21019])` gives `pct 44` and a note starting "Under plan".
 - [ ] **Step 2: Run to verify failure**
-- [ ] **Step 3: Implement**; round every line to whole dollars at the end; totals sum lines; the note bands: within 10% of the pro-rata share is "On plan", below is "Under plan", above is "Over plan", each followed by the pro-rata sentence "{pct}% of the plan spent with {n} of 4 quarters invoiced."
+- [ ] **Step 3: Implement**; round every line to whole dollars at the end; totals sum lines; the note bands compare `pct` with the pro-rata share (`100 * quartersInvoiced / 4`): within 10% of that share, relative (share * 0.9 to share * 1.1), is "On plan", below is "Under plan", above is "Over plan", each followed by the pro-rata sentence "{pct}% of the plan spent with {n} of 4 quarters invoiced."
 - [ ] **Step 4: Run** `npx vitest run packages/core`
 - [ ] **Step 5: Commit** `feat(core): deterministic budget outlook and plan versus actual`.
 
