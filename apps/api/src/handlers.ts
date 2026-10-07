@@ -42,6 +42,8 @@ import {
   type DocumentRecord,
   type OpportunityRecord,
   type OpportunityStatus,
+  type PackageRecord,
+  type PackageStage,
   type QbrRecord,
 } from './store/index.js';
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
@@ -71,6 +73,8 @@ import { createClaudeResearcher, type ResearchModel } from './research.js';
 import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 import { computeTriage } from './triage.js';
+import { dataLocked, isFinal, refuseIfLocked } from './locks.js';
+import { loadPackageFile, loadPackageModel, storePackage, type StoredModel } from './packages.js';
 
 export interface ApiResult {
   status: number;
@@ -251,7 +255,50 @@ export async function putClientGoals(id: string, body: Record<string, unknown>):
   return ok({ client: merged });
 }
 
+// ── Frozen quarters: locked reads serve the stored package ──────────────────
+const PACKAGE_MISSING = err(503, 'Stored package missing; reopen to rebuild.');
+
+type Served =
+  | { ok: true; meta: QbrRecord; record: PackageRecord; model: StoredModel; verification: boolean; warnings: string[] }
+  | { ok: false; result: ApiResult };
+
+/**
+ * When the quarter is locked, the package the current lock names (final if
+ * set, else preread). Undefined means "not locked, build as usual". A lock
+ * without its stored files answers 503: rebuilding silently would break the
+ * freeze. Older versions kept after a reopen are never served.
+ */
+async function servedPackage(clientId: string, period: string): Promise<Served | undefined> {
+  const store = getDataStore();
+  const meta = await store.getQbr(clientId, period);
+  if (!dataLocked(meta) || !meta) return undefined;
+  const version = meta.locks?.final?.version ?? meta.locks?.preread?.version;
+  const record = (await store.listPackages(clientId, period)).find((p) => p.version === version);
+  const stored = record ? await loadPackageModel(getDocStore(), record) : undefined;
+  if (!record || !stored) return { ok: false, result: PACKAGE_MISSING };
+  return { ok: true, meta, record, ...stored };
+}
+
+/** A stored deliverable for a locked quarter, or undefined when the quarter is open. */
+async function servedFile(clientId: string, period: string, file: 'pdf' | 'pptx' | 'html'): Promise<ApiResult | undefined> {
+  const served = await servedPackage(clientId, period);
+  if (!served) return undefined;
+  if (!served.ok) return served.result;
+  const bytes = await loadPackageFile(getDocStore(), served.record, file);
+  if (!bytes) return PACKAGE_MISSING;
+  const filename = deliverableFilename(served.model.client.name, served.model.period.label, file);
+  if (file === 'html') return { status: 200, html: bytes.toString('utf8'), filename };
+  if (file === 'pdf') return { status: 200, pdf: bytes, filename };
+  return { status: 200, pptx: bytes, filename };
+}
+
 export async function getQbr(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  const served = await servedPackage(clientId, period);
+  if (served) {
+    if (!served.ok) return served.result;
+    const { model, warnings, verification, meta, record } = served;
+    return ok({ model, warnings, verification, meta, package: { version: record.version, stage: record.stage, createdAt: record.createdAt } });
+  }
   try {
     const report = await buildReportFor(clientId, period, ai);
     const meta = (await getDataStore().getQbr(clientId, period)) ?? { clientId, period, status: 'draft' as QbrStatus };
@@ -271,6 +318,8 @@ async function buildReportFor(clientId: string, period: string, ai: string | nul
 }
 
 export async function getReportHtml(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  const stored = await servedFile(clientId, period, 'html');
+  if (stored) return stored;
   try {
     const report = await buildReportFor(clientId, period, ai);
     return { status: 200, html: renderQbrHtml(report), filename: deliverableFilename(report.model.client.name, report.model.period.label, 'html') };
@@ -281,16 +330,78 @@ export async function getReportHtml(clientId: string, period: string, ai: string
 /** The full QBR PDF: the designed report with attached PDF reports appended. */
 async function buildFullPdf(clientId: string, period: string, ai: string | null): Promise<{ bytes: Buffer; filename: string }> {
   const report = await buildReportFor(clientId, period, ai);
-  const pdf = await renderPdf(report.model);
-  // Vendor reports ride at the back of the deliverable (appendix lists them).
-  const attachments = await loadPdfAttachments(getDataStore(), getDocStore(), clientId, period).catch(() => []);
   return {
-    bytes: await appendPdfAttachments(pdf, attachments),
+    bytes: await renderFullPdf(clientId, period, report.model),
     filename: deliverableFilename(report.model.client.name, report.model.period.label, 'pdf'),
   };
 }
 
+/** Render an already-built model to the full PDF (vendor reports appended). */
+async function renderFullPdf(clientId: string, period: string, model: StoredModel): Promise<Buffer> {
+  const pdf = await renderPdf(model);
+  // Vendor reports ride at the back of the deliverable (appendix lists them).
+  const attachments = await loadPdfAttachments(getDataStore(), getDocStore(), clientId, period).catch(() => []);
+  return appendPdfAttachments(pdf, attachments);
+}
+
+/**
+ * Build the report once, render the PDF, deck and HTML from that single build
+ * and store them as the next package version. Shared by lock 1 and lock 2.
+ */
+async function freezePackage(clientId: string, period: string, stage: PackageStage) {
+  const report = await buildReportFor(clientId, period, null);
+  // After a reopen, the next package says when it was revised (footer, workstream C).
+  const revisedAt = (await getDataStore().getQbr(clientId, period))?.reopened?.at(-1)?.at;
+  const model: StoredModel = revisedAt ? { ...report.model, revisedAt } : report.model;
+  const pkg = await storePackage(getDataStore(), getDocStore(), {
+    clientId,
+    period,
+    stage,
+    createdBy: currentActor(),
+    artifacts: {
+      model,
+      verification: report.narrative.verification.ok,
+      warnings: report.warnings,
+      pdf: await renderFullPdf(clientId, period, model),
+      pptx: await renderDeck(model),
+      html: renderQbrHtml({ ...report, model }),
+    },
+  });
+  return { report, pkg };
+}
+
+/**
+ * Page-one decisions become planned agenda items so the meeting starts from
+ * them. Items already on the agenda (same topic) are left alone.
+ */
+async function seedReportDecisions(clientId: string, period: string, decisions: Array<{ ask: string; why?: string }> | undefined): Promise<void> {
+  const asks = (decisions ?? []).filter((d) => typeof d?.ask === 'string' && d.ask.trim());
+  if (asks.length === 0) return;
+  const store = getDataStore();
+  const existing = await store.getDiscussion(clientId, period);
+  const items = [...(existing?.items ?? [])];
+  const topics = new Set(items.map((i) => i.topic.trim().toLowerCase()));
+  for (const d of asks) {
+    const topic = d.ask.trim();
+    if (topics.has(topic.toLowerCase())) continue;
+    topics.add(topic.toLowerCase());
+    items.push({
+      id: Math.random().toString(36).slice(2, 10),
+      topic,
+      response: d.why?.trim() || undefined,
+      status: 'planned',
+      includeInReport: true,
+      source: 'report',
+      sourceRef: 'page-one',
+    });
+  }
+  if (items.length === (existing?.items.length ?? 0)) return;
+  await store.putDiscussion({ clientId, period, items, notes: existing?.notes });
+}
+
 export async function getReportPdf(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  const stored = await servedFile(clientId, period, 'pdf');
+  if (stored) return stored;
   try {
     const full = await buildFullPdf(clientId, period, ai);
     return { status: 200, pdf: full.bytes, filename: full.filename };
@@ -300,6 +411,8 @@ export async function getReportPdf(clientId: string, period: string, ai: string 
   }
 }
 export async function getReportDeck(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  const stored = await servedFile(clientId, period, 'pptx');
+  if (stored) return stored;
   let report;
   try {
     report = await buildReportFor(clientId, period, ai);
@@ -385,6 +498,8 @@ export async function getDiscussion(clientId: string, period: string): Promise<A
   return ok((await getDataStore().getDiscussion(clientId, period)) ?? { clientId, period, items: [] });
 }
 export async function putDiscussion(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'final');
+  if (locked) return locked;
   if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const store = getDataStore();
   const items = Array.isArray(body['items']) ? (body['items'] as never[]) : [];
@@ -474,6 +589,8 @@ export async function getNarrativeState(clientId: string, period: string): Promi
 
 /** Save author edits — undefined/blank fields fall back to the generated text. */
 export async function putNarrativeEdits(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const lines = (v: unknown): string[] | undefined => {
     if (!Array.isArray(v)) return undefined;
     const out = v.map((s) => String(s).trim()).filter(Boolean);
@@ -499,6 +616,8 @@ export async function putNarrativeEdits(clientId: string, period: string, body: 
 
 /** Drop the cached AI narrative AND edits so the next build re-drafts fresh. */
 export async function regenerateNarrative(clientId: string, period: string): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   await getDataStore().putNarrative({ clientId, period, updatedAt: new Date().toISOString() });
   audit('narrative.regenerate', `qbr:${clientId}/${period}`);
   return ok({ cleared: true });
@@ -516,6 +635,8 @@ export async function getMetrics(clientId: string, period: string): Promise<ApiR
 
 /** Replace the snapshot's manual metrics with the submitted set (add/edit/delete). */
 export async function putManualMetrics(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const store = getDataStore();
   // Seed snapshots materialize into the store on first manual edit.
   const base = (await storeDataSource(store).getSnapshot(clientId, period)) ?? {
@@ -620,6 +741,8 @@ export async function uploadQbrDocument(
   period: string,
   body: { name?: string; contentType?: string; dataBase64?: string },
 ): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   const data = typeof body.dataBase64 === 'string' ? body.dataBase64 : '';
   if (!name || !data) return err(400, 'A file name and base64 content are required.');
@@ -654,6 +777,8 @@ export async function downloadQbrDocument(clientId: string, period: string, id: 
 }
 
 export async function deleteQbrDocument(clientId: string, period: string, id: string): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const store = getDataStore();
   const record = await store.getDocument(clientId, period, id);
   if (!record) return err(404, 'Unknown document');
@@ -682,6 +807,8 @@ export async function updateQbrDocument(
   id: string,
   body: Record<string, unknown>,
 ): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const store = getDataStore();
   const record = await store.getDocument(clientId, period, id);
   if (!record) return err(404, 'Unknown document');
@@ -812,6 +939,8 @@ export async function extractQbrDocument(
  * rows; a missing snapshot (previous-QBR ingestion) is created.
  */
 export async function importDocumentMetrics(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const source = (typeof body['source'] === 'string' ? body['source'].trim() : '') as `pdf:${string}`;
   if (!/^pdf:[a-z0-9-]{1,40}$/.test(source)) return err(400, 'source must look like pdf:<vendor>.');
   if (!PERIOD_RE.test(period)) return err(400, 'Invalid period.');
@@ -859,6 +988,8 @@ export async function importDocumentMetrics(clientId: string, period: string, bo
  * the undo for an import that landed in the wrong quarter or misread numbers.
  */
 export async function removeImportedMetrics(clientId: string, period: string, source: string | undefined): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const src = (source ?? '').trim();
   if (!/^pdf:[a-z0-9-]{1,40}$/.test(src)) return err(400, 'source must look like pdf:<vendor> — only imported rows can be bulk-removed.');
   const store = getDataStore();
@@ -1229,6 +1360,8 @@ export async function importHalo(): Promise<ApiResult> {
 }
 
 export async function syncQbr(clientId: string, period: string): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   try {
     const { snapshot, warnings, documents, allFailed } = await syncClientMetrics(await buildIntegrations(), clientId, period);
     if (allFailed) {
@@ -1293,7 +1426,76 @@ export async function putStatus(
   const saved = await patchQbr(clientId, period, patch);
   if (forward) audit('qbr.status', `qbr:${clientId}/${period}`, status);
   else await audit('qbr.status', `qbr:${clientId}/${period}`, `override ${current} -> ${status}: ${reason}`);
+  // Decisions captured: lock 2 freezes the quarter with the final package.
+  if (statusAtLeast(status, 'dispositioned') && !existing?.locks?.final) {
+    try {
+      return ok(await lockFinal(clientId, period));
+    } catch (e) {
+      // Nothing to freeze (no snapshot) or a render failure: the status change
+      // stands, the quarter stays open and the author is told to Finalize.
+      return ok(await finalLockFailed(clientId, period, saved, e));
+    }
+  }
   return ok(saved);
+}
+
+/** The record plus a retry hint when lock 2 could not store its package. */
+async function finalLockFailed(clientId: string, period: string, saved: QbrRecord, e: unknown): Promise<QbrRecord & { warning: string }> {
+  const reason = e instanceof Error ? e.message : 'unknown error';
+  await audit('qbr.lock', `qbr:${clientId}/${period}`, `final failed: ${reason}`);
+  return { ...saved, warning: `The final package could not be stored: ${reason}. Press Finalize to retry.` };
+}
+
+/**
+ * Lock 2: build with the captured discussion and notes, store the next
+ * package version at stage `final`, set `locks.final` and move the status to
+ * at least `dispositioned`. A quarter that is already final is returned as is.
+ */
+async function lockFinal(clientId: string, period: string): Promise<QbrRecord> {
+  const existing = await getDataStore().getQbr(clientId, period);
+  if (existing?.locks?.final) return existing;
+  const { pkg } = await freezePackage(clientId, period, 'final');
+  const now = new Date().toISOString();
+  const saved = await patchQbr(clientId, period, {
+    status: advanceStatus(existing?.status, 'dispositioned'),
+    locks: { ...existing?.locks, final: { at: now, by: currentActor(), version: pkg.version } },
+  });
+  await audit('qbr.lock', `qbr:${clientId}/${period}`, `final v${pkg.version}`);
+  return saved;
+}
+
+/**
+ * Reopen a locked quarter (audited, reason required). Reopening `final`
+ * clears lock 2 only; reopening `preread` clears both. Stored packages are
+ * kept; the next lock stores a new version that carries `revisedAt`.
+ */
+export async function reopenQbr(clientId: string, period: string, body: { stage?: unknown; reason?: unknown }): Promise<ApiResult> {
+  const stage = body.stage === 'preread' || body.stage === 'final' ? body.stage : undefined;
+  if (!stage) return err(400, 'stage must be preread or final');
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!reason) return err(400, 'A reason is required to reopen a quarter.');
+  const existing = await getDataStore().getQbr(clientId, period);
+  if (!existing?.locks?.[stage]) return err(409, `This quarter has no ${stage} lock to reopen.`);
+  const locks = stage === 'preread' ? {} : { preread: existing.locks.preread };
+  const at = new Date().toISOString();
+  const saved = await patchQbr(clientId, period, { locks, reopened: [...(existing.reopened ?? []), { at, by: currentActor(), stage, reason }] });
+  await audit('qbr.reopen', `qbr:${clientId}/${period}`, `${stage}: ${reason}`);
+  return ok(saved);
+}
+
+/** Finalize: lock 2 on demand (no meeting outcome needed). Idempotent. */
+export async function finalizeQbr(clientId: string, period: string): Promise<ApiResult> {
+  const store = getDataStore();
+  const ds = storeDataSource(store);
+  if (!(await ds.getClient(clientId))) return err(404, 'Unknown client');
+  if (!(await ds.getSnapshot(clientId, period))) return err(404, `No metric snapshot for ${clientId} ${period}; there is nothing to finalize.`);
+  const existing = await store.getQbr(clientId, period);
+  if (existing?.locks?.final) return ok(existing);
+  try {
+    return ok(await lockFinal(clientId, period));
+  } catch (e) {
+    return mapBuildError(e);
+  }
 }
 
 /** Approve the narrative: advance-only, so a later-stage QBR keeps its status. */
@@ -1329,7 +1531,12 @@ export async function dispositionQbrSkipped(clientId: string, period: string, bo
     meetingSkipped: { at: new Date().toISOString(), ...(reason ? { reason } : {}) },
   });
   audit('qbr.disposition', `qbr:${clientId}/${period}`, `meeting skipped${reason ? ` — ${reason}` : ''}`);
-  return ok(saved);
+  // The skip is the quarter's disposition: lock 2 stores the final package.
+  try {
+    return ok(await lockFinal(clientId, period));
+  } catch (e) {
+    return ok(await finalLockFailed(clientId, period, saved, e));
+  }
 }
 
 /** The account manager confirms the report package went to the client. */
@@ -1340,14 +1547,33 @@ export async function markPackageSent(clientId: string, period: string): Promise
   if (!(await ds.getSnapshot(clientId, period))) return err(409, `No metric snapshot for ${clientId} ${period}; there is no report to send.`);
   const existing = await store.getQbr(clientId, period);
   if (existing?.status === 'archived') return err(409, 'This QBR is archived; un-archive it before marking the package sent.');
-  // Idempotent: the first send date is the one that counts.
-  if (existing?.packageSentAt) return ok(existing);
-  const saved = await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() });
-  audit('qbr.package_sent', `qbr:${clientId}/${period}`);
+  // Idempotent: a locked quarter already has its package; the first send date counts.
+  if (dataLocked(existing)) {
+    return ok(existing?.packageSentAt ? existing : await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() }));
+  }
+  // Lock 1: build once, store the pre-read package, freeze data and narrative.
+  let frozen;
+  try {
+    frozen = await freezePackage(clientId, period, 'preread');
+  } catch (e) {
+    return mapBuildError(e);
+  }
+  const { report, pkg } = frozen;
+  const now = new Date().toISOString();
+  const saved = await patchQbr(clientId, period, {
+    packageSentAt: existing?.packageSentAt ?? now,
+    locks: { ...existing?.locks, preread: { at: now, by: currentActor(), version: pkg.version } },
+  });
+  // `decisions` arrives with the report v2 narrative contract (workstream C).
+  await seedReportDecisions(clientId, period, (report.narrative.output as { decisions?: Array<{ ask: string; why?: string }> }).decisions);
+  if (!existing?.packageSentAt) audit('qbr.package_sent', `qbr:${clientId}/${period}`);
+  await audit('qbr.lock', `qbr:${clientId}/${period}`, `preread v${pkg.version}`);
   return ok(saved);
 }
 
 export async function putSchedule(clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'final');
+  if (locked) return locked;
   const store = getDataStore();
   const existing = await store.getQbr(clientId, period);
   const meeting = { ...existing?.meeting, scheduledAt: body.scheduledAt, joinUrl: body.joinUrl };
@@ -1423,15 +1649,26 @@ function originFrom(header?: HeaderGet): string | undefined {
 }
 
 export async function getEmailDraft(clientId: string, period: string, ai: string | null, header?: HeaderGet): Promise<ApiResult> {
-  let report;
-  try {
-    report = await buildReportFor(clientId, period, ai);
-  } catch (e) {
-    return mapBuildError(e);
+  // A locked quarter mails exactly what was frozen: the stored model and PDF.
+  let model: StoredModel;
+  let storedPdf: { bytes: Buffer; filename: string } | undefined;
+  const served = await servedPackage(clientId, period);
+  if (served) {
+    if (!served.ok) return served.result;
+    model = served.model;
+    const bytes = await loadPackageFile(getDocStore(), served.record, 'pdf');
+    if (!bytes) return PACKAGE_MISSING;
+    storedPdf = { bytes, filename: deliverableFilename(model.client.name, model.period.label, 'pdf') };
+  } else {
+    try {
+      model = (await buildReportFor(clientId, period, ai)).model;
+    } catch (e) {
+      return mapBuildError(e);
+    }
   }
   const store = getDataStore();
   const client = await store.getClient(clientId);
-  const brand = report.model.brand;
+  const brand = model.brand;
 
   // Until a meeting is on the calendar, the draft carries the self-scheduling
   // link (created on demand) so the client can pick a time themselves.
@@ -1451,33 +1688,37 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
   const attachments: Array<{ name: string; contentType: string; bytes: Buffer }> = [];
   try {
     // The full deliverable (attached PDF reports already appended at the back).
-    const pdf = await buildFullPdf(clientId, period, ai);
+    const pdf = storedPdf ?? (await buildFullPdf(clientId, period, ai));
     attachments.push({ name: pdf.filename, contentType: 'application/pdf', bytes: pdf.bytes });
   } catch {
     // Draft still works without the attachment.
   }
   // Every attached report also rides along as its own file (size-capped).
-  try {
-    const docsStore = getDocStore();
-    let total = attachments.reduce((n, a) => n + a.bytes.length, 0);
-    for (const doc of await store.listDocuments(clientId, period)) {
-      const bytes = await docsStore.get(docPath(clientId, period, doc.id, doc.name)).catch(() => undefined);
-      if (!bytes || total + bytes.length > MAX_EMAIL_ATTACHMENT_TOTAL) continue;
-      attachments.push({ name: doc.name, contentType: doc.contentType, bytes });
-      total += bytes.length;
+  // A locked quarter mails only the stored PDF: documents filed after the
+  // lock must not change what was frozen.
+  if (!served) {
+    try {
+      const docsStore = getDocStore();
+      let total = attachments.reduce((n, a) => n + a.bytes.length, 0);
+      for (const doc of await store.listDocuments(clientId, period)) {
+        const bytes = await docsStore.get(docPath(clientId, period, doc.id, doc.name)).catch(() => undefined);
+        if (!bytes || total + bytes.length > MAX_EMAIL_ATTACHMENT_TOTAL) continue;
+        attachments.push({ name: doc.name, contentType: doc.contentType, bytes });
+        total += bytes.length;
+      }
+    } catch {
+      // Attachments are best-effort.
     }
-  } catch {
-    // Attachments are best-effort.
   }
 
-  const subject = `${brand.orgName} QBR — ${client?.name ?? clientId} ${report.model.period.label}`;
+  const subject = `${brand.orgName} QBR — ${client?.name ?? clientId} ${model.period.label}`;
   const me = currentActor();
   const eml = buildEmailDraft({
     to: client?.primaryContact?.email,
     subject,
     bodyText: qbrEmailBody({
       contactName: client?.primaryContact?.name,
-      periodLabel: report.model.period.label,
+      periodLabel: model.period.label,
       orgName: brand.orgName,
       senderName: me !== 'system' && me !== 'anonymous' && !me.includes('@') ? me : undefined,
       bookingUrl,
@@ -1616,6 +1857,10 @@ export async function publicBook(token: string, body: Record<string, unknown>): 
   const booking = await store.getBooking(token);
   if (!booking) return err(404, 'Unknown link');
   if (booking.status !== 'open') return err(409, 'This link has already been used — contact your account manager to reschedule.');
+  // A finalized quarter takes no new meeting; the client sees a plain message.
+  if (isFinal(await store.getQbr(booking.clientId, booking.period))) {
+    return err(409, 'This review is already closed. Please contact your account manager.');
+  }
 
   const start = typeof body['start'] === 'string' ? body['start'] : '';
   const name = typeof body['name'] === 'string' ? body['name'].trim().slice(0, 120) : '';
@@ -1749,6 +1994,8 @@ function escapeHtml(s: string): string {
  * or the author can set a new time by hand.
  */
 export async function cancelQbrMeeting(clientId: string, period: string): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'final');
+  if (locked) return locked;
   const store = getDataStore();
   const existing = await store.getQbr(clientId, period);
   if (!existing?.meeting?.scheduledAt && !existing?.meeting?.eventId) {
@@ -1822,13 +2069,20 @@ export async function emailQbr(
 
   const attachments: unknown[] = [];
   if (body.attachDeck) {
-    let report;
-    try {
-      report = await buildReportFor(clientId, period, null);
-    } catch (e) {
-      return mapBuildError(e);
+    let pptx: Buffer;
+    const stored = await servedFile(clientId, period, 'pptx');
+    if (stored) {
+      if (!stored.pptx) return stored;
+      pptx = stored.pptx;
+    } else {
+      let report;
+      try {
+        report = await buildReportFor(clientId, period, null);
+      } catch (e) {
+        return mapBuildError(e);
+      }
+      pptx = await renderDeck(report.model);
     }
-    const pptx = await renderDeck(report.model);
     if (pptx.length > MAX_ATTACHMENT_BYTES) {
       return err(400, `Deck is too large to attach (${Math.round(pptx.length / 1024)} KB) — send the report link instead.`);
     }
@@ -1872,6 +2126,8 @@ export async function createMeeting(
 ): Promise<ApiResult> {
   const auth = graphToken(header);
   if ('error' in auth) return auth.error;
+  const locked = await refuseIfLocked(clientId, period, 'final');
+  if (locked) return locked;
   const start = body.start && Number.isFinite(Date.parse(body.start)) ? new Date(body.start).toISOString() : undefined;
   if (!start) return err(400, 'A valid start date/time is required.');
   const end =
@@ -1993,6 +2249,7 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
         meetingAt: currentQbr?.meeting?.scheduledAt ?? null,
         packageSentAt: currentQbr?.packageSentAt ?? null,
         meetingSkipped: !!currentQbr?.meetingSkipped,
+        locks: currentQbr?.locks ?? null,
       };
       const triage = computeTriage({
         hasData: currentState.hasData,
@@ -2000,6 +2257,7 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
         meetingAt: currentState.meetingAt ?? undefined,
         packageSentAt: currentState.packageSentAt ?? undefined,
         meetingSkipped: currentState.meetingSkipped,
+        locks: currentQbr?.locks,
         now,
       });
       let lastCompletedPeriod: string | null = null;
@@ -2074,13 +2332,17 @@ export async function getPeriods(clientId: string, currentOverride?: string | nu
   const store = getDataStore();
   const current = resolveCurrent(currentOverride);
   const periods = await Promise.all(
-    lastPeriods(current, 8).map(async (period) => ({
-      period,
-      hasSnapshot: !!(await ds.getSnapshot(clientId, period)),
-      // Workflow state rides along so the UI can target the NEXT quarter once
-      // a QBR is completed instead of reopening the finished one.
-      status: (await store.getQbr(clientId, period).catch(() => undefined))?.status,
-    })),
+    lastPeriods(current, 8).map(async (period) => {
+      const qbr = await store.getQbr(clientId, period).catch(() => undefined);
+      return {
+        period,
+        hasSnapshot: !!(await ds.getSnapshot(clientId, period)),
+        // Workflow state and locks ride along so the UI lands on the open
+        // quarter, or on the newest final one read-only.
+        status: qbr?.status,
+        locks: qbr?.locks,
+      };
+    }),
   );
   return ok({ currentPeriod: current, periods });
 }

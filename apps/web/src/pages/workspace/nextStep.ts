@@ -7,7 +7,7 @@ import type { Confidence, Discussion, QbrMeta } from '../../types.js';
  * Deliver menu all read from here so they can never disagree.
  */
 
-export type StepKey = 'sync' | 'reports' | 'narrative' | 'schedule' | 'meet' | 'send' | 'complete';
+export type StepKey = 'sync' | 'reports' | 'narrative' | 'schedule' | 'meet' | 'send' | 'finalize';
 
 export interface Step {
   key: StepKey;
@@ -44,7 +44,10 @@ export function deriveSteps(i: StepInput): Step[] {
   // its own proves nothing: a no-show must not read as a review.
   const held = skipped || discussed || (closed && !skipped);
   const meetingPassed = scheduled && Date.parse(scheduledAt as string) < (i.now ?? Date.now());
-  const sent = Boolean(i.meta?.packageSentAt);
+  const locks = i.meta?.locks;
+  // Lock 1 happens when the package goes out, so a pre-read lock is a send.
+  const sent = Boolean(i.meta?.packageSentAt || locks?.preread || locks?.final);
+  const final = Boolean(locks?.final);
 
   return [
     {
@@ -102,25 +105,51 @@ export function deriveSteps(i: StepInput): Step[] {
       tab: 'overview',
     },
     {
-      key: 'complete',
-      label: 'Close the quarter',
-      action: 'Close the quarter',
-      desc: closed ? 'Closed. Next quarter is up.' : 'Close out this quarter',
-      done: closed,
+      key: 'finalize',
+      label: final ? 'Finalized' : 'Finalize',
+      action: 'Finalize',
+      desc: final ? 'Final package stored. Read-only.' : 'Store the final package and lock the quarter',
+      done: final,
       tab: 'overview',
     },
   ];
 }
 
-/** The first step that is not done; undefined when the quarter is finished. */
+/** The first step that is not done; undefined when the quarter is finalized. */
 export function nextStep(steps: Step[]): Step | undefined {
+  if (steps.find((s) => s.key === 'finalize')?.done) return undefined;
   return steps.find((s) => !s.done);
 }
 
-/** Every step before "Close the quarter" is done and the quarter is still open. */
-export function readyToComplete(steps: Step[]): boolean {
-  const close = steps[steps.length - 1];
-  return Boolean(close && !close.done && steps.slice(0, -1).every((s) => s.done));
+/** Every step before Finalize is done and the quarter has no final lock yet. */
+export function readyToFinalize(steps: Step[]): boolean {
+  const last = steps[steps.length - 1];
+  return Boolean(last && !last.done && steps.slice(0, -1).every((s) => s.done));
+}
+
+/**
+ * The header's primary step. Once the quarter is completed without a final
+ * lock, Finalize is the action even if an earlier step was skipped.
+ */
+export function primaryStep(steps: Step[], meta: QbrMeta | undefined): Step | undefined {
+  const finalize = steps.find((s) => s.key === 'finalize');
+  if (finalize && !finalize.done && statusAtLeast(asStatus(meta?.status), 'completed')) return finalize;
+  return nextStep(steps);
+}
+
+const lockDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+
+/**
+ * The banner sentence for a locked quarter (also the tooltip on every
+ * control it disables); undefined when the quarter is open.
+ */
+export function lockNotice(meta: QbrMeta | undefined): string | undefined {
+  const locks = meta?.locks;
+  if (locks?.final) return `Final package stored on ${lockDate(locks.final.at)}. Read-only.`;
+  if (locks?.preread) {
+    return `Pre-read sent on ${lockDate(locks.preread.at)}. Data and narrative are locked; the agenda is open until decisions are captured.`;
+  }
+  return undefined;
 }
 
 export interface GuardInput {
