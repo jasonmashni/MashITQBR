@@ -7,6 +7,7 @@ import {
   protectionRows,
   ticketInsightRecommendations,
   type Brand,
+  type BudgetOutlook,
   type Client,
   type ClientGoal,
   type CustomSection,
@@ -21,6 +22,7 @@ import {
 } from '@mashit/core';
 import type { NarrativeOutput } from '@mashit/narrative';
 import { resolveBrand, type BrandTokens } from './brand.js';
+import { formatCurrency } from './format.js';
 
 export interface ReportSectionRow {
   metric: MetricValue;
@@ -81,6 +83,85 @@ function reportable(items: DiscussionItem[]): DiscussionItem[] {
 
 const SINCE_LAST_MAX = 5;
 
+/** Page four: what the client invested this quarter and what is coming. */
+export interface InvestmentModel {
+  /** This quarter (finance.quarter_invoiced; 0 when no invoices were read). */
+  invoiced: number;
+  recurring: number;
+  variable: number;
+  previousInvoiced?: number;
+  /** Invoice lines by category, largest first; recurring when the category is on the recurring agreement. */
+  breakdown: Array<{ label: string; amount: number; recurring: boolean }>;
+  planVsActual?: { fiscalYearLabel: string; planned: number; spent: number; pct: number; note: string };
+  /** Deterministic sentences: warranty refresh, paid-seat use, renewals. */
+  comingUp: string[];
+  /** The twelve-month outlook, planning quarter only. */
+  outlook?: BudgetOutlook;
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
+
+/**
+ * The investment page from the spend metrics plus an optional published
+ * budget: recurring is the sum of invoice lines whose category also appears
+ * in the recurring breakdown (finance.recurring.*); everything else is
+ * variable. Undefined when there is nothing to show.
+ */
+function buildInvestment(
+  current: MetricSnapshot,
+  previous: MetricSnapshot | undefined,
+  budget: { planVsActual?: InvestmentModel['planVsActual']; outlook?: BudgetOutlook; unitCost?: number } | undefined,
+): InvestmentModel | undefined {
+  const num = (s: MetricSnapshot | undefined, key: string): number | undefined => {
+    const v = s?.metrics.find((m) => m.key === key)?.value;
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  };
+  const invoiced = num(current, 'finance.quarter_invoiced');
+  if (invoiced === undefined && !budget?.outlook && !budget?.planVsActual) return undefined;
+
+  const norm = (label: string) => label.replace(/\s*\(monthly\)\s*$/i, '').trim().toLowerCase();
+  const recurringLabels = new Set(
+    current.metrics.filter((m) => m.key.startsWith('finance.recurring.')).map((m) => norm(m.label)),
+  );
+  const breakdown = current.metrics
+    .filter((m) => m.key.startsWith('finance.invoiced.') && typeof m.value === 'number' && m.value > 0)
+    .map((m) => ({ label: m.label, amount: m.value as number, recurring: recurringLabels.has(norm(m.label)) }))
+    .sort((a, b) => b.amount - a.amount);
+  const recurring = Math.round(breakdown.filter((b) => b.recurring).reduce((sum, b) => sum + b.amount, 0) * 100) / 100;
+  const total = invoiced ?? 0;
+
+  const comingUp: string[] = [];
+  const expired = num(current, 'assets.warranty_expired');
+  if (expired !== undefined && expired > 0) {
+    const devices = `${expired} ${plural(expired, 'device')} past warranty`;
+    comingUp.push(
+      budget?.unitCost
+        ? `Hardware: ${devices}. At your planning cost of ${formatCurrency(budget.unitCost)} per device that is about ${formatCurrency(expired * budget.unitCost)}.`
+        : `Hardware: ${devices}. We will price the replacements with you.`,
+    );
+  }
+  const seats = num(current, 'licenses.total');
+  const assigned = num(current, 'licenses.assigned');
+  if (seats !== undefined && assigned !== undefined && seats > 0) {
+    comingUp.push(`Licensing: ${assigned} of ${seats} paid Microsoft 365 seats in use.`);
+  }
+  const renewing = num(current, 'finance.contracts_expiring');
+  if (renewing !== undefined && renewing > 0) {
+    comingUp.push(`Agreements: ${renewing} ${plural(renewing, 'agreement')} ${renewing === 1 ? 'renews' : 'renew'} within 90 days.`);
+  }
+
+  return {
+    invoiced: total,
+    recurring,
+    variable: Math.round((total - recurring) * 100) / 100,
+    ...(num(previous, 'finance.quarter_invoiced') !== undefined ? { previousInvoiced: num(previous, 'finance.quarter_invoiced') } : {}),
+    breakdown,
+    ...(budget?.planVsActual ? { planVsActual: budget.planVsActual } : {}),
+    comingUp,
+    ...(budget?.outlook ? { outlook: budget.outlook } : {}),
+  };
+}
+
 export interface ReportModel {
   client: { name: string; primaryContact?: string; industry?: string; hipaa?: boolean; complianceStandard?: string };
   period: { id: string; label: string };
@@ -106,6 +187,8 @@ export interface ReportModel {
   protection: ReportProtectionRow[];
   /** Set when a reopened quarter was locked again: the footer says "Revised on". */
   revisedAt?: string;
+  /** Page four (and 4b in the planning quarter); undefined hides it. */
+  investment?: InvestmentModel;
   /** General meeting notes. */
   notes?: string;
   recommendations: string[];
@@ -153,6 +236,8 @@ export function buildReportModel(args: {
   ticketStatuses?: Record<string, string>;
   /** When a reopened quarter was locked again. */
   revisedAt?: string;
+  /** Published budget plan data; absent until a plan exists (workstream D). */
+  budget?: { planVsActual?: InvestmentModel['planVsActual']; outlook?: BudgetOutlook; unitCost?: number };
 }): ReportModel {
   const { client, current, previous, narrative, config } = args;
   const period = parsePeriod(current.period);
@@ -228,6 +313,10 @@ export function buildReportModel(args: {
       return prose ? { ...row, inPlace: prose.inPlace, thisQuarter: prose.thisQuarter } : row;
     }),
     ...(args.revisedAt ? { revisedAt: args.revisedAt } : {}),
+    ...(() => {
+      const investment = hidden.has('spend') ? undefined : buildInvestment(current, previous, args.budget);
+      return investment ? { investment } : {};
+    })(),
     notes: args.notes,
     recommendations,
     documents: args.documents ?? [],
