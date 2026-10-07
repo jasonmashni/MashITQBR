@@ -1,4 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
+import type { QbrRecord } from '../src/store/index.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -136,5 +137,47 @@ describe('putStatus', () => {
     await h.putStatus('anp', '2024-Q4', { status: 'archived' });
     expect((await h.putStatus('anp', '2024-Q4', { status: 'completed' })).status).toBe(409);
     expect((await h.putStatus('anp', '2024-Q4', { status: 'completed', force: true, reason: 'reopened' })).status).toBe(200);
+  });
+});
+
+describe('locked quarters refuse writes', () => {
+  const setLocks = async (period: string, locks: QbrRecord['locks']) => {
+    const store = (await import('../src/store/index.js')).getDataStore();
+    const existing = await store.getQbr('anp', period);
+    await store.upsertQbr({ status: 'scheduled', ...existing, clientId: 'anp', period, locks, updatedAt: new Date().toISOString() });
+  };
+  const lock = { at: '2026-06-01T00:00:00Z', by: 'jason', version: 1 };
+
+  it('a preread lock refuses data writes with 409 but keeps the agenda open', async () => {
+    const h = await import('../src/handlers.js');
+    await setLocks('2024-Q1', { preread: lock });
+    const sync = await h.syncQbr('anp', '2024-Q1');
+    expect(sync.status).toBe(409);
+    expect(sync.json).toEqual({ error: 'locked', stage: 'preread' });
+    const edits = await h.putNarrativeEdits('anp', '2024-Q1', { headline: 'New' });
+    expect(edits).toEqual({ status: 409, json: { error: 'locked', stage: 'preread' } });
+    for (const res of [
+      await h.regenerateNarrative('anp', '2024-Q1'),
+      await h.putManualMetrics('anp', '2024-Q1', { metrics: [] }),
+      await h.importDocumentMetrics('anp', '2024-Q1', { source: 'pdf:x', metrics: [] }),
+      await h.removeImportedMetrics('anp', '2024-Q1', 'pdf:x'),
+      await h.uploadQbrDocument('anp', '2024-Q1', { name: 'a.pdf', dataBase64: 'AAAA' }),
+      await h.updateQbrDocument('anp', '2024-Q1', 'x', { name: 'b' }),
+      await h.deleteQbrDocument('anp', '2024-Q1', 'x'),
+    ]) {
+      expect(res.status).toBe(409);
+    }
+    const disc = await h.putDiscussion('anp', '2024-Q1', { items: [], notes: 'Agenda still open' });
+    expect(disc.status).toBe(200);
+    const sched = await h.putSchedule('anp', '2024-Q1', { scheduledAt: '2024-03-10T15:00:00Z' });
+    expect(sched.status).toBe(200);
+  });
+
+  it('a final lock also refuses discussion and schedule writes', async () => {
+    const h = await import('../src/handlers.js');
+    await setLocks('2024-Q1', { preread: lock, final: { ...lock, version: 2 } });
+    expect(await h.putDiscussion('anp', '2024-Q1', { items: [], notes: 'Too late' })).toEqual({ status: 409, json: { error: 'locked', stage: 'final' } });
+    expect((await h.putSchedule('anp', '2024-Q1', { scheduledAt: '2024-03-11T15:00:00Z' })).status).toBe(409);
+    expect((await h.syncQbr('anp', '2024-Q1')).json).toEqual({ error: 'locked', stage: 'final' });
   });
 });

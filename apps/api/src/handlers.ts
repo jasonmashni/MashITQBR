@@ -71,6 +71,7 @@ import { createClaudeResearcher, type ResearchModel } from './research.js';
 import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 import { computeTriage } from './triage.js';
+import { refuseIfLocked } from './locks.js';
 
 export interface ApiResult {
   status: number;
@@ -385,6 +386,8 @@ export async function getDiscussion(clientId: string, period: string): Promise<A
   return ok((await getDataStore().getDiscussion(clientId, period)) ?? { clientId, period, items: [] });
 }
 export async function putDiscussion(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'final');
+  if (locked) return locked;
   if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const store = getDataStore();
   const items = Array.isArray(body['items']) ? (body['items'] as never[]) : [];
@@ -474,6 +477,8 @@ export async function getNarrativeState(clientId: string, period: string): Promi
 
 /** Save author edits — undefined/blank fields fall back to the generated text. */
 export async function putNarrativeEdits(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const lines = (v: unknown): string[] | undefined => {
     if (!Array.isArray(v)) return undefined;
     const out = v.map((s) => String(s).trim()).filter(Boolean);
@@ -499,6 +504,8 @@ export async function putNarrativeEdits(clientId: string, period: string, body: 
 
 /** Drop the cached AI narrative AND edits so the next build re-drafts fresh. */
 export async function regenerateNarrative(clientId: string, period: string): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   await getDataStore().putNarrative({ clientId, period, updatedAt: new Date().toISOString() });
   audit('narrative.regenerate', `qbr:${clientId}/${period}`);
   return ok({ cleared: true });
@@ -516,6 +523,8 @@ export async function getMetrics(clientId: string, period: string): Promise<ApiR
 
 /** Replace the snapshot's manual metrics with the submitted set (add/edit/delete). */
 export async function putManualMetrics(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const store = getDataStore();
   // Seed snapshots materialize into the store on first manual edit.
   const base = (await storeDataSource(store).getSnapshot(clientId, period)) ?? {
@@ -620,6 +629,8 @@ export async function uploadQbrDocument(
   period: string,
   body: { name?: string; contentType?: string; dataBase64?: string },
 ): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   const data = typeof body.dataBase64 === 'string' ? body.dataBase64 : '';
   if (!name || !data) return err(400, 'A file name and base64 content are required.');
@@ -654,6 +665,8 @@ export async function downloadQbrDocument(clientId: string, period: string, id: 
 }
 
 export async function deleteQbrDocument(clientId: string, period: string, id: string): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const store = getDataStore();
   const record = await store.getDocument(clientId, period, id);
   if (!record) return err(404, 'Unknown document');
@@ -682,6 +695,8 @@ export async function updateQbrDocument(
   id: string,
   body: Record<string, unknown>,
 ): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const store = getDataStore();
   const record = await store.getDocument(clientId, period, id);
   if (!record) return err(404, 'Unknown document');
@@ -812,6 +827,8 @@ export async function extractQbrDocument(
  * rows; a missing snapshot (previous-QBR ingestion) is created.
  */
 export async function importDocumentMetrics(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const source = (typeof body['source'] === 'string' ? body['source'].trim() : '') as `pdf:${string}`;
   if (!/^pdf:[a-z0-9-]{1,40}$/.test(source)) return err(400, 'source must look like pdf:<vendor>.');
   if (!PERIOD_RE.test(period)) return err(400, 'Invalid period.');
@@ -859,6 +876,8 @@ export async function importDocumentMetrics(clientId: string, period: string, bo
  * the undo for an import that landed in the wrong quarter or misread numbers.
  */
 export async function removeImportedMetrics(clientId: string, period: string, source: string | undefined): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   const src = (source ?? '').trim();
   if (!/^pdf:[a-z0-9-]{1,40}$/.test(src)) return err(400, 'source must look like pdf:<vendor> — only imported rows can be bulk-removed.');
   const store = getDataStore();
@@ -1229,6 +1248,8 @@ export async function importHalo(): Promise<ApiResult> {
 }
 
 export async function syncQbr(clientId: string, period: string): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   try {
     const { snapshot, warnings, documents, allFailed } = await syncClientMetrics(await buildIntegrations(), clientId, period);
     if (allFailed) {
@@ -1348,6 +1369,8 @@ export async function markPackageSent(clientId: string, period: string): Promise
 }
 
 export async function putSchedule(clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'final');
+  if (locked) return locked;
   const store = getDataStore();
   const existing = await store.getQbr(clientId, period);
   const meeting = { ...existing?.meeting, scheduledAt: body.scheduledAt, joinUrl: body.joinUrl };
