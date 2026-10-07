@@ -26,6 +26,8 @@ export interface VerificationResult {
   checks: FigureCheck[];
   /** Convenience: the subset of checks that failed. */
   failures: FigureCheck[];
+  /** Style hits ("<field>: <phrase>"). Advisory only: never affects `ok`. */
+  style: string[];
 }
 
 /**
@@ -46,7 +48,51 @@ export function verifyFigures(
     return { label, value, unmatched, ok: unmatched.length === 0 };
   });
   const failures = checks.filter((c) => !c.ok);
-  return { ok: failures.length === 0, checks, failures };
+  return { ok: failures.length === 0, checks, failures, style: [] };
+}
+
+/** Phrases that read as machine-written. Lowercase; matched as substrings of lowercased text. */
+export const STYLE_BANNED: readonly string[] = [
+  'reinforces',
+  'underscores',
+  'leaves room to climb',
+  'worth a brief review',
+  'robust',
+  'leverage',
+  'landscape',
+  'holistic',
+  'seamless',
+  'journey',
+  'navigate',
+  'foster',
+  'a testament to',
+  'it is worth noting',
+  "it's worth noting",
+  "in today's",
+];
+
+/**
+ * Em dashes, en dashes and banned phrases in every string field of the
+ * narrative (strings, arrays of strings, arrays of objects with string values).
+ * One entry per hit, `"<field>: <phrase>"`.
+ */
+export function styleIssues(output: NarrativeOutput): string[] {
+  const issues: string[] = [];
+  const scan = (field: string, text: string) => {
+    if (/[—–]/.test(text)) issues.push(`${field}: em dash`);
+    const lower = text.toLowerCase();
+    for (const phrase of STYLE_BANNED) if (lower.includes(phrase)) issues.push(`${field}: ${phrase}`);
+  };
+  for (const [field, value] of Object.entries(output)) {
+    if (typeof value === 'string') scan(field, value);
+    else if (Array.isArray(value)) {
+      for (const v of value) {
+        if (typeof v === 'string') scan(field, v);
+        else if (v && typeof v === 'object') for (const s of Object.values(v)) if (typeof s === 'string') scan(field, s);
+      }
+    }
+  }
+  return issues;
 }
 
 /**
@@ -78,7 +124,7 @@ export function verifyNarrative(
   allowed: Iterable<number>,
   opts?: VerifyOptions,
 ): VerificationResult {
-  return verifyFigures([...output.figures_referenced, ...proseFields(output)], allowed, opts);
+  return { ...verifyFigures([...output.figures_referenced, ...proseFields(output)], allowed, opts), style: styleIssues(output) };
 }
 
 /** Human-readable summary of failures, for retry prompts and audit logs. */

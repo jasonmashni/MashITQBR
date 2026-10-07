@@ -134,3 +134,27 @@ describe('verifyNarrative and quoted spans', () => {
     expect(buildAllowedQuotes(input)).toEqual(expect.arrayContaining(['VPN', 'vpn', 'VPN drop P73', 'VPN slow']));
   });
 });
+
+
+describe('style lint', () => {
+  const base: NarrativeOutput = {
+    headline: 'h',
+    summary_paragraphs: ['a'],
+    highlights: ['b'],
+    recommendations: ['c'],
+    figures_referenced: [],
+  };
+  const allowed: number[] = [];
+  it('flags em dashes and model phrases without failing verification', () => {
+    const out = { ...base, headline: 'A quarter that reinforces trust — again', recommendations: ['Leverage the landscape'] };
+    const r = verifyNarrative(out, allowed);
+    expect(r.ok).toBe(true);
+    expect(r.style).toEqual(['headline: em dash', 'headline: reinforces', 'recommendations: leverage', 'recommendations: landscape']);
+  });
+  it('scans section summaries and reports nothing for clean prose', () => {
+    expect(verifyNarrative({ ...base, section_summaries: [{ category: 'security', summary: 'A robust year' }] }, allowed).style).toEqual([
+      'section_summaries: robust',
+    ]);
+    expect(verifyNarrative(base, allowed).style).toEqual([]);
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SEED_CLIENTS, findSeedSnapshot, previousPeriod, type MetricSnapshot } from '@mashit/core';
+import { SEED_CLIENTS, SEED_SNAPSHOTS, findSeedSnapshot, previousPeriod, type MetricSnapshot } from '@mashit/core';
 import {
   buildAllowedNumbers,
   buildAllowedQuotes,
@@ -8,6 +8,23 @@ import {
   verifyFigures,
   verifyNarrative,
 } from '@mashit/narrative';
+
+describe('draftOfflineNarrative style', () => {
+  it('produces no style hits on any seed snapshot', () => {
+    for (const current of SEED_SNAPSHOTS) {
+      const client = SEED_CLIENTS.find((c) => c.id === current.clientId);
+      if (!client) continue;
+      const previous = findSeedSnapshot(client.id, previousPeriod(current.period).id);
+      const input = buildNarrativeInput({ client, current, previous });
+      const draft = draftOfflineNarrative(input);
+      expect({ id: client.id, period: current.period, style: verifyNarrative(draft, buildAllowedNumbers(input)).style }).toEqual({
+        id: client.id,
+        period: current.period,
+        style: [],
+      });
+    }
+  });
+});
 
 describe('draftOfflineNarrative', () => {
   for (const client of SEED_CLIENTS) {
