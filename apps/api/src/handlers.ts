@@ -42,6 +42,7 @@ import {
   type DocumentRecord,
   type OpportunityRecord,
   type OpportunityStatus,
+  type PackageRecord,
   type QbrRecord,
 } from './store/index.js';
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
@@ -71,7 +72,8 @@ import { createClaudeResearcher, type ResearchModel } from './research.js';
 import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 import { computeTriage } from './triage.js';
-import { refuseIfLocked } from './locks.js';
+import { dataLocked, refuseIfLocked } from './locks.js';
+import { latestPackage, loadPackageFile, loadPackageModel, type StoredModel } from './packages.js';
 
 export interface ApiResult {
   status: number;
@@ -252,7 +254,48 @@ export async function putClientGoals(id: string, body: Record<string, unknown>):
   return ok({ client: merged });
 }
 
+// ── Frozen quarters: locked reads serve the stored package ──────────────────
+const PACKAGE_MISSING = err(503, 'Stored package missing; reopen to rebuild.');
+
+type Served =
+  | { ok: true; meta: QbrRecord; record: PackageRecord; model: StoredModel; verification: boolean; warnings: string[] }
+  | { ok: false; result: ApiResult };
+
+/**
+ * When the quarter is locked, the newest stored package of the highest stage.
+ * Undefined means "not locked, build as usual". A lock without its stored
+ * files answers 503: rebuilding silently would break the freeze.
+ */
+async function servedPackage(clientId: string, period: string): Promise<Served | undefined> {
+  const store = getDataStore();
+  const meta = await store.getQbr(clientId, period);
+  if (!dataLocked(meta) || !meta) return undefined;
+  const record = await latestPackage(store, clientId, period);
+  const stored = record ? await loadPackageModel(getDocStore(), record) : undefined;
+  if (!record || !stored) return { ok: false, result: PACKAGE_MISSING };
+  return { ok: true, meta, record, ...stored };
+}
+
+/** A stored deliverable for a locked quarter, or undefined when the quarter is open. */
+async function servedFile(clientId: string, period: string, file: 'pdf' | 'pptx' | 'html'): Promise<ApiResult | undefined> {
+  const served = await servedPackage(clientId, period);
+  if (!served) return undefined;
+  if (!served.ok) return served.result;
+  const bytes = await loadPackageFile(getDocStore(), served.record, file);
+  if (!bytes) return PACKAGE_MISSING;
+  const filename = deliverableFilename(served.model.client.name, served.model.period.label, file);
+  if (file === 'html') return { status: 200, html: bytes.toString('utf8'), filename };
+  if (file === 'pdf') return { status: 200, pdf: bytes, filename };
+  return { status: 200, pptx: bytes, filename };
+}
+
 export async function getQbr(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  const served = await servedPackage(clientId, period);
+  if (served) {
+    if (!served.ok) return served.result;
+    const { model, warnings, verification, meta, record } = served;
+    return ok({ model, warnings, verification, meta, package: { version: record.version, stage: record.stage, createdAt: record.createdAt } });
+  }
   try {
     const report = await buildReportFor(clientId, period, ai);
     const meta = (await getDataStore().getQbr(clientId, period)) ?? { clientId, period, status: 'draft' as QbrStatus };
@@ -272,6 +315,8 @@ async function buildReportFor(clientId: string, period: string, ai: string | nul
 }
 
 export async function getReportHtml(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  const stored = await servedFile(clientId, period, 'html');
+  if (stored) return stored;
   try {
     const report = await buildReportFor(clientId, period, ai);
     return { status: 200, html: renderQbrHtml(report), filename: deliverableFilename(report.model.client.name, report.model.period.label, 'html') };
@@ -292,6 +337,8 @@ async function buildFullPdf(clientId: string, period: string, ai: string | null)
 }
 
 export async function getReportPdf(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  const stored = await servedFile(clientId, period, 'pdf');
+  if (stored) return stored;
   try {
     const full = await buildFullPdf(clientId, period, ai);
     return { status: 200, pdf: full.bytes, filename: full.filename };
@@ -301,6 +348,8 @@ export async function getReportPdf(clientId: string, period: string, ai: string 
   }
 }
 export async function getReportDeck(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
+  const stored = await servedFile(clientId, period, 'pptx');
+  if (stored) return stored;
   let report;
   try {
     report = await buildReportFor(clientId, period, ai);
@@ -1446,15 +1495,26 @@ function originFrom(header?: HeaderGet): string | undefined {
 }
 
 export async function getEmailDraft(clientId: string, period: string, ai: string | null, header?: HeaderGet): Promise<ApiResult> {
-  let report;
-  try {
-    report = await buildReportFor(clientId, period, ai);
-  } catch (e) {
-    return mapBuildError(e);
+  // A locked quarter mails exactly what was frozen: the stored model and PDF.
+  let model: StoredModel;
+  let storedPdf: { bytes: Buffer; filename: string } | undefined;
+  const served = await servedPackage(clientId, period);
+  if (served) {
+    if (!served.ok) return served.result;
+    model = served.model;
+    const bytes = await loadPackageFile(getDocStore(), served.record, 'pdf');
+    if (!bytes) return PACKAGE_MISSING;
+    storedPdf = { bytes, filename: deliverableFilename(model.client.name, model.period.label, 'pdf') };
+  } else {
+    try {
+      model = (await buildReportFor(clientId, period, ai)).model;
+    } catch (e) {
+      return mapBuildError(e);
+    }
   }
   const store = getDataStore();
   const client = await store.getClient(clientId);
-  const brand = report.model.brand;
+  const brand = model.brand;
 
   // Until a meeting is on the calendar, the draft carries the self-scheduling
   // link (created on demand) so the client can pick a time themselves.
@@ -1474,7 +1534,7 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
   const attachments: Array<{ name: string; contentType: string; bytes: Buffer }> = [];
   try {
     // The full deliverable (attached PDF reports already appended at the back).
-    const pdf = await buildFullPdf(clientId, period, ai);
+    const pdf = storedPdf ?? (await buildFullPdf(clientId, period, ai));
     attachments.push({ name: pdf.filename, contentType: 'application/pdf', bytes: pdf.bytes });
   } catch {
     // Draft still works without the attachment.
@@ -1493,14 +1553,14 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
     // Attachments are best-effort.
   }
 
-  const subject = `${brand.orgName} QBR — ${client?.name ?? clientId} ${report.model.period.label}`;
+  const subject = `${brand.orgName} QBR — ${client?.name ?? clientId} ${model.period.label}`;
   const me = currentActor();
   const eml = buildEmailDraft({
     to: client?.primaryContact?.email,
     subject,
     bodyText: qbrEmailBody({
       contactName: client?.primaryContact?.name,
-      periodLabel: report.model.period.label,
+      periodLabel: model.period.label,
       orgName: brand.orgName,
       senderName: me !== 'system' && me !== 'anonymous' && !me.includes('@') ? me : undefined,
       bookingUrl,
@@ -1845,13 +1905,20 @@ export async function emailQbr(
 
   const attachments: unknown[] = [];
   if (body.attachDeck) {
-    let report;
-    try {
-      report = await buildReportFor(clientId, period, null);
-    } catch (e) {
-      return mapBuildError(e);
+    let pptx: Buffer;
+    const stored = await servedFile(clientId, period, 'pptx');
+    if (stored) {
+      if (!stored.pptx) return stored;
+      pptx = stored.pptx;
+    } else {
+      let report;
+      try {
+        report = await buildReportFor(clientId, period, null);
+      } catch (e) {
+        return mapBuildError(e);
+      }
+      pptx = await renderDeck(report.model);
     }
-    const pptx = await renderDeck(report.model);
     if (pptx.length > MAX_ATTACHMENT_BYTES) {
       return err(400, `Deck is too large to attach (${Math.round(pptx.length / 1024)} KB) — send the report link instead.`);
     }

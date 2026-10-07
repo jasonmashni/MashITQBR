@@ -1,6 +1,23 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { seedDataSource } from '../src/dataSource.js';
 import { _resetAiFailureCooldown, buildQbrReport, renderQbrHtml } from '../src/service.js';
+
+// Locked-quarter reads must never reach the narrative model: the handlers'
+// Claude factory is swapped for a spy so any call is visible.
+const narrativeSpy = vi.hoisted(() => ({ calls: 0 }));
+vi.mock('@mashit/narrative', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@mashit/narrative')>();
+  return {
+    ...actual,
+    createClaudeNarrativeModel: () => async () => {
+      narrativeSpy.calls++;
+      throw new Error('narrative model must not be called for a locked quarter');
+    },
+  };
+});
 
 describe('buildQbrReport (offline narrative, seed data)', () => {
   it('builds a verified report for ANP Q1 2026 with QoQ trends', async () => {
@@ -244,5 +261,102 @@ describe('dedupeByKey (PDF imports must not double-count synced metrics)', () =>
       { key: 'b', label: 'B', value: 2, source: 'ninja', category: 'security' },
     ] as never[];
     expect(dedupeByKey(metrics)).toBe(metrics);
+  });
+});
+
+describe('locked quarters serve the stored package', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'qbr-served-'));
+    process.env['QBR_DATA_DIR'] = dir;
+    delete process.env['AzureWebJobsStorage'];
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env['QBR_DATA_DIR'];
+    delete process.env['ANTHROPIC_API_KEY'];
+  });
+
+  const storedModel = {
+    client: { name: 'Client One' },
+    period: { id: '2026-Q2', label: 'Q2 2026' },
+    brand: { orgName: 'Mash IT' },
+    executive: { headline: 'Stored headline', paragraphs: ['Stored paragraph.'], highlights: [] },
+    goals: [],
+  };
+
+  async function lockWithPackage(period: string) {
+    const { getDataStore, getDocStore } = await import('../src/store/index.js');
+    const { storePackage } = await import('../src/packages.js');
+    const store = getDataStore();
+    const seed = (await import('@mashit/core')).SEED_SNAPSHOTS.find((s) => s.clientId === 'anp')!;
+    await store.upsertClient({ id: 'c1', name: 'Client One' });
+    await store.putSnapshot({ ...seed, clientId: 'c1', period });
+    const pkg = await storePackage(store, getDocStore(), {
+      clientId: 'c1',
+      period,
+      stage: 'preread',
+      createdBy: 'jason',
+      artifacts: {
+        model: storedModel as never,
+        verification: true,
+        warnings: ['stored warning'],
+        pdf: Buffer.from('%PDF-stored'),
+        pptx: Buffer.from('PK-stored'),
+        html: '<!doctype html><p>stored</p>',
+      },
+    });
+    await store.upsertQbr({
+      clientId: 'c1',
+      period,
+      status: 'narrative_approved',
+      packageSentAt: '2026-06-20T00:00:00Z',
+      locks: { preread: { at: '2026-06-20T00:00:00Z', by: 'jason', version: pkg.version } },
+      updatedAt: new Date().toISOString(),
+    });
+    return pkg;
+  }
+
+  it('getQbr returns the stored model and never calls the narrative model', async () => {
+    await lockWithPackage('2026-Q2');
+    process.env['ANTHROPIC_API_KEY'] = 'test-key';
+    narrativeSpy.calls = 0;
+    const h = await import('../src/handlers.js');
+    const res = await h.getQbr('c1', '2026-Q2', '1');
+    expect(res.status).toBe(200);
+    const json = res.json as { model: { executive: { headline: string } }; warnings: string[]; package: { version: number; stage: string } };
+    expect(json.model.executive.headline).toBe('Stored headline');
+    expect(json.warnings).toEqual(['stored warning']);
+    expect(json.package.version).toBe(1);
+    expect(json.package.stage).toBe('preread');
+
+    const pdf = await h.getReportPdf('c1', '2026-Q2', '1');
+    expect(pdf.pdf?.toString()).toBe('%PDF-stored');
+    expect(pdf.filename).toBe('Mash IT QBR - Client One - Q2 2026.pdf');
+    expect((await h.getReportDeck('c1', '2026-Q2', '1')).pptx?.toString()).toBe('PK-stored');
+    expect((await h.getReportHtml('c1', '2026-Q2', '1')).html).toBe('<!doctype html><p>stored</p>');
+    const eml = await h.getEmailDraft('c1', '2026-Q2', '1');
+    expect(eml.status).toBe(200);
+    expect(eml.file?.bytes.toString()).toContain(Buffer.from('%PDF-stored').toString('base64'));
+    expect(narrativeSpy.calls).toBe(0);
+  });
+
+  it('answers 503 when the lock exists but the stored blob is missing', async () => {
+    const pkg = await lockWithPackage('2026-Q3');
+    const { getDocStore } = await import('../src/store/index.js');
+    await getDocStore().delete(pkg.files.pdf);
+    const h = await import('../src/handlers.js');
+    expect(await h.getReportPdf('c1', '2026-Q3', null)).toEqual({ status: 503, json: { error: 'Stored package missing; reopen to rebuild.' } });
+  });
+
+  it('later edits to goals and branding never change a locked quarter', async () => {
+    await lockWithPackage('2026-Q4');
+    const h = await import('../src/handlers.js');
+    const before = (await h.getQbr('c1', '2026-Q4', null)).json as { model: unknown };
+    expect((await h.putClientGoals('c1', { goals: [{ title: 'Open a second clinic' }] })).status).toBe(200);
+    expect((await h.putConfig('c1', { brand: { name: 'Renamed Brand' } })).status).toBe(200);
+    const after = (await h.getQbr('c1', '2026-Q4', null)).json as { model: unknown };
+    expect(after.model).toEqual(before.model);
+    expect(after.model).toEqual(storedModel);
   });
 });
