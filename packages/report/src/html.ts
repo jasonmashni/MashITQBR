@@ -328,7 +328,7 @@ function renderInvestment(m: ReportModel, inv: InvestmentModel): string {
   ${investmentLede(inv) ? `<p class="lede">${esc(investmentLede(inv))}</p>` : ''}
   ${tiles}
   ${bars ? `<div class="figure"><p class="fig-title">Where it went</p>${bars}<p class="fig-cap">Darker bars are recurring services; lighter bars are project and support work.</p></div>` : ''}
-  ${p ? `<div class="callout"><b>${esc(p.fiscalYearLabel)} plan versus actual</b>${planMeterSvg(p.pct, 680)}<p>${esc(planVsActualText(p))}</p></div>` : ''}
+  ${p ? `<div class="callout"><b>${esc(p.fiscalYearLabel)} plan versus actual</b>${planMeterSvg(p.pct, 680, { elapsedPct: p.elapsedPct })}<p>${esc(planVsActualText(p))}</p></div>` : ''}
   ${inv.comingUp.length ? `<h2>Coming up</h2><ul>${inv.comingUp.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}
 </section>`;
 }

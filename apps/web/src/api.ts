@@ -1,8 +1,11 @@
 // Thin typed fetch wrapper over the QBR API. All calls are relative to the
 // serving origin (the Function App also serves this SPA; Vite proxies /api in dev).
 import { notifications } from '@mantine/notifications';
+import type { BudgetKnownFact, BudgetPlanVsActual } from './pages/workspace/budget.js';
 import type {
   AuditEvent,
+  BudgetAnswers,
+  BudgetPlanRecord,
   BookingInfo,
   BookingSettings,
   Client,
@@ -246,6 +249,22 @@ export const api = {
     send('DELETE', `/api/clients/${clientId}/qbr/${period}/metrics/import?source=${encodeURIComponent(source)}`).then(
       json<{ removed: number; source: string; period: string }>,
     ),
+
+  // Budget planner (internal; the published outlook reaches the report)
+  listBudgets: (clientId: string) =>
+    send('GET', `/api/clients/${clientId}/budget`).then(
+      json<{ plans: BudgetPlanRecord[]; fiscalYearStartMonth: number; known: BudgetKnownFact[]; knownAsOf?: string }>,
+    ),
+  getBudget: (clientId: string, fy: number) =>
+    send('GET', `/api/clients/${clientId}/budget/${fy}`).then(json<{ plan: BudgetPlanRecord; planVsActual?: BudgetPlanVsActual }>),
+  putBudget: (clientId: string, fy: number, body: { answers?: BudgetAnswers; assumptions?: string[]; movers?: string[] }) =>
+    send('PUT', `/api/clients/${clientId}/budget/${fy}`, body).then(json<{ plan: BudgetPlanRecord }>),
+  recomputeBudget: (clientId: string, fy: number) =>
+    send('POST', `/api/clients/${clientId}/budget/${fy}/outlook`).then(json<{ plan: BudgetPlanRecord }>),
+  researchBudget: (clientId: string, fy: number) =>
+    send('POST', `/api/clients/${clientId}/budget/${fy}/context`).then(json<{ available: boolean; note?: string; plan?: BudgetPlanRecord }>),
+  publishBudget: (clientId: string, fy: number) =>
+    send('POST', `/api/clients/${clientId}/budget/${fy}/publish`).then(json<{ plan: BudgetPlanRecord }>),
 
   // Opportunity board
   listOpportunities: (clientId: string) => send('GET', `/api/clients/${clientId}/opportunities`).then(json<{ opportunities: Opportunity[] }>),

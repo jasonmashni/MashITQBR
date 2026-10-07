@@ -576,7 +576,7 @@ function investmentPage(m: ReportModel, inv: InvestmentModel): Node[] {
       panel(
         [
           { text: `${p.fiscalYearLabel} plan versus actual`, bold: true, color: SEMANTIC.ink, margin: [0, 0, 0, 4] },
-          { svg: planMeterSvg(p.pct, CONTENT_W - 40), width: CONTENT_W - 40, margin: [0, 0, 0, 4] },
+          { svg: planMeterSvg(p.pct, CONTENT_W - 40, { elapsedPct: p.elapsedPct }), width: CONTENT_W - 40, margin: [0, 0, 0, 4] },
           { text: planVsActualText(p), style: 'body', margin: [0, 0, 0, 0] },
         ],
         brand.primary,

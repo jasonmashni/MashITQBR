@@ -202,6 +202,19 @@ export interface BudgetContextItem {
   sourceUrl?: string;
 }
 
+/** The client-facing outlook as it stood when the plan was put on the report. */
+export interface BudgetPublishedSnapshot {
+  at: string;
+  period: string;
+  lines: BudgetLine[];
+  totals: { low: number; expected: number; high: number };
+  assumptions: string[];
+  movers: string[];
+  caveats: string[];
+  /** Planning cost per device at publish (the warranty sentence on the report). */
+  unitCost?: number;
+}
+
 /** A client's budget plan for one fiscal year (label = year the FY ends). */
 export interface BudgetPlanRecord {
   clientId: string;
@@ -215,6 +228,12 @@ export interface BudgetPlanRecord {
   status: 'draft' | 'published';
   publishedPeriod?: string;
   publishedAt?: string;
+  /**
+   * What is on the report: a copy of the outlook taken at publish. The report
+   * reads only this, so editing the working copy (answers, Re-run outlook)
+   * never moves the published baseline until the plan is put on the report again.
+   */
+  published?: BudgetPublishedSnapshot;
   /** Internal only. Never copied onto a report model or a narrative input. */
   context?: { researchedAt: string; sourced: boolean; items: BudgetContextItem[] };
   createdAt: string;

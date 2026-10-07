@@ -10,6 +10,7 @@ import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
 import type { PushInput } from './actions.js';
 import { suggestedConversations } from './conversations.js';
+import * as budget from './budget.js';
 import './spa.js'; // registers the catch-all route that serves the React SPA
 
 const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
@@ -138,6 +139,14 @@ route('reopenQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/reopen', async (
 route('suggestedConversations', 'GET', 'api/clients/{clientId}/qbr/{period}/conversations/suggested', (req) =>
   suggestedConversations(req.params['clientId']!, req.params['period']!),
 );
+
+// Workstream D: budget planning
+route('listBudgets', 'GET', 'api/clients/{clientId}/budget', (req) => budget.listBudgets(req.params['clientId']!));
+route('getBudget', 'GET', 'api/clients/{clientId}/budget/{fy}', (req) => budget.getBudget(req.params['clientId']!, req.params['fy']!));
+route('putBudget', 'PUT', 'api/clients/{clientId}/budget/{fy}', async (req) => budget.putBudget(req.params['clientId']!, req.params['fy']!, await body(req)));
+route('recomputeBudget', 'POST', 'api/clients/{clientId}/budget/{fy}/outlook', (req) => budget.recomputeBudget(req.params['clientId']!, req.params['fy']!));
+route('contextBudget', 'POST', 'api/clients/{clientId}/budget/{fy}/context', (req) => budget.contextBudget(req.params['clientId']!, req.params['fy']!));
+route('publishBudget', 'POST', 'api/clients/{clientId}/budget/{fy}/publish', (req) => budget.publishBudget(req.params['clientId']!, req.params['fy']!));
 
 // Integrations
 route('listIntegrations', 'GET', 'api/integrations', () => h.listIntegrations());

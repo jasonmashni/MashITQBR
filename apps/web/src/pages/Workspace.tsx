@@ -16,6 +16,7 @@ import { MeetingTab } from './workspace/MeetingTab.js';
 import { ActionsTab } from './workspace/ActionsTab.js';
 import { OpportunitiesTab } from './workspace/OpportunitiesTab.js';
 import { StudioTab } from './workspace/StudioTab.js';
+import { BudgetTab } from './workspace/BudgetTab.js';
 import { deliverableGuard, deriveSteps, lockNotice, primaryStep, type Step } from './workspace/nextStep.js';
 import { chooseLandingPeriod, nextPeriodIn, type LandingPeriod } from './workspace/landing.js';
 
@@ -372,6 +373,7 @@ export function Workspace() {
           <Tabs.Tab value="meeting">Meeting</Tabs.Tab>
           <Tabs.Tab value="actions">Actions</Tabs.Tab>
           <Tabs.Tab value="board">Opportunities</Tabs.Tab>
+          <Tabs.Tab value="budget">Budget</Tabs.Tab>
           <Tabs.Tab value="studio">Studio</Tabs.Tab>
         </Tabs.List>
 
@@ -491,6 +493,10 @@ export function Workspace() {
 
         <Tabs.Panel value="board">
           <OpportunitiesTab clientId={clientId} period={period} />
+        </Tabs.Panel>
+
+        <Tabs.Panel value="budget">
+          <BudgetTab clientId={clientId} period={period} onPublished={() => setRefresh((n) => n + 1)} />
         </Tabs.Panel>
 
         <Tabs.Panel value="studio">

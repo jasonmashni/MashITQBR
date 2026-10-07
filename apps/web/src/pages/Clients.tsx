@@ -28,6 +28,7 @@ import { IconDownload, IconPlus, IconPencil, IconExternalLink, IconRefresh } fro
 import { api } from '../api.js';
 import { lastPeriods } from '../periods.js';
 import type { Client } from '../types.js';
+import { FISCAL_MONTH_OPTIONS } from './workspace/budget.js';
 
 // Per-client external ids the sync pipeline reads off `integrationRefs`.
 const REF_FIELDS: Array<[string, string]> = [
@@ -122,6 +123,7 @@ export function Clients() {
         industry: draft.industry,
         hipaa: draft.hipaa,
         complianceStandard: draft.complianceStandard?.trim() || undefined,
+        fiscalYearStartMonth: draft.fiscalYearStartMonth ?? 1,
         integrationRefs: refs,
       });
       notifications.show({ color: 'good', message: `Saved ${draft.name}.` });
@@ -268,6 +270,14 @@ export function Clients() {
               data={['HIPAA', 'TISAX', 'SOC 2', 'CMMC', 'PCI DSS', 'NIST 800-171', 'ISO 27001', 'FTC Safeguards']}
               value={draft.complianceStandard ?? ''}
               onChange={(v) => setDraft({ ...draft, complianceStandard: v })}
+            />
+            <Select
+              label="Fiscal year starts"
+              description="Sets the fiscal year on the Budget tab and which review plans next year's budget."
+              data={FISCAL_MONTH_OPTIONS}
+              value={String(draft.fiscalYearStartMonth ?? 1)}
+              onChange={(v) => setDraft({ ...draft, fiscalYearStartMonth: v ? Number(v) : 1 })}
+              allowDeselect={false}
             />
             <Switch label="HIPAA client (ePHI handling)" checked={!!draft.hipaa} onChange={(e) => setDraft({ ...draft, hipaa: e.currentTarget.checked })} />
             <Fieldset legend="Tool mappings (per-client external ids)">

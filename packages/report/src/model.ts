@@ -2,7 +2,9 @@ import {
   computeScorecard,
   computeTicketInsights,
   computeTrends,
+  fiscalYearOf,
   indexTrends,
+  isPlanningPeriod,
   parsePeriod,
   protectionRows,
   ticketInsightRecommendations,
@@ -92,7 +94,8 @@ export interface InvestmentModel {
   previousInvoiced?: number;
   /** Invoice lines by category, largest first; recurring when the category is on the recurring agreement. */
   breakdown: Array<{ label: string; amount: number; recurring: boolean }>;
-  planVsActual?: { fiscalYearLabel: string; planned: number; spent: number; pct: number; note: string };
+  /** `elapsedPct` is the share of the fiscal year invoiced so far (the meter's tick). */
+  planVsActual?: { fiscalYearLabel: string; planned: number; spent: number; pct: number; note: string; elapsedPct?: number };
   /** Deterministic sentences: warranty refresh, paid-seat use, renewals. */
   comingUp: string[];
   /** The twelve-month outlook, planning quarter only. */
@@ -107,7 +110,29 @@ const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : ma
  * in the recurring breakdown (finance.recurring.*); everything else is
  * variable. Undefined when there is nothing to show.
  */
+/** The month each quarter's review is held (the month after the quarter ends). */
+const REVIEW_MONTH: Record<1 | 2 | 3 | 4, string> = { 1: 'April', 2: 'July', 3: 'October', 4: 'January' };
+
+/**
+ * "At the Q3 review in October we will plan the 2027 budget together." when
+ * the next quarter is the client's planning quarter; undefined otherwise.
+ */
+function planningNotice(periodId: string, startMonth: number): string | undefined {
+  let p;
+  try {
+    p = parsePeriod(periodId);
+  } catch {
+    return undefined;
+  }
+  const next = p.quarter === 4 ? `${p.year + 1}-Q1` : `${p.year}-Q${p.quarter + 1}`;
+  if (!isPlanningPeriod(next, startMonth)) return undefined;
+  const nextQuarter = parsePeriod(next).quarter;
+  const fy = fiscalYearOf(next, startMonth).label + 1;
+  return `At the Q${nextQuarter} review in ${REVIEW_MONTH[nextQuarter]} we will plan the ${startMonth === 1 ? fy : `FY${fy}`} budget together.`;
+}
+
 function buildInvestment(
+  client: Client,
   current: MetricSnapshot,
   previous: MetricSnapshot | undefined,
   budget: { planVsActual?: InvestmentModel['planVsActual']; outlook?: BudgetOutlook; unitCost?: number } | undefined,
@@ -149,6 +174,8 @@ function buildInvestment(
   if (renewing !== undefined && renewing > 0) {
     comingUp.push(`Agreements: ${renewing} ${plural(renewing, 'agreement')} ${renewing === 1 ? 'renews' : 'renew'} within 90 days.`);
   }
+  const notice = planningNotice(current.period, client.fiscalYearStartMonth ?? 1);
+  if (notice) comingUp.push(notice);
 
   return {
     invoiced: total,
@@ -334,7 +361,7 @@ export function buildReportModel(args: {
     }),
     ...(args.revisedAt ? { revisedAt: args.revisedAt } : {}),
     ...(() => {
-      const investment = hidden.has('spend') ? undefined : buildInvestment(current, previous, args.budget);
+      const investment = hidden.has('spend') ? undefined : buildInvestment(args.client, current, previous, args.budget);
       return investment ? { investment } : {};
     })(),
     notes: args.notes,

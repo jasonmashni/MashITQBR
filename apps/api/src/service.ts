@@ -146,6 +146,13 @@ export interface BuildQbrOptions {
   revisedAt?: string;
   /** Attached vendor reports / uploads (rendered as the appendix); findings feed the narrative. */
   documents?: Array<{ name: string; source: string; findings?: Array<{ text: string; severity: 'info' | 'watch' | 'act' }> }>;
+  /**
+   * Published budget plan data for the investment page. Goes to the report
+   * model only, never to the narrative input (benchmarks stay internal).
+   */
+  budget?: import('./budget.js').ReportBudget;
+  /** A budget plan load failure, surfaced as a build warning. */
+  budgetWarning?: string;
 }
 
 /**
@@ -367,11 +374,13 @@ export async function buildQbrReport(
     discussion: opts.discussion,
     notes: opts.notes,
     documents: opts.documents,
+    ...(opts.budget ? { budget: opts.budget } : {}),
     excludedLabels: currentRaw.metrics.filter((m) => excluded.has(m.key)).map((m) => m.label),
   });
 
   const warnings: string[] = [];
   if (aiFailure) warnings.push(aiFailure);
+  if (opts.budgetWarning) warnings.push(opts.budgetWarning);
   if (!narrative.verification.ok) {
     // Neutral wording: the text may be the AI's or an author's edit.
     const figureFailures = narrative.verification.failures.filter((f) => f.label !== 'limits');

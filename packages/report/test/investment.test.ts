@@ -42,7 +42,7 @@ describe('investment model', () => {
   it('carries plan versus actual and the outlook only when a budget is passed', () => {
     expect(inv.outlook).toBeUndefined();
     expect(inv.planVsActual).toBeUndefined();
-    const planVsActual = { fiscalYearLabel: 'FY2026', planned: 118000, spent: 51597, pct: 44, note: 'Slightly under plan.' };
+    const planVsActual = { fiscalYearLabel: 'FY2026', planned: 118000, spent: 51597, pct: 44, note: 'Under plan, with 2 of 4 quarters invoiced.' };
     const planned = buildReportModel({ ...args, budget: { planVsActual, outlook } }).investment!;
     expect(planned.planVsActual).toEqual(planVsActual);
     expect(planned.outlook).toEqual(outlook);
@@ -53,5 +53,43 @@ describe('investment model', () => {
     expect(buildReportModel({ ...args, current: noSpend }).investment).toBeUndefined();
     expect(buildReportModel({ ...args, current: noSpend, budget: { outlook } }).investment?.outlook).toEqual(outlook);
     expect(buildReportModel({ ...args, config: { clientId: 'anp', hiddenSections: ['spend'] } }).investment).toBeUndefined();
+  });
+});
+
+describe('plan versus actual client text', () => {
+  it('states the percent once', async () => {
+    const { planVsActualText } = await import('../src/pages.js');
+    const { renderReportHtml } = await import('@mashit/report');
+    const planVsActual = { fiscalYearLabel: 'FY2026', planned: 118000, spent: 51597, pct: 44, note: 'Under plan, with 2 of 4 quarters invoiced.' };
+    const text = planVsActualText(planVsActual);
+    expect(text).toBe('$51,597 spent of the $118,000 we planned together, 44% of the plan. Under plan, with 2 of 4 quarters invoiced.');
+    expect(text.match(/44%/g)).toHaveLength(1);
+    const html = renderReportHtml(buildReportModel({ ...args, budget: { planVsActual } }));
+    expect(html.match(/44% of the plan/g)).toHaveLength(1);
+  });
+});
+
+describe('fiscal year notices on the investment page', () => {
+  it('says the next review plans the budget when the next quarter is the planning quarter', () => {
+    // anpQ2 is 2026-Q2; with a January fiscal year the Q3 review (October) plans FY2027.
+    const jan = buildReportModel({ ...args, client: { ...anpClient, fiscalYearStartMonth: 1 } }).investment!;
+    expect(jan.comingUp).toContain('At the Q3 review in October we will plan the 2027 budget together.');
+    const unset = buildReportModel(args).investment!;
+    expect(unset.comingUp).toContain('At the Q3 review in October we will plan the 2027 budget together.');
+    // A July fiscal year plans at the Q1 review, so nothing is said after Q2.
+    const july = buildReportModel({ ...args, client: { ...anpClient, fiscalYearStartMonth: 7 } }).investment!;
+    expect(july.comingUp.join(' ')).not.toContain('plan the');
+  });
+
+  it('names the fiscal year for a non-January start', () => {
+    // 2026-Q1 is next-but-one; use a Q1 snapshot shape with an October start (planning quarter Q2).
+    const oct = buildReportModel({ ...args, current: { ...anpQ2, period: '2026-Q1' }, client: { ...anpClient, fiscalYearStartMonth: 10 } }).investment!;
+    expect(oct.comingUp).toContain('At the Q2 review in July we will plan the FY2027 budget together.');
+  });
+
+  it('passes the elapsed share of the year through for the plan meter tick', () => {
+    const planVsActual = { fiscalYearLabel: 'FY2026', planned: 118000, spent: 51597, pct: 44, note: 'Under plan.', elapsedPct: 50 };
+    const inv = buildReportModel({ ...args, budget: { planVsActual } }).investment!;
+    expect(inv.planVsActual?.elapsedPct).toBe(50);
   });
 });

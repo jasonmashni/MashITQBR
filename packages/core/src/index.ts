@@ -9,3 +9,4 @@ export * from './metrics.js';
 export * from './scorecard.js';
 export * from './seed.js';
 export * from './protection.js';
+export * from './budget.js';

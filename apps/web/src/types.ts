@@ -339,6 +339,17 @@ export interface BudgetPlanRecord {
   status: 'draft' | 'published';
   publishedPeriod?: string;
   publishedAt?: string;
+  /** The outlook as it stood when put on the report; the report reads only this. */
+  published?: {
+    at: string;
+    period: string;
+    lines: BudgetLine[];
+    totals: { low: number; expected: number; high: number };
+    assumptions: string[];
+    movers: string[];
+    caveats: string[];
+    unitCost?: number;
+  };
   /** Internal only: shown in the planner, never on a client page. */
   context?: { researchedAt: string; sourced: boolean; items: BudgetContextItem[] };
   createdAt: string;
