@@ -440,6 +440,36 @@ describe('locked reads serve the version the lock names', () => {
   });
 });
 
+describe('status moves around lock 2', () => {
+  const seedSnapshot = async (period: string) => {
+    const { SEED_SNAPSHOTS } = await import('@mashit/core');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    const seed = SEED_SNAPSHOTS.find((s) => s.clientId === 'anp' && s.metrics.length > 1)!;
+    await store.putSnapshot({ ...seed, period });
+  };
+
+  it('refuses a forced move below dispositioned on a final quarter', async () => {
+    const h = await import('../src/handlers.js');
+    await seedSnapshot('2022-Q3');
+    expect((await h.finalizeQbr('anp', '2022-Q3')).status).toBe(200);
+    const res = await h.putStatus('anp', '2022-Q3', { status: 'scheduled', force: true, reason: 'oops' });
+    expect(res).toEqual({ status: 409, json: { error: 'This quarter is finalized. Reopen it first.' } });
+    expect(await statusOf('2022-Q3')).toBe('dispositioned');
+    // Forward moves on a final quarter still work.
+    expect((await h.putStatus('anp', '2022-Q3', { status: 'actions_pushed' })).status).toBe(200);
+  });
+
+  it('archiving does not perform lock 2', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    await seedSnapshot('2022-Q4');
+    const res = await h.putStatus('anp', '2022-Q4', { status: 'archived' });
+    expect(res.status).toBe(200);
+    expect((res.json as QbrRecord).locks?.final).toBeUndefined();
+    expect(await store.listPackages('anp', '2022-Q4')).toHaveLength(0);
+  });
+});
+
 describe('a failed lock 2 says so', () => {
   it('putStatus to dispositioned with nothing to freeze returns the record with a retry warning', async () => {
     const h = await import('../src/handlers.js');

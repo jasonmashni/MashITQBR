@@ -1497,6 +1497,10 @@ export async function putStatus(
   if (status === current) return ok(existing ?? { clientId, period, status: current });
   const forward = !statusAtLeast(current, status);
   const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  // A final quarter cannot be walked back below dispositioned; Reopen is the audited path.
+  if (!forward && existing?.locks?.final && !statusAtLeast(status, 'dispositioned')) {
+    return err(409, 'This quarter is finalized. Reopen it first.');
+  }
   if (!forward) {
     if (body.force !== true) {
       return err(409, `Moving from ${qbrStatusLabel(current)} back to ${qbrStatusLabel(status)} needs an override with a reason.`);
@@ -1524,7 +1528,8 @@ export async function putStatus(
   if (forward) audit('qbr.status', `qbr:${clientId}/${period}`, status);
   else await audit('qbr.status', `qbr:${clientId}/${period}`, `override ${current} -> ${status}: ${reason}`);
   // Decisions captured: lock 2 freezes the quarter with the final package.
-  if (statusAtLeast(status, 'dispositioned') && !existing?.locks?.final) {
+  // Archiving is housekeeping, not a disposition: it does not lock.
+  if (statusAtLeast(status, 'dispositioned') && status !== 'archived' && !existing?.locks?.final) {
     try {
       return ok(await lockFinal(clientId, period));
     } catch (e) {
