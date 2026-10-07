@@ -1117,13 +1117,13 @@ export async function pollInbox(log?: (message: string) => void): Promise<ApiRes
     _lastInboxPoll = {
       at: new Date().toISOString(),
       ok: true,
-      detail: `${result.filed} attachment(s) filed, ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed} unread message(s)${folderNote ? `; ${folderNote}` : ''}`,
+      detail: `${result.filed} attachment(s) filed, ${result.agenda} agenda item(s), ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed} unread message(s)${folderNote ? `; ${folderNote}` : ''}`,
     };
-    if (result.filed > 0 || result.unrouted > 0 || (result.untrusted ?? 0) > 0 || (result.failed?.length ?? 0) > 0) {
+    if (result.filed > 0 || result.agenda > 0 || result.unrouted > 0 || (result.untrusted ?? 0) > 0 || (result.failed?.length ?? 0) > 0) {
       audit(
         'inbox.poll',
         `mailbox:${cfg.mailbox}`,
-        `${result.filed} filed, ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed}`,
+        `${result.filed} filed, ${result.agenda} agenda, ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed}`,
       );
     }
     if (result.filed > 0) {

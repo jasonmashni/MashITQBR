@@ -230,3 +230,116 @@ describe('pollReportInbox trust + resilience', () => {
     expect(filed).toHaveLength(1);
   });
 });
+
+describe('pollReportInbox forward to QBR (no attachments)', () => {
+  const cfg = { mailbox: 'qbr-reports@mashit.net', tenantId: 't', clientId: 'c', clientSecret: 's' };
+  const now = new Date('2026-10-07T12:00:00Z');
+  type Msg = { id: string; subject: string; body?: { contentType: 'text' | 'html'; content: string }; name?: string };
+  function fakeGraph(msgs: Msg[]) {
+    const patched: Array<{ id: string; categories: string }> = [];
+    const listUrls: string[] = [];
+    const fetchFn = (async (url: string, init?: RequestInit) => {
+      const body = (json: unknown) => ({ ok: true, status: 200, json: async () => json }) as unknown as Response;
+      if (url.includes('/oauth2/v2.0/token')) return body({ access_token: 't', expires_in: 3600 });
+      if (init?.method === 'PATCH') {
+        patched.push({ id: url.split('/messages/')[1]!, categories: String(JSON.parse(String(init.body)).categories) });
+        return body({});
+      }
+      if (url.includes('/mailFolders/inbox/messages?')) {
+        listUrls.push(url);
+        return body({
+          value: msgs.map((m) => ({
+            id: m.id,
+            subject: m.subject,
+            hasAttachments: false,
+            from: { emailAddress: { address: 'jason@mashit.net', name: m.name ?? 'Jason Mashni' } },
+            toRecipients: [{ emailAddress: { address: 'qbr-reports+halo-62@mashit.net' } }],
+            body: m.body,
+            bodyPreview: m.body?.content.slice(0, 255),
+          })),
+        });
+      }
+      return body({ value: [] });
+    }) as never;
+    return { fetchFn, patched, listUrls };
+  }
+  const longText = 'Hi Jason, we have a new hire starting Nov 3 in the billing office. ' + 'She needs a laptop, a mailbox and EHR access. '.repeat(20);
+
+  async function setup(sub: string, client: Record<string, unknown> = {}) {
+    const store = new JsonDataStore(join(dir, sub));
+    const docs = new LocalDocStore(join(dir, sub, 'docs'));
+    await store.upsertClient({ id: 'halo-62', name: 'Madison Pediatric Associates', ...client });
+    return { store, docs };
+  }
+
+  it('turns a forwarded email into a planned, unpublished agenda item on the open quarter', async () => {
+    const { store, docs } = await setup('fwd-a');
+    // Q3 has a snapshot and no final lock, so it is the open quarter (not the calendar quarter Q4).
+    await store.putSnapshot({ clientId: 'halo-62', period: '2026-Q3', capturedAt: now.toISOString(), metrics: [] });
+    await store.putDiscussion({ clientId: 'halo-62', period: '2026-Q3', items: [{ id: 'x', topic: 'Existing', sortOrder: 4 }] });
+    const { fetchFn, patched, listUrls } = fakeGraph([{ id: 'm1', subject: 'Fw: New hire starting Nov 3', body: { contentType: 'text', content: longText } }]);
+    const result = await pollReportInbox(cfg, store, docs, fetchFn, now);
+    expect(listUrls[0]).toContain('body');
+    expect(result).toMatchObject({ processed: 1, filed: 0, unrouted: 0, agenda: 1 });
+    const disc = await store.getDiscussion('halo-62', '2026-Q3');
+    expect(disc!.items).toHaveLength(2);
+    expect(disc!.items[0]!.id).toBe('x');
+    const item = disc!.items[1]!;
+    expect(item).toMatchObject({
+      topic: 'New hire starting Nov 3',
+      status: 'planned',
+      includeInReport: false,
+      source: 'email',
+      sourceRef: 'm1',
+      owner: 'Jason Mashni',
+      sortOrder: 5,
+    });
+    expect(item.response).toBe(longText.replace(/\s+/g, ' ').trim().slice(0, 400));
+    expect(item.response!.startsWith('Hi Jason, we have')).toBe(true);
+    expect(patched).toEqual([{ id: 'm1', categories: 'QBR: agenda' }]);
+  });
+
+  it('strips HTML and stacked prefixes, and skips a quarter with a final lock', async () => {
+    const { store, docs } = await setup('fwd-b');
+    await store.putSnapshot({ clientId: 'halo-62', period: '2026-Q3', capturedAt: now.toISOString(), metrics: [] });
+    await store.upsertQbr({ clientId: 'halo-62', period: '2026-Q3', status: 'completed', locks: { final: { at: now.toISOString(), by: 'x', version: 1 } }, updatedAt: now.toISOString() });
+    const { fetchFn } = fakeGraph([
+      { id: 'm2', subject: 'RE: fwd: FW:  Printer lease ends', body: { contentType: 'html', content: '<html><head><style>p{color:red}</style></head><body><p>Hi&nbsp;Jason,</p><p>the lease &amp; contract</p></body></html>' } },
+    ]);
+    const result = await pollReportInbox(cfg, store, docs, fetchFn, now);
+    expect(result.agenda).toBe(1);
+    expect(await store.getDiscussion('halo-62', '2026-Q3')).toBeUndefined();
+    const item = (await store.getDiscussion('halo-62', '2026-Q4'))!.items[0]!;
+    expect(item.topic).toBe('Printer lease ends');
+    expect(item.response).toBe('Hi Jason, the lease & contract');
+    expect(item.sortOrder).toBe(0);
+  });
+
+  it('never stores the email body for a HIPAA client', async () => {
+    const { store, docs } = await setup('fwd-c', { hipaa: true });
+    const { fetchFn } = fakeGraph([{ id: 'm3', subject: 'Fw: New hire starting Nov 3', body: { contentType: 'text', content: 'Patient John Doe DOB 1/1/1970' } }]);
+    const result = await pollReportInbox(cfg, store, docs, fetchFn, now);
+    expect(result.agenda).toBe(1);
+    const item = (await store.getDiscussion('halo-62', '2026-Q4'))!.items[0]!;
+    expect(item.topic).toBe('New hire starting Nov 3');
+    expect(item.response).toBeUndefined();
+    expect(JSON.stringify(await store.getDiscussion('halo-62', '2026-Q4'))).not.toContain('John Doe');
+  });
+
+  it('an empty subject after stripping creates nothing and is counted unrouted', async () => {
+    const { store, docs } = await setup('fwd-d');
+    const { fetchFn, patched } = fakeGraph([{ id: 'm4', subject: 'Fw:', body: { contentType: 'text', content: 'hello' } }]);
+    const result = await pollReportInbox(cfg, store, docs, fetchFn, now);
+    expect(result).toMatchObject({ agenda: 0, unrouted: 1 });
+    expect(await store.getDiscussion('halo-62', '2026-Q4')).toBeUndefined();
+    expect(patched).toEqual([{ id: 'm4', categories: 'QBR: no subject' }]);
+  });
+
+  it('does not add the same message twice', async () => {
+    const { store, docs } = await setup('fwd-e');
+    const { fetchFn } = fakeGraph([{ id: 'm5', subject: 'Fw: Topic', body: { contentType: 'text', content: 'x' } }]);
+    await pollReportInbox(cfg, store, docs, fetchFn, now);
+    await pollReportInbox(cfg, store, docs, fetchFn, now);
+    expect((await store.getDiscussion('halo-62', '2026-Q4'))!.items).toHaveLength(1);
+  });
+});
