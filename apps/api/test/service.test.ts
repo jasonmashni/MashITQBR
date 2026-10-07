@@ -489,3 +489,92 @@ describe('locked quarters serve the stored package', () => {
     expect(after.model).toEqual(storedModel);
   });
 });
+
+describe('investment page data from the published budget plan', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'qbr-budget-report-'));
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  async function setup() {
+    const { JsonDataStore, storeDataSource, loadReportInputs } = await import('../src/store/index.js');
+    const { SEED_SNAPSHOTS } = await import('@mashit/core');
+    const store = new JsonDataStore(dir);
+    const seed = SEED_SNAPSHOTS.find((s) => s.clientId === 'anp')!;
+    await store.upsertClient({ id: 'fy1', name: 'Fiscal One', fiscalYearStartMonth: 1 });
+    const invoiced: Record<string, number> = { '2026-Q1': 30000, '2026-Q2': 21000, '2026-Q3': 25000 };
+    for (const [period, value] of Object.entries(invoiced)) {
+      const metrics = seed.metrics.filter((m) => m.key !== 'finance.quarter_invoiced' && m.key !== 'assets.warranty_expired');
+      metrics.push({ key: 'assets.warranty_expired', label: 'Devices out of warranty', value: 4, source: 'ninja', category: 'infrastructure' });
+      metrics.push({ key: 'finance.quarter_invoiced', label: 'Invoiced this quarter', value, source: 'halo', category: 'spend' });
+      await store.putSnapshot({ ...seed, clientId: 'fy1', period, metrics });
+    }
+    const base = {
+      clientId: 'fy1',
+      assumptions: ['Two hires.'],
+      movers: ['A second site.'],
+      caveats: [],
+      status: 'published' as const,
+      createdAt: 'x',
+      updatedAt: 'x',
+      updatedBy: 'jason',
+    };
+    await store.putBudgetPlan({
+      ...base,
+      fiscalLabel: 2026,
+      answers: { workstationUnitCost: 1500 },
+      lines: [{ category: 'managed_services', low: 118000, expected: 118000, high: 118000, basis: [{ source: 'halo', note: 'MRR' }] }],
+      totals: { low: 118000, expected: 118000, high: 118000 },
+      publishedPeriod: '2025-Q3',
+    });
+    await store.putBudgetPlan({
+      ...base,
+      fiscalLabel: 2027,
+      answers: { workstationUnitCost: 1650 },
+      lines: [{ category: 'managed_services', low: 65520, expected: 65520, high: 69480, basis: [{ source: 'halo', note: 'MRR' }] }],
+      totals: { low: 65520, expected: 65520, high: 69480 },
+      publishedPeriod: '2026-Q3',
+      context: { researchedAt: 'x', sourced: true, items: [{ title: 'Secret benchmark title', insight: 'i', askClient: 'q' }] },
+    });
+    const build = async (period: string) =>
+      buildQbrReport(storeDataSource(store), 'fy1', period, { ...(await loadReportInputs(store, 'fy1', period)) });
+    return { store, build };
+  }
+
+  it('attaches the outlook only in the planning quarter', async () => {
+    const { build } = await setup();
+    const q3 = await build('2026-Q3');
+    expect(q3.model.investment?.outlook?.fiscalLabel).toBe(2027);
+    expect(q3.model.investment?.outlook?.totals.expected).toBe(65520);
+    expect(JSON.stringify(q3.model)).not.toContain('Secret benchmark title');
+    const q2 = await build('2026-Q2');
+    expect(q2.model.investment?.outlook).toBeUndefined();
+  });
+
+  it('sums plan versus actual over the fiscal periods seen so far', async () => {
+    const { build } = await setup();
+    const q2 = (await build('2026-Q2')).model.investment!.planVsActual!;
+    expect(q2).toMatchObject({ fiscalYearLabel: 'FY2026', planned: 118000, spent: 51000, pct: 43, elapsedPct: 50 });
+    expect(q2.note.startsWith('Under plan')).toBe(true);
+    const q3 = (await build('2026-Q3')).model.investment!.planVsActual!;
+    expect(q3.spent).toBe(76000);
+    expect(q3.elapsedPct).toBe(75);
+  });
+
+  it('prices the warranty refresh at the planning unit cost', async () => {
+    const { build } = await setup();
+    const q3 = await build('2026-Q3');
+    expect(q3.model.investment?.comingUp.join(' ')).toContain('$1,650 per device');
+    const q2 = await build('2026-Q2');
+    expect(q2.model.investment?.comingUp.join(' ')).toContain('$1,500 per device');
+    expect(q2.model.investment?.comingUp).toContain('At the Q3 review in October we will plan the 2027 budget together.');
+  });
+
+  it('leaves drafts off the report', async () => {
+    const { store, build } = await setup();
+    const plan = (await store.getBudgetPlan('fy1', 2027))!;
+    await store.putBudgetPlan({ ...plan, status: 'draft' });
+    expect((await build('2026-Q3')).model.investment?.outlook).toBeUndefined();
+  });
+});

@@ -233,6 +233,8 @@ describe('budget industry context (internal only)', () => {
       ...(await loadReportInputs(s, 'acme', '2026-Q3')),
     });
     expect(messages.length).toBeGreaterThan(0);
+    // The published plan's outlook does reach the report; only the context stays out.
+    expect(report.model.investment?.outlook?.fiscalLabel).toBe(2027);
     const model = JSON.stringify(report.model);
     for (const item of items) {
       expect(messages).not.toContain(item.title);

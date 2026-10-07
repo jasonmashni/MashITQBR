@@ -102,6 +102,8 @@ export interface ReportInputs {
   /** Live Halo ticket status lookup, present only when an item was pushed to Halo and a direct connection exists. */
   lookupTicketStatus?: (id: string) => Promise<string | undefined>;
   documents?: Array<{ name: string; source: string; findings?: import('./types.js').DocumentFinding[] }>;
+  /** Published budget plan data for the investment page (never the internal context). */
+  budget?: import('../budget.js').ReportBudget;
 }
 
 /** Load persisted branding/config + discussion + narrative edits for a report build. */
@@ -121,6 +123,8 @@ export async function loadReportInputs(store: DataStore, clientId: string, perio
     source: doc.source,
     ...(doc.findings?.length ? { findings: doc.findings } : {}),
   }));
+  // Lazy import keeps the budget module (which imports this one) out of the load cycle.
+  const budget = await import('../budget.js').then((m) => m.budgetForPeriod(store, clientId, period)).catch(() => undefined);
   return {
     config,
     orgBrand: org?.brand,
@@ -130,6 +134,7 @@ export async function loadReportInputs(store: DataStore, clientId: string, perio
     documents,
     ...(previous?.items?.length ? { previousDiscussion: previous.items } : {}),
     ...(lookupTicketStatus ? { lookupTicketStatus } : {}),
+    ...(budget ? { budget } : {}),
   };
 }
 

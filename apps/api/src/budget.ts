@@ -2,12 +2,14 @@ import {
   computeOutlook,
   fiscalPeriods,
   fiscalYearOf,
+  isPlanningPeriod,
   lastPeriods,
   periodFor,
   planningPeriodFor,
   planVsActual,
   type BudgetAnswers,
   type BudgetFacts,
+  type BudgetOutlook,
   type Client,
   type MetricSnapshot,
 } from '@mashit/core';
@@ -247,7 +249,7 @@ export async function planVsActualFor(
   plan: BudgetPlanRecord,
   startMonth: number,
   uptoPeriod: string,
-): Promise<{ fiscalYearLabel: string; planned: number; spent: number; pct: number; note: string } | undefined> {
+): Promise<ReportBudget['planVsActual']> {
   if (plan.status !== 'published') return undefined;
   const spent: number[] = [];
   for (const p of fiscalPeriods(plan.fiscalLabel, startMonth)) {
@@ -256,7 +258,7 @@ export async function planVsActualFor(
     if (v !== undefined) spent.push(v);
   }
   if (spent.length === 0) return undefined;
-  return { fiscalYearLabel: `FY${plan.fiscalLabel}`, ...planVsActual(plan.totals.expected, spent) };
+  return { fiscalYearLabel: `FY${plan.fiscalLabel}`, ...planVsActual(plan.totals.expected, spent), elapsedPct: (Math.min(4, spent.length) / 4) * 100 };
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -417,4 +419,46 @@ export async function contextBudget(clientId: string, fy: string, researcher?: B
   });
   await audit('budget.context', `client:${clientId}`, `FY${r.label} ${research.items.length} item(s)`);
   return ok({ available: true, plan: saved });
+}
+
+export interface ReportBudget {
+  planVsActual?: { fiscalYearLabel: string; planned: number; spent: number; pct: number; note: string; elapsedPct?: number };
+  outlook?: BudgetOutlook;
+  unitCost?: number;
+}
+
+/**
+ * What the report for `period` shows from published budget plans: plan versus
+ * actual for the fiscal year the period belongs to, the next year's outlook in
+ * the planning quarter only, and the planning unit cost for the warranty
+ * sentence. Only client-facing fields are copied; `context` never leaves here.
+ */
+export async function budgetForPeriod(store: DataStore, clientId: string, period: string): Promise<ReportBudget | undefined> {
+  const source = storeDataSource(store);
+  const startMonth = startMonthOf(await source.getClient(clientId));
+  const fy = fiscalYearOf(period, startMonth);
+  const published = async (label: number) => {
+    const plan = await store.getBudgetPlan(clientId, label);
+    return plan?.status === 'published' ? plan : undefined;
+  };
+  const current = await published(fy.label);
+  const next = isPlanningPeriod(period, startMonth) ? await published(fy.label + 1) : undefined;
+  const actual = current ? await planVsActualFor(source.getSnapshot, current, startMonth, period) : undefined;
+  const outlook: BudgetOutlook | undefined = next
+    ? {
+        fiscalLabel: next.fiscalLabel,
+        assumptions: [...next.assumptions],
+        movers: [...next.movers],
+        lines: next.lines.map((l) => ({ ...l, basis: l.basis.map((b) => ({ ...b })) })),
+        totals: { ...next.totals },
+        caveats: [...(next.caveats ?? [])],
+      }
+    : undefined;
+  const unitCost = next?.answers.workstationUnitCost ?? current?.answers.workstationUnitCost;
+  if (!actual && !outlook && unitCost === undefined) return undefined;
+  return {
+    ...(actual ? { planVsActual: actual } : {}),
+    ...(outlook ? { outlook } : {}),
+    ...(unitCost !== undefined ? { unitCost } : {}),
+  };
 }

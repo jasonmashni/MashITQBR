@@ -146,6 +146,11 @@ export interface BuildQbrOptions {
   revisedAt?: string;
   /** Attached vendor reports / uploads (rendered as the appendix); findings feed the narrative. */
   documents?: Array<{ name: string; source: string; findings?: Array<{ text: string; severity: 'info' | 'watch' | 'act' }> }>;
+  /**
+   * Published budget plan data for the investment page. Goes to the report
+   * model only, never to the narrative input (benchmarks stay internal).
+   */
+  budget?: import('./budget.js').ReportBudget;
 }
 
 /**
@@ -367,6 +372,7 @@ export async function buildQbrReport(
     discussion: opts.discussion,
     notes: opts.notes,
     documents: opts.documents,
+    ...(opts.budget ? { budget: opts.budget } : {}),
     excludedLabels: currentRaw.metrics.filter((m) => excluded.has(m.key)).map((m) => m.label),
   });
 
