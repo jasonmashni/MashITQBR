@@ -118,15 +118,16 @@ describe('budget API', () => {
     expect(res.status).toBe(200);
     const plan = (res.json as { plan: BudgetPlanRecord }).plan;
     expect(triple(plan, 'managed_services')).toEqual([65520, 65520, 69480]);
-    expect(triple(plan, 'licensing')).toEqual([13306, 14137, 17737]);
+    // Microsoft 365 is on the agreement, so licensing carries only the hire and Copilot deltas.
+    expect(triple(plan, 'licensing')).toEqual([0, 832, 4432]);
     expect(triple(plan, 'hardware')).toEqual([21038, 24750, 28463]);
     expect(triple(plan, 'support_hours')).toEqual([8000, 11500, 16000]);
     // One-time board items only; recurring and closed ones stay out.
     expect(triple(plan, 'projects')).toEqual([18000, 18000, 18000]);
     expect(plan.totals.expected).toBe(plan.lines.reduce((s, l) => s + l.expected, 0));
-    // The seat price came from a recurring Microsoft line, so it is already inside MRR.
-    expect(plan.lines.find((l) => l.category === 'licensing')!.basis.map((b) => b.note)).toContain('Microsoft 365 billed on your Mash IT agreement is already in managed services');
-    expect(plan.caveats).toEqual([`${'Microsoft 365 billed on your Mash IT agreement is already in managed services'}.`]);
+    // The seat price came from a recurring Microsoft line, so the base seats are inside MRR.
+    expect(plan.lines.find((l) => l.category === 'licensing')!.basis.map((b) => b.note)).toContain('Base Microsoft 365 seats are billed on your Mash IT agreement and counted in managed services.');
+    expect(plan.caveats).toEqual([]);
     const stored = await (await store()).getBudgetPlan('acme', 2027);
     expect(stored?.lines).toHaveLength(7);
     const audit = await (await store()).listAudit(20);
