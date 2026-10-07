@@ -1216,8 +1216,9 @@ export async function pollInbox(log?: (message: string) => void): Promise<ApiRes
       ok: true,
       detail: `${result.filed} attachment(s) filed, ${result.agenda} agenda item(s), ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed} unread message(s)${folderNote ? `; ${folderNote}` : ''}`,
     };
+    // One audit event per poll; agenda-only polls count (the inbox writes the agenda behind the user's back).
     if (result.filed > 0 || result.agenda > 0 || result.unrouted > 0 || (result.untrusted ?? 0) > 0 || (result.failed?.length ?? 0) > 0) {
-      audit(
+      await audit(
         'inbox.poll',
         `mailbox:${cfg.mailbox}`,
         `${result.filed} filed, ${result.agenda} agenda, ${result.unrouted} unrouted, ${result.untrusted ?? 0} untrusted, ${result.failed?.length ?? 0} failed of ${result.processed}`,
