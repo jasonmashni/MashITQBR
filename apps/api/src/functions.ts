@@ -145,6 +145,7 @@ route('listBudgets', 'GET', 'api/clients/{clientId}/budget', (req) => budget.lis
 route('getBudget', 'GET', 'api/clients/{clientId}/budget/{fy}', (req) => budget.getBudget(req.params['clientId']!, req.params['fy']!));
 route('putBudget', 'PUT', 'api/clients/{clientId}/budget/{fy}', async (req) => budget.putBudget(req.params['clientId']!, req.params['fy']!, await body(req)));
 route('recomputeBudget', 'POST', 'api/clients/{clientId}/budget/{fy}/outlook', (req) => budget.recomputeBudget(req.params['clientId']!, req.params['fy']!));
+route('contextBudget', 'POST', 'api/clients/{clientId}/budget/{fy}/context', (req) => budget.contextBudget(req.params['clientId']!, req.params['fy']!));
 route('publishBudget', 'POST', 'api/clients/{clientId}/budget/{fy}/publish', (req) => budget.publishBudget(req.params['clientId']!, req.params['fy']!));
 
 // Integrations

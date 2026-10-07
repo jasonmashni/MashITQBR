@@ -177,3 +177,80 @@ describe('budget API', () => {
     expect((res.json as { plan: BudgetPlanRecord }).plan.publishedPeriod).toBe('2026-Q1');
   });
 });
+
+describe('budget industry context (internal only)', () => {
+  const items = [
+    { title: 'Manufacturers spend about 2 to 3 percent of revenue on IT', insight: 'Survey benchmark.', askClient: 'Do you want a revenue comparison?', sourceName: 'Survey', sourceUrl: 'https://example.com/a' },
+    { title: 'CMMC assessment windows are tightening', insight: 'Contract clauses are arriving.', askClient: 'When is your next assessment due?' },
+  ];
+
+  it('stores the researcher items on the plan and returns them from getBudget', async () => {
+    const b = await import('../src/budget.js');
+    let seen: Record<string, unknown> | undefined;
+    const res = await b.contextBudget('acme', '2027', async (input) => {
+      seen = input as unknown as Record<string, unknown>;
+      return { items, sourced: true };
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toMatchObject({ industry: 'Manufacturing', complianceStandard: 'CMMC', fiscalLabel: 2027, headcountBand: '26 to 50' });
+    const plan = (res.json as { plan: BudgetPlanRecord }).plan;
+    expect(plan.context?.items).toHaveLength(2);
+    expect(plan.context?.sourced).toBe(true);
+    expect(plan.context?.researchedAt).toBeTruthy();
+    const got = await b.getBudget('acme', '2027');
+    expect((got.json as { plan: BudgetPlanRecord }).plan.context?.items[0]!.title).toBe(items[0]!.title);
+    const audit = await (await store()).listAudit(50);
+    expect(audit.some((a) => a.action === 'budget.context')).toBe(true);
+  });
+
+  it('says so when AI is off and no researcher is supplied', async () => {
+    const saved = process.env['ANTHROPIC_API_KEY'];
+    delete process.env['ANTHROPIC_API_KEY'];
+    try {
+      const b = await import('../src/budget.js');
+      const res = await b.contextBudget('acme', '2027');
+      expect(res.status).toBe(200);
+      expect((res.json as { available: boolean }).available).toBe(false);
+    } finally {
+      if (saved !== undefined) process.env['ANTHROPIC_API_KEY'] = saved;
+    }
+  });
+
+  it('never reaches the narrative input or the report model', async () => {
+    const { buildQbrReport } = await import('../src/service.js');
+    const { loadReportInputs, storeDataSource } = await import('../src/store/index.js');
+    const { v4Narrative } = await import('./narrativeFixture.js');
+    const s = await store();
+    const plan = await s.getBudgetPlan('acme', 2027);
+    expect(plan?.status).toBe('published');
+    expect(plan?.context?.items.length).toBe(2);
+    let messages = '';
+    const report = await buildQbrReport(storeDataSource(s), 'acme', '2026-Q3', {
+      narrativeModel: async (m) => {
+        messages += JSON.stringify(m);
+        return v4Narrative();
+      },
+      ...(await loadReportInputs(s, 'acme', '2026-Q3')),
+    });
+    expect(messages.length).toBeGreaterThan(0);
+    const model = JSON.stringify(report.model);
+    for (const item of items) {
+      expect(messages).not.toContain(item.title);
+      expect(messages).not.toContain(item.askClient);
+      expect(model).not.toContain(item.title);
+      expect(model).not.toContain(item.askClient);
+    }
+  });
+});
+
+describe('cleanContextItems', () => {
+  it('keeps items with a title, insight and question, and drops non-http sources', async () => {
+    const { cleanContextItems } = await import('../src/budgetResearch.js');
+    const out = cleanContextItems([
+      { title: 'A', insight: 'B', askClient: 'C?', sourceUrl: 'javascript:alert(1)' },
+      { title: 'No question', insight: 'B' },
+      'junk',
+    ]);
+    expect(out).toEqual([{ title: 'A', insight: 'B', askClient: 'C?', sourceName: undefined, sourceUrl: undefined }]);
+  });
+});

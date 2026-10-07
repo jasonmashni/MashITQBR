@@ -96,6 +96,7 @@ const routes: Route[] = [
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/budget\/([^/]+)$/, run: (m) => budget.getBudget(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/budget\/([^/]+)$/, run: (m, b) => budget.putBudget(m[1]!, m[2]!, b) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/budget\/([^/]+)\/outlook$/, run: (m) => budget.recomputeBudget(m[1]!, m[2]!) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/budget\/([^/]+)\/context$/, run: (m) => budget.contextBudget(m[1]!, m[2]!) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/budget\/([^/]+)\/publish$/, run: (m) => budget.publishBudget(m[1]!, m[2]!) },
   { method: 'GET', re: /^\/api\/integrations$/, run: () => h.listIntegrations() },
   { method: 'POST', re: /^\/api\/integrations$/, run: (_m, b) => h.saveIntegration(b as unknown as ConnectionInput) },

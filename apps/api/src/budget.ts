@@ -13,6 +13,7 @@ import {
 } from '@mashit/core';
 import type { ApiResult } from './handlers.js';
 import { audit } from './audit.js';
+import { createClaudeBudgetResearcher, type BudgetResearchModel } from './budgetResearch.js';
 import { currentActor } from './requestContext.js';
 import { dataLocked, LOCKED } from './locks.js';
 import { getDataStore, storeDataSource, type BudgetPlanRecord, type DataStore } from './store/index.js';
@@ -368,4 +369,52 @@ export async function publishBudget(clientId: string, fy: string): Promise<ApiRe
   });
   await audit('budget.publish', `client:${clientId}`, `FY${r.label} on the ${period} report`);
   return ok({ plan: saved });
+}
+
+/** Seat-count band sent to the researcher instead of an exact headcount. */
+export function headcountBand(seats: number | undefined): string | undefined {
+  if (seats === undefined || seats <= 0) return undefined;
+  const bands: Array<[number, string]> = [
+    [10, '1 to 10'],
+    [25, '11 to 25'],
+    [50, '26 to 50'],
+    [100, '51 to 100'],
+    [250, '101 to 250'],
+  ];
+  return bands.find(([max]) => seats <= max)?.[1] ?? 'more than 250';
+}
+
+/**
+ * AI industry context for budget prep. Stored on the plan for staff only;
+ * never passed to the narrative or the report model.
+ */
+export async function contextBudget(clientId: string, fy: string, researcher?: BudgetResearchModel): Promise<ApiResult> {
+  const r = await resolve(clientId, fy);
+  if (isResult(r)) return r;
+  if (!researcher && !process.env['ANTHROPIC_API_KEY']) {
+    return ok({ available: false, note: 'Industry context needs AI. Add the Anthropic key in Settings to enable it.' });
+  }
+  const store = getDataStore();
+  const { facts } = await gatherBudgetFacts(store, clientId, r.label, startMonthOf(r.client));
+  let research;
+  try {
+    research = await (researcher ?? createClaudeBudgetResearcher())({
+      industry: r.client.industry,
+      complianceStandard: r.client.complianceStandard,
+      headcountBand: headcountBand(facts.paidSeats),
+      fiscalLabel: r.label,
+    });
+  } catch (e) {
+    return err(502, `Research failed: ${e instanceof Error ? e.message : 'unknown error'}`);
+  }
+  const existing = (await store.getBudgetPlan(clientId, r.label)) ?? emptyPlan(clientId, r.label);
+  const now = new Date().toISOString();
+  const saved = await store.putBudgetPlan({
+    ...existing,
+    context: { researchedAt: now, sourced: research.sourced, items: research.items },
+    updatedAt: now,
+    updatedBy: currentActor(),
+  });
+  await audit('budget.context', `client:${clientId}`, `FY${r.label} ${research.items.length} item(s)`);
+  return ok({ available: true, plan: saved });
 }
