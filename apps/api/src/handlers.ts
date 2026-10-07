@@ -55,7 +55,7 @@ import type { HeaderGet, Principal } from './auth.js';
 import { graphPost, graphTokenFrom, validEmails, type FetchLike } from './graph.js';
 import { directHaloConn, importHaloClients, listOrgs, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
 import { pushAction, type PushInput } from './actions.js';
-import { buildEmailDraft, qbrEmailBody } from './emailDraft.js';
+import { buildEmailDraft, qbrEmailBody, qbrEmailSubject } from './emailDraft.js';
 import { clientInboxAddress, inboxConfigFromEnv, pollReportInbox } from './reportInbox.js';
 import {
   bookableWindow,
@@ -1797,7 +1797,8 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
   try {
     const qbr = await store.getQbr(clientId, period);
     const origin = originFrom(header);
-    if (!qbr?.meeting?.scheduledAt && origin) {
+    // A closed (final) quarter offers no booking.
+    if (!qbr?.meeting?.scheduledAt && origin && !isFinal(qbr)) {
       const r = await ensureBookingLink(clientId, period);
       const path = (r.json as { path?: string } | undefined)?.path;
       if (r.status === 200 && path) bookingUrl = `${origin}${path}`;
@@ -1832,7 +1833,7 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
     }
   }
 
-  const subject = `${brand.orgName} QBR — ${client?.name ?? clientId} ${model.period.label}`;
+  const subject = qbrEmailSubject(brand.orgName, client?.name ?? clientId, model.period.label);
   const me = currentActor();
   const eml = buildEmailDraft({
     to: client?.primaryContact?.email,
@@ -1856,6 +1857,8 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
 const BOOKING_TOKEN_RE = /^[a-z0-9]{16,64}$/;
 const LOCAL_SLOT_RE = /^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** The client-safe answer for every public booking call on a finalized quarter. */
+const REVIEW_CLOSED = 'This review is already closed. Please contact your account manager.';
 
 async function orgBookingContext() {
   const store = getDataStore();
@@ -1930,6 +1933,7 @@ export async function publicBookingInfo(token: string): Promise<ApiResult> {
   const { store, settings, brand } = await orgBookingContext();
   const booking = await store.getBooking(token);
   if (!booking) return err(404, 'Unknown link');
+  if (isFinal(await store.getQbr(booking.clientId, booking.period))) return err(409, REVIEW_CLOSED);
   const client = await store.getClient(booking.clientId);
   return ok({
     status: booking.status,
@@ -1955,6 +1959,7 @@ export async function publicBookingSlots(token: string, from: string | null, to:
   const { store, settings, graph } = await orgBookingContext();
   const booking = await store.getBooking(token);
   if (!booking) return err(404, 'Unknown link');
+  if (isFinal(await store.getQbr(booking.clientId, booking.period))) return err(409, REVIEW_CLOSED);
   if (booking.status !== 'open') return ok({ slots: [], calendarChecked: false });
 
   let slots = candidateSlots(settings, from, to, new Date());
@@ -1977,11 +1982,9 @@ export async function publicBook(token: string, body: Record<string, unknown>): 
   const { store, settings, brand, graph } = await orgBookingContext();
   const booking = await store.getBooking(token);
   if (!booking) return err(404, 'Unknown link');
-  if (booking.status !== 'open') return err(409, 'This link has already been used — contact your account manager to reschedule.');
+  if (booking.status !== 'open') return err(409, 'This link has already been used. Contact your account manager to reschedule.');
   // A finalized quarter takes no new meeting; the client sees a plain message.
-  if (isFinal(await store.getQbr(booking.clientId, booking.period))) {
-    return err(409, 'This review is already closed. Please contact your account manager.');
-  }
+  if (isFinal(await store.getQbr(booking.clientId, booking.period))) return err(409, REVIEW_CLOSED);
 
   const start = typeof body['start'] === 'string' ? body['start'] : '';
   const name = typeof body['name'] === 'string' ? body['name'].trim().slice(0, 120) : '';
@@ -1998,13 +2001,13 @@ export async function publicBook(token: string, body: Record<string, unknown>): 
   // The chosen slot must still be a legal candidate (weekday/window/lead/max).
   const day = start.slice(0, 10);
   if (!candidateSlots(settings, day, day, new Date()).includes(start)) {
-    return err(409, 'That time is no longer available — please pick another.');
+    return err(409, 'That time is no longer available. Please pick another.');
   }
   // …and still free on the organizer's calendar (when we can check).
   if (graph && settings.organizerEmail) {
     const view = await getAvailabilityView(graph, settings.organizerEmail, `${day}T00:00`, `${day}T23:59`, settings.timezone, settings.incrementMinutes);
     if (view && filterFreeSlots([start], view, `${day}T00:00`, settings).length === 0) {
-      return err(409, 'That time was just taken — please pick another.');
+      return err(409, 'That time was just taken. Please pick another.');
     }
   }
 
@@ -2019,7 +2022,7 @@ export async function publicBook(token: string, body: Record<string, unknown>): 
   // stores don't offer conditional writes — but it closes the practical window
   // (and the booking page disables its button on submit).
   const fresh = await store.getBooking(token);
-  if (!fresh || fresh.status !== 'open') return err(409, 'That time was just taken — please pick another.');
+  if (!fresh || fresh.status !== 'open') return err(409, 'That time was just taken. Please pick another.');
   const claimed = await store.putBooking({
     ...fresh,
     status: 'booked',
@@ -2038,13 +2041,13 @@ export async function publicBook(token: string, body: Record<string, unknown>): 
   if (graph && settings.organizerEmail) {
     try {
       const html = [
-        `<p>${escapeHtml(settings.title)} — ${escapeHtml(client?.name ?? '')} (${escapeHtml(periodLabel)}).</p>`,
+        `<p>${escapeHtml(settings.title)}: ${escapeHtml(client?.name ?? '')} (${escapeHtml(periodLabel)}).</p>`,
         settings.description ? `<p>${escapeHtml(settings.description)}</p>` : '',
         notes ? `<p><b>Requested topics:</b> ${escapeHtml(notes)}</p>` : '',
         `<p>Booked by ${escapeHtml(name)} via the ${escapeHtml(orgName)} scheduling page.</p>`,
       ].join('');
       const created = await createOrganizerEvent(graph, settings.organizerEmail, {
-        subject: `${settings.title} — ${client?.name ?? booking.clientId} (${periodLabel})`,
+        subject: `${settings.title}: ${client?.name ?? booking.clientId} (${periodLabel})`,
         bodyHtml: html,
         startLocal: start,
         endLocal: end,
@@ -2186,7 +2189,8 @@ export async function emailQbr(
   if (!to.length) return err(400, 'At least one valid recipient email is required.');
 
   const client = await getDataStore().getClient(clientId);
-  const subject = body.subject?.trim() || `Mash IT QBR — ${client?.name ?? clientId} ${period}`;
+  const periodLabel = parsePeriod(period).label;
+  const subject = body.subject?.trim() || qbrEmailSubject('Mash IT', client?.name ?? clientId, periodLabel);
 
   const attachments: unknown[] = [];
   if (body.attachDeck) {
@@ -2209,7 +2213,7 @@ export async function emailQbr(
     }
     attachments.push({
       '@odata.type': '#microsoft.graph.fileAttachment',
-      name: `QBR-${clientId}-${period}.pptx`,
+      name: deliverableFilename(client?.name ?? clientId, periodLabel, 'pptx'),
       contentType: PPTX_MIME,
       contentBytes: pptx.toString('base64'),
     });
@@ -2258,7 +2262,7 @@ export async function createMeeting(
 
   const store = getDataStore();
   const client = await store.getClient(clientId);
-  const subject = body.subject?.trim() || `Mash IT QBR — ${client?.name ?? clientId} ${period}`;
+  const subject = body.subject?.trim() || qbrEmailSubject('Mash IT', client?.name ?? clientId, parsePeriod(period).label);
   const attendees = validEmails(body.attendees);
 
   const res = await graphPost(
