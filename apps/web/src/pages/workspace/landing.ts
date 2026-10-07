@@ -1,4 +1,4 @@
-import type { LockInfo } from '../../types.js';
+import type { LockInfo, QbrMeta, QbrStatus } from '../../types.js';
 
 /** One row of the client's quarter list (GET /api/clients/{id}/periods), newest first. */
 export interface LandingPeriod {
@@ -27,4 +27,24 @@ export function chooseLandingPeriod(list: LandingPeriod[], wanted: string | null
 export function nextPeriodIn(list: LandingPeriod[], period: string): string | undefined {
   const idx = list.findIndex((p) => p.period === period);
   return idx > 0 ? list[idx - 1]!.period : undefined;
+}
+
+/**
+ * The quarter's lock state from the period list, for when the QBR itself
+ * could not load (a locked quarter whose stored package is missing answers
+ * 503). Undefined when the quarter is not locked or not listed.
+ */
+export function metaFromPeriodList(list: LandingPeriod[], clientId: string, period: string): QbrMeta | undefined {
+  const row = list.find((p) => p.period === period);
+  if (!row?.locks?.preread && !row?.locks?.final) return undefined;
+  return { clientId, period, status: (row.status ?? 'draft') as QbrStatus, locks: row.locks };
+}
+
+/** What the workspace shows when the QBR fails to load; null for the empty state (no data). */
+export function qbrLoadError(status: number | undefined, message: string): { title: string; text: string } | null {
+  if (status === 404) return null;
+  if (status === 503) {
+    return { title: 'Stored package missing', text: 'The stored package for this quarter is missing. Reopen the quarter to rebuild it.' };
+  }
+  return { title: 'Could not build the report', text: `${message}. Try a Sync, or check the client's tool mappings on the Integrations page.` };
 }

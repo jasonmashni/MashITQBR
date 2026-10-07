@@ -18,7 +18,7 @@ import { OpportunitiesTab } from './workspace/OpportunitiesTab.js';
 import { StudioTab } from './workspace/StudioTab.js';
 import { BudgetTab } from './workspace/BudgetTab.js';
 import { deliverableGuard, deriveSteps, lockNotice, primaryStep, type Step } from './workspace/nextStep.js';
-import { chooseLandingPeriod, nextPeriodIn, type LandingPeriod } from './workspace/landing.js';
+import { chooseLandingPeriod, metaFromPeriodList, nextPeriodIn, qbrLoadError, type LandingPeriod } from './workspace/landing.js';
 
 /** The quarter the calendar is in right now, e.g. 2026-Q4 (UTC, same as the API). */
 function currentQuarterId(d = new Date()): string {
@@ -60,7 +60,7 @@ export function Workspace() {
   const [client, setClient] = useState<Client | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [signedOut, setSignedOut] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ title: string; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [primaryBusy, setPrimaryBusy] = useState(false);
@@ -161,8 +161,9 @@ export function Workspace() {
       .catch((e) => {
         if (!live) return;
         setQbr(null);
-        // A quarter with no snapshot is an empty state, not an error.
-        setError(e instanceof ApiError && e.status === 404 ? null : e instanceof Error ? e.message : 'Failed to build QBR');
+        // A quarter with no snapshot is an empty state, not an error; a
+        // locked quarter with a missing package says to reopen it.
+        setError(qbrLoadError(e instanceof ApiError ? e.status : undefined, e instanceof Error ? e.message : 'Failed to build QBR'));
       })
       .finally(() => live && setLoading(false));
     // Switching client/quarter always reloads the discussion; a plain refresh
@@ -260,7 +261,9 @@ export function Workspace() {
   }
 
   const urls = reportUrls(clientId, period);
-  const meta = qbr?.meta;
+  // When the QBR fails to load (a locked quarter whose package is missing),
+  // the lock state still comes from the period list so Reopen stays available.
+  const meta = qbr?.meta ?? metaFromPeriodList(periodList, clientId, period);
   const steps = deriveSteps({ hasData: Boolean(qbr), meta, unfiled, disc });
   const next = primaryStep(steps, meta);
   const notice = lockNotice(meta);
@@ -278,6 +281,7 @@ export function Workspace() {
       <WorkspaceHeader
         name={client?.name ?? qbr?.model.client.name ?? clientId}
         qbr={qbr}
+        meta={meta}
         periods={periods}
         period={period}
         onPeriodChange={(v) => {
@@ -326,7 +330,7 @@ export function Workspace() {
           </Group>
         </Alert>
       )}
-      {error && <Alert color="act" title="Could not build the report">{error}. Try a Sync, or check the client's tool mappings on the Integrations page.</Alert>}
+      {error && <Alert color="act" title={error.title}>{error.text}</Alert>}
       {periodsError && (
         <Alert color="watch" title="Quarter list unavailable">
           {periodsError}. Showing the last four calendar quarters without data markers.
