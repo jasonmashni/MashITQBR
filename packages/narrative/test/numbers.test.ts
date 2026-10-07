@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractNumbers, matchesAllowed } from '@mashit/narrative';
+import { extractNumbers, matchesAllowed, stripNonFigures } from '@mashit/narrative';
 
 describe('extractNumbers', () => {
   it('parses plain integers and decimals', () => {
@@ -20,6 +20,44 @@ describe('extractNumbers', () => {
   it('parses percentages as their numeric value', () => {
     expect(extractNumbers('up 200%')).toEqual([200]);
     expect(extractNumbers('87% compliance')).toEqual([87]);
+  });
+
+  it('ignores ISO dates', () => {
+    expect(extractNumbers('On 2026-03-31 we closed 141 tickets')).toEqual([141]);
+  });
+
+  it('ignores period labels', () => {
+    expect(extractNumbers('Q1 2026 and 2026-Q1')).toEqual([]);
+    expect(extractNumbers('compared with Q3')).toEqual([]);
+  });
+
+  it('keeps a real figure that follows a quarter label', () => {
+    expect(extractNumbers('In Q3 2600 email events')).toEqual([2600]);
+    expect(extractNumbers('In 2600-Q3 terms')).toEqual([2600]);
+  });
+
+  it('does not blanket-skip curly quotes (verifyNarrative decides which quotes are known subjects)', () => {
+    expect(extractNumbers('saved you “$48,000” this year')).toEqual([48000]);
+  });
+
+  it('ignores framework versions and product tokens', () => {
+    expect(extractNumbers('CIS Controls v8, NIST CSF 2.0, M365, 24/7 SOC')).toEqual([]);
+    expect(extractNumbers('O365 tenant')).toEqual([]);
+  });
+
+  it('drops the "/ 100" score denominator', () => {
+    expect(extractNumbers('scored 72 / 100')).toEqual([72]);
+    expect(extractNumbers('scored 72/100')).toEqual([72]);
+  });
+
+  it('reads a hyphen between digits as a range, not a negative', () => {
+    expect(extractNumbers('3-5 days')).toEqual([3, 5]);
+    expect(extractNumbers('down -5 points')).toEqual([-5]);
+  });
+
+  it('stripNonFigures removes non-figure tokens and keeps real figures', () => {
+    expect(stripNonFigures('On 2026-03-31 in Q1 2026, M365 had 141 tickets')).not.toMatch(/2026|365/);
+    expect(stripNonFigures('141 tickets')).toContain('141');
   });
 
   it('returns nothing for non-numeric text', () => {

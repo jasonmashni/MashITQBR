@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { resolveStaticFile } from '../src/static.js';
 
 let www: string;
@@ -49,5 +49,18 @@ describe('resolveStaticFile', () => {
     // Escaping the root resolves to the SPA fallback, never a file outside it.
     const m = resolveStaticFile(www, '../../../etc/passwd');
     expect(m?.file.endsWith('index.html')).toBe(true);
+  });
+
+  it('never serves a real file outside the root, including a prefix-named sibling and backslash paths', () => {
+    const sibling = `${www}-evil`;
+    mkdirSync(sibling, { recursive: true });
+    writeFileSync(join(sibling, 'secret.txt'), 'nope');
+    try {
+      const name = basename(sibling);
+      expect(resolveStaticFile(www, `../${name}/secret.txt`)).toBeNull();
+      expect(resolveStaticFile(www, `..\\${name}\\secret.txt`)).toBeNull();
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
   });
 });

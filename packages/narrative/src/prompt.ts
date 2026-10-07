@@ -3,7 +3,9 @@ import type { NarrativeInput } from './input.js';
 /** Build the user message content: the metrics bundle wrapped in <metrics> tags. */
 export function buildUserContent(input: NarrativeInput): string {
   // Compact JSON — pretty-printing spent ~30% more input tokens per draft.
-  const json = JSON.stringify(input);
+  // Angle brackets are written as JSON unicode escapes (same parsed value) so
+  // no string in the input can open or close a tag around the data block.
+  const json = JSON.stringify(input).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
   return [
     `<metrics>`,
     json,

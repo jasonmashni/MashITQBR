@@ -141,6 +141,27 @@ describe('collectHuntress', () => {
     expect(result.warnings.some((w) => /monthly summary/.test(w))).toBe(true);
   });
 
+  it('uses the latest monthly summary (by period) and labels it as a month', async () => {
+    const http = {
+      async request(req: HttpRequest): Promise<HttpResponse> {
+        if (req.url.includes('type=quarterly_summary')) return { status: 200, json: { reports: [], pagination: {} } };
+        if (req.url.includes('type=monthly_summary')) {
+          return {
+            status: 200,
+            json: { reports: [{ period: '2026-07', agents_count: 7 }, { period: '2026-09', agents_count: 9 }], pagination: {} },
+          };
+        }
+        return { status: 200, json: { organization: {}, identities: [], pagination: {} } };
+      },
+    };
+    const result = await collectHuntress({ clientId: 'x', period: makePeriod(2026, 3), externalRef: '7' }, http, { apiKey: 'k', apiSecret: 's' });
+    const endpoints = result.metrics.find((m) => m.key === 'huntress.endpoints');
+    expect(endpoints?.value).toBe(9);
+    const fromReport = result.metrics.filter((m) => m.key.startsWith('huntress.'));
+    expect(fromReport.length).toBeGreaterThan(0);
+    for (const m of fromReport) expect(m.label.endsWith('(latest month)')).toBe(true);
+  });
+
   it('warns when unmapped', async () => {
     const http = { async request(): Promise<HttpResponse> { return { status: 200, json: {} }; } };
     const result = await collectHuntress({ clientId: 'x', period: makePeriod(2026, 1) }, http, { apiKey: 'k', apiSecret: 's' });

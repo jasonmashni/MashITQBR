@@ -56,7 +56,8 @@ export function computeFlags(
   // Maturity rating regression quarter-over-quarter.
   if (ratings?.previous && ratings.previous !== 'unknown' && ratings.current !== 'unknown') {
     if (RATING_ORDER.indexOf(ratings.current) < RATING_ORDER.indexOf(ratings.previous)) {
-      flags.push({ severity: 'red', label: `Maturity dropped (${ratings.previous} → ${ratings.current})` });
+      const word = (r: string) => (r === 'green' ? 'Strong' : r === 'amber' ? 'Watch' : r === 'red' ? 'Act' : 'Not measured');
+      flags.push({ severity: 'red', label: `Maturity dropped from ${word(ratings.previous)} to ${word(ratings.current)}` });
     }
   }
 

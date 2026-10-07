@@ -1,0 +1,60 @@
+/* Page-level styles the Mantine theme cannot express: the canvas, body ink,
+   tabular numerals wherever numbers line up, and a focus ring in the brand
+   blue. Everything else lives in theme.ts. */
+
+:root {
+  --qbr-canvas: #f3f5f8;
+  --qbr-surface: #ffffff;
+  --qbr-ink: #0b2545;
+  --qbr-text: #3b4a5f;
+  --qbr-muted: #6b7a90;
+  --qbr-hairline: #d8dfe8;
+  --qbr-good: #0e7c72;
+  --qbr-watch: #9a5b00;
+  --qbr-watch-bg: #fff4db;
+  --qbr-act: #b42318;
+  --qbr-unknown: #6b7a90;
+  --qbr-unknown-bg: #eef1f5;
+}
+
+html,
+body {
+  background: var(--qbr-canvas);
+  color: var(--qbr-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers that sit in columns must not jitter. */
+table,
+.num,
+[data-num] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Headings carry the navy ink, not the body slate. */
+h1,
+h2,
+h3,
+h4 {
+  color: var(--qbr-ink);
+}
+
+/* Keyboard focus is always visible and always the brand blue. */
+:focus-visible {
+  outline: 2px solid #004aad;
+  outline-offset: 2px;
+}
+
+/* A 3px leading rule on a table row, colored by its triage state. */
+.triage-row > td:first-child {
+  border-left: 3px solid var(--triage-color, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

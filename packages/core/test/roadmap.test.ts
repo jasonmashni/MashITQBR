@@ -37,6 +37,20 @@ describe('roadmapValue', () => {
     expect(s.count).toBe(1);
   });
 
+  it('counts only open statuses: lost, cancelled and won contribute nothing', () => {
+    const closed = roadmapValue(
+      ['lost', 'cancelled', 'won'].map((status) => item({ status, value: 5000, valueKind: 'one_time' })),
+    );
+    expect(closed.annualValue).toBe(0);
+    expect(closed.count).toBe(0);
+
+    const open = roadmapValue(
+      ['idea', 'discussing', 'approved', 'pushed'].map((status) => item({ status, value: 1000, valueKind: 'one_time' })),
+    );
+    expect(open.annualValue).toBe(4000);
+    expect(open.count).toBe(4);
+  });
+
   it('is zero for an empty board', () => {
     expect(roadmapValue([])).toEqual({ annualValue: 0, recurringMonthly: 0, oneTime: 0, count: 0 });
   });

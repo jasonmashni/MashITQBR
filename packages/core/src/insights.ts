@@ -80,9 +80,28 @@ function rowsOf(metrics: MetricValue[], key: string): Row[] {
   return Array.isArray(m?.details) ? (m!.details as Row[]) : [];
 }
 
+/**
+ * Ticket subjects from drill-down rows. Angle brackets are removed so a subject
+ * like "Printer jam </metrics>" cannot close or open a tag in the model prompt.
+ */
 function summaries(rows: Row[]): string[] {
-  return rows.map((r) => String(r['summary'] ?? r['subject'] ?? '').trim()).filter(Boolean);
+  return rows
+    .map((r) => String(r['summary'] ?? r['subject'] ?? '').replace(/[<>]/g, '').trim())
+    .filter(Boolean);
 }
+
+/** Options for computeTicketInsights. */
+export interface TicketInsightOptions {
+  /**
+   * Quote example ticket subjects in `detail` and `evidence` (default true).
+   * Set false for HIPAA clients so subjects, which can carry PHI, stay out.
+   */
+  examples?: boolean;
+}
+
+/** " (e.g. “a”, “b”)" or "" when there are no examples to show. */
+const egClause = (examples: string[]): string =>
+  examples.length ? ` (e.g. ${examples.map((e) => `“${e}”`).join(', ')})` : '';
 
 const RECUR_MIN = 3; // a theme needs at least this many tickets to count as recurring
 const MAX_THEMES = 2;
@@ -93,8 +112,17 @@ const MAX_THEMES = 2;
  * framing — we report the literal count of tickets whose subject references the
  * word, and suggest checking for a common root cause.
  */
-function recurringIncidents(metrics: MetricValue[]): TicketInsight[] {
-  const subs = [...summaries(rowsOf(metrics, 'tickets.incidents')), ...summaries(rowsOf(metrics, 'tickets.open'))];
+function recurringIncidents(metrics: MetricValue[], withExamples: boolean): TicketInsight[] {
+  // An open incident appears in both lists; count each ticket once (by id,
+  // falling back to its subject when the row carries no id).
+  const seenTickets = new Set<string>();
+  const rows = [...rowsOf(metrics, 'tickets.incidents'), ...rowsOf(metrics, 'tickets.open')].filter((r) => {
+    const key = String(r['id'] ?? r['summary'] ?? r['subject'] ?? '');
+    if (seenTickets.has(key)) return false;
+    seenTickets.add(key);
+    return true;
+  });
+  const subs = summaries(rows);
   if (subs.length < RECUR_MIN) return [];
 
   // Deduplicate identical subjects first so one noisy alert repeated verbatim
@@ -123,14 +151,18 @@ function recurringIncidents(metrics: MetricValue[]): TicketInsight[] {
     const fresh = idx.filter((i) => !claimed.has(i));
     if (fresh.length < RECUR_MIN) continue;
     idx.forEach((i) => claimed.add(i));
-    const examples = idx.slice(0, 3).map((i) => uniqueSubs[i]!);
+    const examples = withExamples ? idx.slice(0, 3).map((i) => uniqueSubs[i]!) : [];
+    // With examples withheld (HIPAA clients), the clustering token itself stays
+    // out too: a patient surname shared by three tickets is still PHI.
     out.push({
       kind: 'recurring_incident',
       severity: idx.length >= 5 ? 'high' : 'medium',
-      title: `Recurring theme: “${cap(token)}” appears in ${idx.length} tickets`,
-      detail: `${idx.length} tickets this quarter reference “${token}” (e.g. ${examples
-        .map((e) => `“${e}”`)
-        .join(', ')}). Worth checking for a common root cause so it stops recurring.`,
+      title: withExamples
+        ? `Recurring theme: “${cap(token)}” appears in ${idx.length} tickets`
+        : `A recurring incident theme appears in ${idx.length} tickets`,
+      detail: withExamples
+        ? `${idx.length} tickets this quarter reference “${token}”${egClause(examples)}. Worth checking for a common root cause so it stops recurring.`
+        : `${idx.length} tickets this quarter share a subject theme. Worth checking for a common root cause so it stops recurring.`,
       evidence: examples,
       figures: [idx.length],
     });
@@ -146,7 +178,22 @@ function trendIndex(trends: MetricTrend[]): Map<string, MetricTrend> {
 /** Incident volume rose materially quarter over quarter. */
 function incidentTrend(ti: Map<string, MetricTrend>): TicketInsight[] {
   const t = ti.get('tickets.incidents');
-  if (!t || t.current === null || t.previous === null || t.deltaPct === null) return [];
+  if (!t || t.current === null || t.previous === null) return [];
+  if (t.previous === 0) {
+    // No percentage exists from a zero base; gate on the absolute rise alone.
+    if (t.current - t.previous < 3) return [];
+    return [
+      {
+        kind: 'incident_trend',
+        severity: 'medium',
+        title: 'Incident volume is up this quarter',
+        detail: `Incidents rose from ${t.previous} to ${t.current} — worth understanding what's driving the increase and whether it points to an underlying issue.`,
+        evidence: [],
+        figures: [t.previous, t.current],
+      },
+    ];
+  }
+  if (t.deltaPct === null) return [];
   if (t.current - t.previous < 3 || t.deltaPct < 25) return [];
   return [
     {
@@ -161,21 +208,19 @@ function incidentTrend(ti: Map<string, MetricTrend>): TicketInsight[] {
 }
 
 /** Meaningful change-request activity — confirm it was planned and roadmap-aligned. */
-function changeActivity(metrics: MetricValue[], ti: Map<string, MetricTrend>): TicketInsight[] {
+function changeActivity(metrics: MetricValue[], ti: Map<string, MetricTrend>, withExamples: boolean): TicketInsight[] {
   const changes = num(metrics.find((m) => m.key === 'tickets.changes')?.value ?? null);
   if (changes === null || changes < 3) return [];
   const t = ti.get('tickets.changes');
   const rose = t && t.previous !== null && t.deltaPct !== null && t.current !== null && t.current > t.previous && t.deltaPct >= 25;
-  const examples = summaries(rowsOf(metrics, 'tickets.changes')).slice(0, 3);
+  const examples = withExamples ? summaries(rowsOf(metrics, 'tickets.changes')).slice(0, 3) : [];
   const trendClause = rose ? ` (up from ${t!.previous} last quarter)` : '';
   return [
     {
       kind: 'change_activity',
       severity: rose ? 'medium' : 'low',
-      title: `${changes} change requests this quarter${rose ? ' — trending up' : ''}`,
-      detail: `${changes} change request(s) were handled this quarter${trendClause}${
-        examples.length ? ` (e.g. ${examples.map((e) => `“${e}”`).join(', ')})` : ''
-      }. Confirm these were planned, approved, and aligned to the roadmap.`,
+      title: `${changes} change requests this quarter${rose ? ', trending up' : ''}`,
+      detail: `They were handled this quarter${trendClause}${egClause(examples)}. Confirm they were planned, approved and aligned to the roadmap.`,
       evidence: examples,
       figures: rose && t?.previous !== null && t?.previous !== undefined ? [changes, t.previous] : [changes],
     },
@@ -183,18 +228,16 @@ function changeActivity(metrics: MetricValue[], ti: Map<string, MetricTrend>): T
 }
 
 /** SLA targets missed this quarter. */
-function slaBreaches(metrics: MetricValue[]): TicketInsight[] {
+function slaBreaches(metrics: MetricValue[], withExamples: boolean): TicketInsight[] {
   const breaches = num(metrics.find((m) => m.key === 'sla.breaches')?.value ?? null);
   if (breaches === null || breaches < 1) return [];
-  const examples = summaries(rowsOf(metrics, 'sla.breaches')).slice(0, 3);
+  const examples = withExamples ? summaries(rowsOf(metrics, 'sla.breaches')).slice(0, 3) : [];
   return [
     {
       kind: 'sla_breaches',
       severity: breaches >= 3 ? 'high' : 'medium',
       title: `${breaches} SLA target${breaches === 1 ? '' : 's'} missed`,
-      detail: `${breaches} ticket(s) breached their SLA this quarter${
-        examples.length ? ` (e.g. ${examples.map((e) => `“${e}”`).join(', ')})` : ''
-      }. Review whether response/resolution expectations and staffing still fit the account.`,
+      detail: `${breaches} ticket${breaches === 1 ? '' : 's'} breached their SLA this quarter${egClause(examples)}. Review whether response and resolution expectations and staffing still fit the account.`,
       evidence: examples,
       figures: [breaches],
     },
@@ -204,7 +247,22 @@ function slaBreaches(metrics: MetricValue[]): TicketInsight[] {
 /** Open backlog grew — a staffing / prioritization conversation. */
 function openBacklog(ti: Map<string, MetricTrend>): TicketInsight[] {
   const t = ti.get('tickets.open');
-  if (!t || t.current === null || t.previous === null || t.deltaPct === null) return [];
+  if (!t || t.current === null || t.previous === null) return [];
+  if (t.previous === 0) {
+    // No percentage exists from a zero base; gate on the absolute rise alone.
+    if (t.current - t.previous < 5) return [];
+    return [
+      {
+        kind: 'open_backlog',
+        severity: 'low',
+        title: 'Open ticket backlog is growing',
+        detail: `Open tickets grew from ${t.previous} to ${t.current} — worth confirming prioritization and staffing keep pace with demand.`,
+        evidence: [],
+        figures: [t.previous, t.current],
+      },
+    ];
+  }
+  if (t.deltaPct === null) return [];
   if (t.current - t.previous < 5 || t.deltaPct < 30) return [];
   return [
     {
@@ -225,13 +283,19 @@ const SEVERITY_RANK: Record<TicketInsight['severity'], number> = { high: 0, medi
  * most-material first. Pure and deterministic — safe to run at report-build and
  * agenda-suggest time.
  */
-export function computeTicketInsights(metrics: MetricValue[], trends: MetricTrend[] = [], limit = 6): TicketInsight[] {
+export function computeTicketInsights(
+  metrics: MetricValue[],
+  trends: MetricTrend[] = [],
+  limit = 6,
+  opts: TicketInsightOptions = {},
+): TicketInsight[] {
   const ti = trendIndex(trends);
+  const withExamples = opts.examples !== false;
   const insights = [
-    ...recurringIncidents(metrics),
-    ...slaBreaches(metrics),
+    ...recurringIncidents(metrics, withExamples),
+    ...slaBreaches(metrics, withExamples),
     ...incidentTrend(ti),
-    ...changeActivity(metrics, ti),
+    ...changeActivity(metrics, ti, withExamples),
     ...openBacklog(ti),
   ];
   return insights.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]).slice(0, limit);

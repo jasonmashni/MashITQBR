@@ -18,8 +18,18 @@ function trim(n: number): string {
   return (Math.round(n * 10) / 10).toString();
 }
 
+/**
+ * Currency for an executive reader: whole dollars carry no cents ("$4,165"),
+ * fractional amounts keep two ("$441.10").
+ */
 export function formatCurrency(n: number): string {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+  const whole = Number.isInteger(Math.round(n * 100) / 100) && Number.isInteger(n);
+  return n.toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: whole ? 0 : 2,
+    maximumFractionDigits: whole ? 0 : 2,
+  });
 }
 
 export function formatPercent(n: number): string {
@@ -59,10 +69,18 @@ function compactNumber(n: number): string {
  */
 const EXTREME_PCT = 400;
 
-/** The "vs last" cell text for a trend — percent, or `prev → cur` when the percent would scream. */
+/**
+ * The "vs last" cell text for a trend: a percent, or `prev → cur` when the
+ * percent would scream or when the base was zero (a percent of nothing is
+ * meaningless, but 0 → 3 incidents is the one change the reader must see).
+ * Blank only when there is genuinely no prior value.
+ */
 export function trendDeltaText(t: MetricTrend): string {
-  if (t.direction === 'na' || t.previous === null || t.current === null || t.deltaPct === null) return '';
+  if (t.direction === 'na' || t.previous === null || t.current === null) return '';
   if (t.direction === 'flat') return 'flat';
+  if (t.previous === 0 || t.deltaPct === null) {
+    return t.current === t.previous ? 'flat' : `${compactNumber(t.previous)} → ${compactNumber(t.current)}`;
+  }
   if (Math.abs(t.deltaPct) > EXTREME_PCT) return `${compactNumber(t.previous)} → ${compactNumber(t.current)}`;
   return `${t.deltaPct > 0 ? '+' : ''}${trim(t.deltaPct)}%`;
 }
@@ -75,17 +93,49 @@ export function formatTrend(t: MetricTrend): string {
   return `${arrow}${delta === 'flat' ? '' : ` ${delta}`}`.trim();
 }
 
-/** Brand color for a R/Y/G rating. */
+/**
+ * The one semantic palette every deliverable shares with the admin app:
+ * good (teal), watch (amber), act (red), and slate for "not measured".
+ */
+export const SEMANTIC = {
+  good: '#0e7c72',
+  watch: '#9a5b00',
+  watchBg: '#fff4db',
+  act: '#b42318',
+  unknown: '#6b7a90',
+  unknownBg: '#eef1f5',
+  ink: '#0b2545',
+  text: '#3b4a5f',
+  muted: '#6b7a90',
+  hairline: '#d8dfe8',
+  canvas: '#f3f5f8',
+} as const;
+
+/** Semantic color for a R/Y/G rating. */
 export function ratingColor(rating: Rating): string {
   switch (rating) {
     case 'green':
-      return '#2e7d32';
+      return SEMANTIC.good;
     case 'amber':
-      return '#ed9c28';
+      return SEMANTIC.watch;
     case 'red':
-      return '#c62828';
+      return SEMANTIC.act;
     default:
-      return '#9e9e9e';
+      return SEMANTIC.unknown;
+  }
+}
+
+/** Plain-language word for a rating, used beside the color so color is never the only signal. */
+export function ratingWord(rating: Rating): string {
+  switch (rating) {
+    case 'green':
+      return 'Strong';
+    case 'amber':
+      return 'Watch';
+    case 'red':
+      return 'Act';
+    default:
+      return 'Not measured';
   }
 }
 
@@ -123,11 +173,5 @@ export function goalStatusLabel(status: string): string {
 }
 /** Hex fill for a goal status chip (shared by HTML/PDF/deck). */
 export function goalStatusColor(status: string): string {
-  return status === 'on_track'
-    ? '#2e7d32'
-    : status === 'at_risk'
-      ? '#ed9c28'
-      : status === 'achieved'
-        ? '#0b7285'
-        : '#6b7280';
+  return status === 'on_track' ? SEMANTIC.good : status === 'at_risk' ? SEMANTIC.watch : status === 'achieved' ? SEMANTIC.ink : SEMANTIC.unknown;
 }

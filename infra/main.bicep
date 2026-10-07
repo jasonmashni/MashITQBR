@@ -1,15 +1,23 @@
 // ─────────────────────────────────────────────────────────────────────────
-// Mash IT QBR Tool — reference infrastructure (HIPAA-aware, single MSP tenant).
+// Mash IT QBR Tool: the topology the app actually runs on.
 //
-// Topology: Static Web App (frontend) + Flex Consumption Functions (API + sync,
-// VNet-integrated, system-assigned identity) + Key Vault + Azure SQL + Blob,
-// all reachable only over Private Endpoints, with centralized diagnostics.
+// One Linux Consumption (Y1) Function App on Node 22 serves both the API and
+// the built React SPA. Easy Auth (authsettingsV2, Entra ID) fronts every path
+// except the public client self-scheduling page and its API. Data lives in
+// Table Storage + Blob on the AzureWebJobsStorage account; secrets live in Key
+// Vault, written by the app's system-assigned identity. Logs, storage and
+// vault diagnostics go to one Log Analytics workspace.
+//
+// Consumption has no VNet integration, so storage and Key Vault keep public
+// endpoints. Access is by account key (storage) and Entra RBAC (vault), TLS 1.2
+// only, with diagnostics on both.
 //
 // Validate locally with:  az bicep build --file infra/main.bicep
-//                         az deployment group what-if -g <rg> -f infra/main.bicep
+//                         az deployment group what-if -g <rg> -f infra/main.bicep -p aadClientId=<id> aadTenantId=<id>
 // ─────────────────────────────────────────────────────────────────────────
 
-@description('Short name prefix for all resources, e.g. "mashqbr"')
+@description('Short name prefix for all resources, e.g. "mashqbr" (9 chars max so storage and vault names stay under 24)')
+@maxLength(9)
 param namePrefix string = 'mashqbr'
 
 @description('Deployment environment tag')
@@ -18,13 +26,25 @@ param env string = 'dev'
 
 param location string = resourceGroup().location
 
-@description('Entra ID object id of the SQL Entra admin (group recommended)')
-param sqlAdminObjectId string
-@description('Entra admin display name (group/user)')
-param sqlAdminLogin string
+@description('Application (client) id of the Entra app registration Easy Auth signs users in with')
+@minLength(1)
+param aadClientId string
+
+@description('Entra tenant id that issues sign-in tokens')
+param aadTenantId string = tenant().tenantId
+
+@description('Name of the app setting that holds the Easy Auth client secret (needed for the token store that powers Create Teams meeting and server-side send). Empty disables it.')
+param aadClientSecretSettingName string = ''
+
+@description('Login parameters requested at sign-in: the Graph scopes the token store must carry for Teams scheduling and mail send.')
+param loginParameters array = [
+  'scope=openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Calendars.ReadWrite'
+]
 
 var suffix = uniqueString(resourceGroup().id, env)
 var saName = toLower('${namePrefix}${env}${take(suffix, 6)}')
+// Vault names are global like storage names, so they carry the same suffix (max 24 chars).
+var kvName = toLower('${namePrefix}-${env}-kv-${take(suffix, 6)}')
 var tags = { app: 'mashit-qbr', env: env }
 
 // ── Observability ─────────────────────────────────────────────────────────
@@ -43,89 +63,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   properties: { Application_Type: 'web', WorkspaceResourceId: law.id }
 }
 
-// ── Network ────────────────────────────────────────────────────────────────
-resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
-  name: '${namePrefix}-${env}-vnet'
-  location: location
-  tags: tags
-  properties: {
-    addressSpace: { addressPrefixes: ['10.20.0.0/16'] }
-    subnets: [
-      {
-        name: 'functions'
-        properties: {
-          addressPrefix: '10.20.1.0/24'
-          delegations: [{ name: 'flex', properties: { serviceName: 'Microsoft.App/environments' } }]
-        }
-      }
-      {
-        name: 'privateEndpoints'
-        properties: {
-          addressPrefix: '10.20.2.0/24'
-          privateEndpointNetworkPolicies: 'Disabled'
-        }
-      }
-    ]
-  }
-}
-
-var functionsSubnetId = vnet.properties.subnets[0].id
-var peSubnetId = vnet.properties.subnets[1].id
-
-// Private DNS zones for the three data services
-resource kvZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink.vaultcore.azure.net'
-  location: 'global'
-  tags: tags
-}
-resource blobZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink.blob.${environment().suffixes.storage}'
-  location: 'global'
-  tags: tags
-}
-resource sqlZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink${az.environment().suffixes.sqlServerHostname}'
-  location: 'global'
-  tags: tags
-}
-
-resource kvLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
-  parent: kvZone
-  name: 'vnet-link'
-  location: 'global'
-  properties: { registrationEnabled: false, virtualNetwork: { id: vnet.id } }
-}
-resource blobLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
-  parent: blobZone
-  name: 'vnet-link'
-  location: 'global'
-  properties: { registrationEnabled: false, virtualNetwork: { id: vnet.id } }
-}
-resource sqlLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
-  parent: sqlZone
-  name: 'vnet-link'
-  location: 'global'
-  properties: { registrationEnabled: false, virtualNetwork: { id: vnet.id } }
-}
-
-// ── Key Vault (RBAC, soft-delete + purge protection, private only) ──────────
-resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
-  name: '${namePrefix}-${env}-kv'
-  location: location
-  tags: tags
-  properties: {
-    sku: { family: 'A', name: 'standard' }
-    tenantId: tenant().tenantId
-    enableRbacAuthorization: true
-    enableSoftDelete: true
-    softDeleteRetentionInDays: 90
-    enablePurgeProtection: true
-    publicNetworkAccess: 'Disabled'
-    networkAcls: { defaultAction: 'Deny', bypass: 'AzureServices' }
-  }
-}
-
-// ── Storage (blob, versioned, private only) ─────────────────────────────────
+// ── Storage (AzureWebJobsStorage: tables, documents, Functions host) ───────
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: saName
   location: location
@@ -133,10 +71,9 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
   properties: {
-    allowBlobPublicAccess: false
+    supportsHttpsTrafficOnly: true
     minimumTlsVersion: 'TLS1_2'
-    publicNetworkAccess: 'Disabled'
-    networkAcls: { defaultAction: 'Deny', bypass: 'AzureServices' }
+    allowBlobPublicAccess: false
   }
 }
 
@@ -146,10 +83,9 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
   properties: { isVersioningEnabled: true }
 }
 
-resource deployContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
-  parent: blobService
-  name: 'app-package'
-  properties: { publicAccess: 'None' }
+resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' = {
+  parent: storage
+  name: 'default'
 }
 
 resource docsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
@@ -158,47 +94,32 @@ resource docsContainer 'Microsoft.Storage/storageAccounts/blobServices/container
   properties: { publicAccess: 'None' }
 }
 
-// ── Azure SQL (Entra-only auth, public access disabled) ─────────────────────
-resource sql 'Microsoft.Sql/servers@2023-08-01-preview' = {
-  name: '${namePrefix}-${env}-sql'
+// ── Key Vault (RBAC, soft delete 90 days, purge protection) ─────────────────
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+  name: kvName
   location: location
   tags: tags
   properties: {
-    administrators: {
-      administratorType: 'ActiveDirectory'
-      principalType: 'Group'
-      login: sqlAdminLogin
-      sid: sqlAdminObjectId
-      tenantId: tenant().tenantId
-      azureADOnlyAuthentication: true
-    }
-    publicNetworkAccess: 'Disabled'
-    minimalTlsVersion: '1.2'
+    sku: { family: 'A', name: 'standard' }
+    tenantId: tenant().tenantId
+    enableRbacAuthorization: true
+    enableSoftDelete: true
+    softDeleteRetentionInDays: 90
+    enablePurgeProtection: true
   }
 }
 
-resource sqlDb 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
-  parent: sql
-  name: 'qbr'
-  location: location
-  tags: tags
-  sku: { name: 'GP_S_Gen5_1', tier: 'GeneralPurpose' }
-  properties: {
-    autoPauseDelay: 60
-    minCapacity: json('0.5')
-    zoneRedundant: false
-  }
-}
-
-// ── Functions (Flex Consumption) ────────────────────────────────────────────
+// ── Functions (Linux Consumption) ───────────────────────────────────────────
 resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: '${namePrefix}-${env}-plan'
   location: location
   tags: tags
-  sku: { name: 'FC1', tier: 'FlexConsumption' }
+  sku: { name: 'Y1', tier: 'Dynamic' }
   kind: 'functionapp'
   properties: { reserved: true }
 }
+
+var storageConnection = 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}'
 
 resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   name: '${namePrefix}-${env}-func'
@@ -208,94 +129,117 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   identity: { type: 'SystemAssigned' }
   properties: {
     serverFarmId: plan.id
-    virtualNetworkSubnetId: functionsSubnetId
     httpsOnly: true
-    functionAppConfig: {
-      deployment: {
-        storage: {
-          type: 'blobContainer'
-          value: '${storage.properties.primaryEndpoints.blob}app-package'
-          authentication: { type: 'SystemAssignedIdentity' }
-        }
-      }
-      scaleAndConcurrency: { maximumInstanceCount: 40, instanceMemoryMB: 2048 }
-      runtime: { name: 'node', version: '20' }
-    }
     siteConfig: {
+      linuxFxVersion: 'Node|22'
+      minTlsVersion: '1.2'
+      ftpsState: 'Disabled'
+      // NOTE: this list REPLACES every app setting on the Function App. Settings
+      // managed outside this template (ANTHROPIC_API_KEY, REPORTS_*, NARRATIVE_*,
+      // RESEARCH_MODEL, QBR_*) must be re-applied after an IaC deploy; see README.
       appSettings: [
-        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
+        { name: 'AzureWebJobsStorage', value: storageConnection }
+        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'node' }
+        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         // The app reads KEY_VAULT_URL (must match apps/api/src/store/index.ts).
         { name: 'KEY_VAULT_URL', value: keyVault.properties.vaultUri }
-        { name: 'SQL_CONNECTION_STRING', value: 'Server=tcp:${sql.properties.fullyQualifiedDomainName},1433;Database=qbr;Authentication=Active Directory Managed Identity;Encrypt=True;' }
-        // Container NAME — the doc store resolves the account from AzureWebJobsStorage.
+        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
+        // No WEBSITE_RUN_FROM_PACKAGE: on Linux Consumption zip deploy sets it to the package URL; a literal 1 is invalid there.
+        // Container NAME; the doc store resolves the account from AzureWebJobsStorage.
         { name: 'QBR_DOCS_CONTAINER', value: 'qbr-documents' }
       ]
     }
   }
 }
 
-// Functions identity may read secrets (Key Vault Secrets User) and use storage as Blob Data Owner.
-var kvSecretsUser = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
-var blobDataOwner = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
+// The app writes connection secrets, so it needs Secrets Officer, scoped to this vault only.
+var kvSecretsOfficer = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
 
 resource kvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, functionApp.id, kvSecretsUser)
+  name: guid(keyVault.id, functionApp.id, kvSecretsOfficer)
   scope: keyVault
-  properties: { roleDefinitionId: kvSecretsUser, principalId: functionApp.identity.principalId, principalType: 'ServicePrincipal' }
+  properties: { roleDefinitionId: kvSecretsOfficer, principalId: functionApp.identity.principalId, principalType: 'ServicePrincipal' }
 }
 
-resource blobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, functionApp.id, blobDataOwner)
-  scope: storage
-  properties: { roleDefinitionId: blobDataOwner, principalId: functionApp.identity.principalId, principalType: 'ServicePrincipal' }
-}
-
-// ── Private endpoints ───────────────────────────────────────────────────────
-module kvPe 'modules/privateEndpoint.bicep' = {
-  name: 'kv-pe'
-  params: {
-    name: '${namePrefix}-${env}-kv-pe'
-    location: location
-    subnetId: peSubnetId
-    privateLinkServiceId: keyVault.id
-    groupIds: ['vault']
-    privateDnsZoneId: kvZone.id
-  }
-}
-module blobPe 'modules/privateEndpoint.bicep' = {
-  name: 'blob-pe'
-  params: {
-    name: '${namePrefix}-${env}-blob-pe'
-    location: location
-    subnetId: peSubnetId
-    privateLinkServiceId: storage.id
-    groupIds: ['blob']
-    privateDnsZoneId: blobZone.id
-  }
-}
-module sqlPe 'modules/privateEndpoint.bicep' = {
-  name: 'sql-pe'
-  params: {
-    name: '${namePrefix}-${env}-sql-pe'
-    location: location
-    subnetId: peSubnetId
-    privateLinkServiceId: sql.id
-    groupIds: ['sqlServer']
-    privateDnsZoneId: sqlZone.id
+// ── Easy Auth (Entra ID). Booking paths stay public: the token authorizes. ──
+resource authSettings 'Microsoft.Web/sites/config@2024-04-01' = {
+  parent: functionApp
+  name: 'authsettingsV2'
+  properties: {
+    platform: { enabled: true }
+    globalValidation: {
+      requireAuthentication: true
+      unauthenticatedClientAction: 'RedirectToLoginPage'
+      redirectToProvider: 'azureactivedirectory'
+      excludedPaths: ['/book', '/book/*', '/api/book', '/api/book/*']
+    }
+    httpSettings: { requireHttps: true }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: union(
+          {
+            clientId: aadClientId
+            openIdIssuer: '${environment().authentication.loginEndpoint}${aadTenantId}/v2.0'
+          },
+          empty(aadClientSecretSettingName) ? {} : { clientSecretSettingName: aadClientSecretSettingName }
+        )
+      }
+    }
+    login: { tokenStore: { enabled: true }, loginParameters: loginParameters }
   }
 }
 
-// ── Static Web App (Standard — enables linked "Bring Your Own" Functions) ────
-resource swa 'Microsoft.Web/staticSites@2024-04-01' = {
-  name: '${namePrefix}-${env}-swa'
-  location: location
-  tags: tags
-  sku: { name: 'Standard', tier: 'Standard' }
-  properties: { allowConfigFileUpdates: true }
+// ── Diagnostics → Log Analytics ─────────────────────────────────────────────
+resource appDiag 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-law'
+  scope: functionApp
+  properties: {
+    workspaceId: law.id
+    logs: [{ category: 'FunctionAppLogs', enabled: true }]
+    metrics: [{ category: 'AllMetrics', enabled: true }]
+  }
+}
+
+resource blobDiag 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-law'
+  scope: blobService
+  properties: {
+    workspaceId: law.id
+    logs: [
+      { category: 'StorageRead', enabled: true }
+      { category: 'StorageWrite', enabled: true }
+      { category: 'StorageDelete', enabled: true }
+    ]
+    metrics: [{ category: 'Transaction', enabled: true }]
+  }
+}
+
+resource tableDiag 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-law'
+  scope: tableService
+  properties: {
+    workspaceId: law.id
+    logs: [
+      { category: 'StorageRead', enabled: true }
+      { category: 'StorageWrite', enabled: true }
+      { category: 'StorageDelete', enabled: true }
+    ]
+    metrics: [{ category: 'Transaction', enabled: true }]
+  }
+}
+
+resource kvDiag 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-law'
+  scope: keyVault
+  properties: {
+    workspaceId: law.id
+    logs: [{ category: 'AuditEvent', enabled: true }]
+    metrics: [{ category: 'AllMetrics', enabled: true }]
+  }
 }
 
 output functionAppName string = functionApp.name
-output staticWebAppName string = swa.name
-output staticWebAppHostname string = swa.properties.defaultHostname
+output functionAppHostname string = functionApp.properties.defaultHostName
 output keyVaultUri string = keyVault.properties.vaultUri
-output sqlServerFqdn string = sql.properties.fullyQualifiedDomainName
+output storageAccountName string = storage.name

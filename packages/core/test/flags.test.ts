@@ -34,7 +34,7 @@ describe('computeFlags', () => {
     const current = snap([['finance.quarter_invoiced', 15000]]);
     const previous = snap([['finance.quarter_invoiced', 10000]]);
     const flags = computeFlags(current, previous, { current: 'amber', previous: 'green' });
-    expect(flags.map((f) => f.label)).toContain('Maturity dropped (green → amber)');
+    expect(flags.map((f) => f.label)).toContain('Maturity dropped from Strong to Watch');
     expect(flags.map((f) => f.label)).toContain('Spend up 50% QoQ');
   });
 

@@ -7,7 +7,7 @@
  * Internal only — opportunity values never reach the client-facing report.
  */
 export interface RoadmapItem {
-  /** Opportunity status; anything other than 'closed' is open pipeline. */
+  /** Opportunity status; only idea, discussing, approved and pushed are open pipeline. */
   status: string;
   /** Estimated value in whole currency units, if set. */
   value?: number;
@@ -26,7 +26,9 @@ export interface RoadmapSummary {
   count: number;
 }
 
-const isOpen = (status: string): boolean => status !== 'closed';
+/** Statuses that are still live pipeline. Won, lost, cancelled, closed and anything unknown are not. */
+const OPEN = new Set(['idea', 'discussing', 'approved', 'pushed']);
+const isOpen = (status: string): boolean => OPEN.has(status);
 const amount = (v: number | undefined): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
 
 /** Summarize the open, valued items into an annualized pipeline figure. */

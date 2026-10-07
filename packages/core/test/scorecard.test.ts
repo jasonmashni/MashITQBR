@@ -68,3 +68,32 @@ describe('blended CIS/NIST maturity scorecard', () => {
     }
   });
 });
+
+describe('scorecard honesty on thin data', () => {
+  it('an empty snapshot is unknown, not 80/green', () => {
+    const card = computeScorecard({ clientId: 'x', period: '2026-Q3', capturedAt: '2026-09-30T00:00:00Z', metrics: [] });
+    expect(card.overall.score).toBeNull();
+    expect(card.overall.rating).toBe('unknown');
+    expect(card.overall.confidence).toBe('low');
+    expect(card.safeguards.find((s) => s.id === 'governance')!.measured).toBe(false);
+  });
+  it('a Halo-only snapshot (tickets + spend) is unknown', () => {
+    const card = computeScorecard({ clientId: 'x', period: '2026-Q3', capturedAt: '2026-09-30T00:00:00Z', metrics: [
+      { key: 'tickets.total', label: 'Total tickets', value: 141, source: 'halo', category: 'operations' },
+      { key: 'finance.mrr', label: 'MRR', value: 4000, unit: 'USD', source: 'halo', category: 'spend' },
+    ] });
+    expect(card.overall.score).toBeNull();
+    expect(card.overall.rating).toBe('unknown');
+  });
+  it('absent penalty inputs do not score as perfect', () => {
+    const card = computeScorecard({ clientId: 'x', period: '2026-Q3', capturedAt: '2026-09-30T00:00:00Z', metrics: [
+      { key: 'email.events_total', label: 'Email events', value: 2600, source: 'checkpoint', category: 'security' },
+      { key: 'huntress.m365_events', label: 'M365 events', value: 917000, source: 'huntress', category: 'security' },
+      { key: 'huntress.endpoints', label: 'Endpoints', value: 103, source: 'huntress', category: 'security' },
+    ] });
+    for (const id of ['email_security', 'identity_threat', 'edr']) {
+      const s = card.safeguards.find((x) => x.id === id)!;
+      expect(s.measured, id).toBe(false);
+    }
+  });
+});

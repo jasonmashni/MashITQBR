@@ -48,9 +48,15 @@ export function dataStoreKind(): 'table' | 'json' {
   return _dataKind;
 }
 
-/** Which secret backend the factory picked (forces creation). */
-export function secretStoreKind(): 'keyvault' | 'local' {
+/**
+ * Which secret backend the factory picked (forces creation). `local-insecure`
+ * means the local secrets file is in use while running on App Service
+ * (WEBSITE_INSTANCE_ID set): KEY_VAULT_URL is missing and secrets would land
+ * on the app's file system.
+ */
+export function secretStoreKind(): 'keyvault' | 'local' | 'local-insecure' {
   getSecretStore();
+  if (_secretKind === 'local' && process.env['WEBSITE_INSTANCE_ID']) return 'local-insecure';
   return _secretKind;
 }
 

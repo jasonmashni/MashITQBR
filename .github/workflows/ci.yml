@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
 
 jobs:
@@ -17,8 +17,12 @@ jobs:
       - run: npm ci
       - name: Typecheck
         run: npm run typecheck
+      - name: Typecheck web
+        run: npx tsc -p apps/web/tsconfig.json --noEmit
       - name: Test
         run: npm test
+      - name: Build deploy package
+        run: npm run deploy:build
 
   bicep-validate:
     runs-on: ubuntu-latest

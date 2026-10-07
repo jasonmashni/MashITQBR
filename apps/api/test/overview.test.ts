@@ -26,8 +26,69 @@ describe('overview + periods endpoints', () => {
     expect(body.clients.length).toBeGreaterThanOrEqual(3);
     const anp = body.clients.find((c) => c['clientId'] === 'anp')!;
     expect(anp['period']).toBe('2026-Q1');
-    expect(typeof anp['score']).toBe('number');
+    // ANP's seed covers too little of the scorecard to score (coverage 0.38):
+    // no overall number, by design.
+    expect(anp['score']).toBeNull();
+    expect(anp['rating']).toBe('unknown');
+    expect(anp['confidence']).toBe('low');
     expect(anp['status']).toBe('draft');
+    const kpca = body.clients.find((c) => c['clientId'] === 'kpca')!;
+    expect(typeof kpca['score']).toBe('number');
+    expect(kpca['rating']).toBe('green');
+  });
+
+  it('carries current-quarter triage: a client with no data this quarter is not started', async () => {
+    const h = await import('../src/handlers.js');
+    const res = await h.getOverview('2026-Q3');
+    const body = res.json as {
+      quarterEndsInDays: number;
+      clients: Array<{
+        clientId: string;
+        currentPeriod: string;
+        current: { hasData: boolean; status: string; meetingAt: string | null; packageSentAt: string | null; meetingSkipped: boolean };
+        lastCompletedPeriod: string | null;
+        triage: string;
+        period: string | null;
+        confidence: string;
+      }>;
+    };
+    expect(typeof body.quarterEndsInDays).toBe('number');
+    expect(body.quarterEndsInDays).toBeGreaterThanOrEqual(0);
+    const anp = body.clients.find((c) => c.clientId === 'anp')!;
+    expect(anp.currentPeriod).toBe('2026-Q3');
+    expect(anp.current).toEqual({ hasData: false, status: 'draft', meetingAt: null, packageSentAt: null, meetingSkipped: false });
+    expect(anp.triage).toBe('not_started');
+    // Existing fields keep rendering: the newest quarter with data is still reported.
+    expect(anp.period).toBe('2026-Q1');
+    expect(['low', 'medium', 'high']).toContain(anp.confidence);
+  });
+
+  it('a Halo-only client reports low scorecard confidence', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    await store.upsertClient({ id: 'haloonly', name: 'Halo Only Co' });
+    await store.putSnapshot({
+      clientId: 'haloonly',
+      period: '2026-Q3',
+      capturedAt: '2026-09-30T00:00:00.000Z',
+      metrics: [
+        { key: 'tickets.total', label: 'Tickets', value: 40, source: 'halo', category: 'operations' },
+        { key: 'finance.quarter_invoiced', label: 'Invoiced', value: 12000, source: 'halo', category: 'spend' },
+      ],
+    });
+    const body = (await h.getOverview('2026-Q3')).json as { clients: Array<{ clientId: string; confidence: string; triage: string; current: { hasData: boolean } }> };
+    const row = body.clients.find((c) => c.clientId === 'haloonly')!;
+    expect(row.confidence).toBe('low');
+    expect(row.current.hasData).toBe(true);
+    expect(row.triage).toBe('needs_scheduling');
+  });
+
+  it('lastCompletedPeriod is the newest of the last 8 quarters at completed or later', async () => {
+    const h = await import('../src/handlers.js');
+    await h.putStatus('anp', '2025-Q3', { status: 'completed' });
+    await h.putStatus('anp', '2026-Q2', { status: 'dispositioned' });
+    const body = (await h.getOverview('2026-Q3')).json as { clients: Array<{ clientId: string; lastCompletedPeriod: string | null }> };
+    expect(body.clients.find((c) => c.clientId === 'anp')!.lastCompletedPeriod).toBe('2026-Q2');
   });
 
   it('lists which of the last 8 quarters have data (seeds count)', async () => {
@@ -78,9 +139,38 @@ describe('overview + periods endpoints', () => {
     expect(anp.health.drivers.join(' ')).not.toMatch(/no qbr held/i);
 
     // Completing the QBR stamps heldAt from the (past) scheduled time.
-    await h.putStatus('anp', '2026-Q1', 'completed');
+    await h.putStatus('anp', '2026-Q1', { status: 'completed' });
     const rec = await store.getQbr('anp', '2026-Q1');
     expect(rec?.meeting?.heldAt).toBe(past);
+  });
+
+  it('dispositioning a skipped meeting completes the QBR without stamping heldAt', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+
+    // Guard: the report package must have gone out first.
+    expect((await h.dispositionQbrSkipped('mp', '2026-Q1', { reason: 'client passed' })).status).toBe(409);
+
+    // Marking the package sent stamps packageSentAt; then the skip closes the quarter.
+    await h.markPackageSent('mp', '2026-Q1');
+    const res = await h.dispositionQbrSkipped('mp', '2026-Q1', { reason: 'Client declined — emailed report only' });
+    expect(res.status).toBe(200);
+    const rec = await store.getQbr('mp', '2026-Q1');
+    expect(rec?.status).toBe('completed');
+    expect(rec?.meetingSkipped?.reason).toBe('Client declined — emailed report only');
+    expect(rec?.meeting?.heldAt).toBeUndefined();
+
+    // Engagement signal stays honest: the quarter closed, but no QBR was held.
+    const over = await h.getOverview('2026-Q1');
+    const mp = (over.json as { clients: Array<{ clientId: string; status: string; health: { drivers: string[] } }> }).clients.find(
+      (c) => c.clientId === 'mp',
+    )!;
+    expect(mp.status).toBe('completed');
+    expect(mp.health.drivers.join(' ')).toMatch(/no qbr held/i);
+
+    // Later stage changes must not backfill heldAt on a skipped quarter.
+    await h.putStatus('mp', '2026-Q1', { status: 'actions_pushed' });
+    expect((await store.getQbr('mp', '2026-Q1'))?.meeting?.heldAt).toBeUndefined();
   });
 
   it('sums open opportunity value into the roadmap figure and clears on empty', async () => {

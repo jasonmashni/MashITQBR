@@ -69,8 +69,12 @@ export interface QbrRecord {
   meeting?: { scheduledAt?: string; joinUrl?: string; heldAt?: string; attendees?: string[]; eventId?: string };
   /** When the QBR package (email draft with the PDF) was last generated. */
   packageSentAt?: string;
+  /** Set when the client opted to skip the review meeting this quarter. */
+  meetingSkipped?: { at: string; reason?: string };
   /** When the "time to schedule" reminder fired — so it fires at most once. */
   dueRemindedAt?: string;
+  /** The last sync that was refused because every collector failed (shown on the Data tab). */
+  lastSyncAttempt?: { at: string; warnings: string[] };
   updatedAt: string;
 }
 
@@ -117,6 +121,8 @@ export interface DocumentRecord {
    * even after the user renames it — renames used to cause duplicates.
    */
   sourceKey?: string;
+  /** Sender address for documents filed from the report inbox. */
+  from?: string;
   /** User-assigned bucket on the Reports tab (Security, Backup, Endpoint…). */
   category?: string;
   contentType: string;

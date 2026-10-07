@@ -9,6 +9,11 @@ import type {
   SafeguardResult,
 } from './types.js';
 
+/** "1 device" / "4 devices": client-facing copy never prints "(s)". */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return n === 1 ? one : many;
+}
+
 const NIST_FUNCTIONS: NistFunction[] = [
   'GOVERN',
   'IDENTIFY',
@@ -39,8 +44,16 @@ interface SafeguardDefinition {
   cisControl: string;
   nistFunction: NistFunction;
   weight: number;
-  /** Returns an evaluation, or null when the bundle lacks the data to measure it. */
-  evaluate: (m: MetricLookup) => SafeguardEval | null;
+  /**
+   * Returns an evaluation, or null when the bundle lacks the data to measure it.
+   * `ctx.otherMeasured` is true when at least one non-governance safeguard was
+   * measured (governance is evaluated last).
+   */
+  evaluate: (m: MetricLookup, ctx: SafeguardContext) => SafeguardEval | null;
+}
+
+interface SafeguardContext {
+  otherMeasured: boolean;
 }
 
 /**
@@ -75,15 +88,19 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
       const endpoints = m.num('huntress.endpoints');
       if (endpoints === null) return null;
       const av = m.num('endpoints.av_coverage_pct');
-      const incidents = m.num('huntress.edr_incidents') ?? 0;
+      const reportedIncidents = m.num('huntress.edr_incidents');
+      // Without an incident count or AV coverage there is nothing to grade;
+      // an agent count alone must not read as a near-perfect score.
+      if (av === null && reportedIncidents === null) return null;
+      const incidents = reportedIncidents ?? 0;
       // Coverage-led score, lightly penalized for open/unresolved incidents.
       const base = av ?? 90;
       const score = clamp(base - incidents * 5);
       return {
         score,
-        evidence: `EDR active on ${endpoints} endpoints; ${incidents} incident(s) this period${
-          av !== null ? `; ${av}% AV coverage` : ''
-        }.`,
+        evidence: `EDR active on ${endpoints} endpoints; ${
+          reportedIncidents === null ? 'incident count not reported' : `${incidents} ${plural(incidents, 'incident')} this period`
+        }${av !== null ? `; ${av}% AV coverage` : ''}.`,
         source: 'huntress',
       };
     },
@@ -108,12 +125,14 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
     weight: 2,
     evaluate: (m) => {
       if (!m.has('email.events_total') && !m.has('email.threats_blocked')) return null;
-      const clicks = m.num('email.malicious_clicks') ?? 0;
+      // The click count is the graded input; without it the score would assume zero.
+      const clicks = m.num('email.malicious_clicks');
+      if (clicks === null) return null;
       const blocked = m.num('email.threats_blocked') ?? 0;
       const score = clamp(100 - clicks * 15);
       return {
         score,
-        evidence: `${blocked} email threat(s) blocked; ${clicks} malicious click(s).`,
+        evidence: `${blocked} email ${plural(blocked, 'threat')} blocked; ${clicks} malicious ${plural(clicks, 'click')}.`,
         source: 'checkpoint',
       };
     },
@@ -130,7 +149,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
       const encrypted = m.num('email.auto_encrypted');
       return {
         score: 90, // a DLP policy is active and generating events as designed
-        evidence: `DLP policy active — ${dlp} event(s)${
+        evidence: `DLP policy active, ${dlp} ${plural(dlp, 'event')}${
           encrypted !== null ? `, ${encrypted} auto-encrypted` : ''
         }.`,
         source: 'checkpoint',
@@ -145,10 +164,12 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
     weight: 2,
     evaluate: (m) => {
       if (!m.has('huntress.m365_events')) return null;
-      const compromises = m.num('huntress.identity_compromises') ?? 0;
+      // The compromise count is the graded input; without it the score would assume zero.
+      const compromises = m.num('huntress.identity_compromises');
+      if (compromises === null) return null;
       return {
         score: clamp(95 - compromises * 20),
-        evidence: `ITDR monitoring M365 identities; ${compromises} compromise(s).`,
+        evidence: `ITDR monitoring M365 identities; ${compromises} ${plural(compromises, 'compromise')}.`,
         source: 'huntress',
       };
     },
@@ -177,7 +198,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
       const compromises = m.num('sat.phishing_compromises') ?? 0;
       return {
         score: clamp(pct - compromises * 5),
-        evidence: `Training completion ${pct}%; ${compromises} simulated phishing compromise(s).`,
+        evidence: `Training completion ${pct}%; ${compromises} simulated phishing ${plural(compromises, 'compromise')}.`,
         source: 'huntress',
       };
     },
@@ -199,7 +220,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
         evidence:
           success !== null
             ? `Backup success rate ${success}%.`
-            : `Backups protecting ${protectedDevices ?? 0} device(s), ${m365 ?? 0} M365 account(s).`,
+            : `Backups protecting ${protectedDevices ?? 0} ${plural(protectedDevices ?? 0, 'device')}, ${m365 ?? 0} M365 ${plural(m365 ?? 0, 'account')}.`,
         source: 'ninja',
       };
     },
@@ -215,7 +236,7 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
       if (expired === null) return null;
       return {
         score: clamp(100 - expired * 5),
-        evidence: `${expired} device(s) out of warranty.`,
+        evidence: `${expired} ${plural(expired, 'device')} out of warranty.`,
         source: 'ninja',
       };
     },
@@ -241,11 +262,16 @@ export const SAFEGUARDS: readonly SafeguardDefinition[] = [
     cisControl: 'CIS 17 — Incident Response Management (governance)',
     nistFunction: 'GOVERN',
     weight: 1,
-    // Structural: a QBR is being produced, so governance cadence is satisfied.
-    evaluate: () => ({
-      score: 80,
-      evidence: 'Quarterly business review cadence maintained with documented decisions.',
-    }),
+    // Structural: a QBR is being produced, so governance cadence is satisfied,
+    // but only counts once some real security signal was measured. On its own
+    // it would turn an empty snapshot into an 80/green scorecard.
+    evaluate: (_m, ctx) =>
+      ctx.otherMeasured
+        ? {
+            score: 80,
+            evidence: 'Quarterly business review cadence maintained with documented decisions.',
+          }
+        : null,
   },
 ];
 
@@ -266,9 +292,20 @@ export function computeScorecard(
 ): MaturityScorecard {
   const m = lookup(snapshot);
 
+  // Evaluate every non-governance safeguard first so governance can tell
+  // whether anything else was measured.
+  const evaluations = new Map<string, SafeguardEval | null>();
+  for (const def of SAFEGUARDS) {
+    if (def.id !== 'governance') evaluations.set(def.id, def.evaluate(m, { otherMeasured: false }));
+  }
+  const otherMeasured = [...evaluations.values()].some((e) => e !== null);
+  for (const def of SAFEGUARDS) {
+    if (def.id === 'governance') evaluations.set(def.id, def.evaluate(m, { otherMeasured }));
+  }
+
   const safeguards: SafeguardResult[] = SAFEGUARDS.map((def) => {
     const weight = overrideWeights[def.id] ?? def.weight;
-    const evaluation = def.evaluate(m);
+    const evaluation = evaluations.get(def.id) ?? null;
     if (!evaluation) {
       return {
         id: def.id,
@@ -307,13 +344,20 @@ export function computeScorecard(
   });
 
   const measuredSafeguards = safeguards.filter((s) => s.measured && s.score !== null);
-  const overallScore = weightedAverage(
+  let overallScore = weightedAverage(
     measuredSafeguards.map((s) => ({ score: s.score as number, weight: s.weight })),
   );
 
   const totalWeight = safeguards.reduce((sum, s) => sum + s.weight, 0);
   const measuredWeight = measuredSafeguards.reduce((sum, s) => sum + s.weight, 0);
   const coverage = totalWeight === 0 ? 0 : Math.round((measuredWeight / totalWeight) * 100) / 100;
+  const confidence = scorecardConfidence(coverage);
+
+  // Withhold the overall score when too little was measured to trust it, or
+  // when governance (structural, not a measurement) is all there is.
+  const governanceOnly =
+    measuredSafeguards.length > 0 && measuredSafeguards.every((s) => s.id === 'governance');
+  if (confidence === 'low' || governanceOnly) overallScore = null;
 
   const remediations = measuredSafeguards
     .filter((s) => s.rating === 'amber' || s.rating === 'red')
@@ -322,9 +366,17 @@ export function computeScorecard(
   return {
     clientId: snapshot.clientId,
     period: snapshot.period,
-    overall: { score: overallScore, rating: ratingFor(overallScore), coverage },
+    overall: { score: overallScore, rating: ratingFor(overallScore), coverage, confidence },
     functions,
     safeguards,
     remediations,
   };
+}
+
+/**
+ * How much to trust an overall score given the measured share of safeguard
+ * weight: below 0.4 the score is withheld, below 0.7 it is provisional.
+ */
+export function scorecardConfidence(coverage: number): 'low' | 'medium' | 'high' {
+  return coverage < 0.4 ? 'low' : coverage < 0.7 ? 'medium' : 'high';
 }

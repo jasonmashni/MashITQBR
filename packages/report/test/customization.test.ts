@@ -43,9 +43,37 @@ describe('resolveBrand', () => {
   it('returns defaults when no brand supplied', () => {
     expect(resolveBrand()).toEqual(MASH_IT_BRAND);
   });
+  it('drops org colors that are not six-digit hex (they are interpolated into CSS)', () => {
+    const b = resolveBrand(undefined, { primary: '#000}</style><script>alert(1)</script>', accent: 'red', ink: '#12' });
+    expect(b.primary).toBe(MASH_IT_BRAND.primary);
+    expect(b.accent).toBe(MASH_IT_BRAND.accent);
+    expect(b.ink).toBe(MASH_IT_BRAND.ink);
+    expect(resolveBrand(undefined, { primary: '#1A2B3C' }).primary).toBe('#1A2B3C');
+  });
+  it('drops an org font that is not a plain family list', () => {
+    expect(resolveBrand(undefined, { font: 'Arial; } body { display:none' }).font).toBe(MASH_IT_BRAND.font);
+    expect(resolveBrand(undefined, { font: "'Public Sans', Arial, sans-serif" }).font).toBe("'Public Sans', Arial, sans-serif");
+  });
 });
 
 describe('buildReportModel customization', () => {
+  it('hidden sections also drop their trends, so the movers chart cannot leak them', () => {
+    const snap = (period: string, spend: number) => ({
+      clientId: 'anp',
+      period,
+      capturedAt: '2026-01-01T00:00:00Z',
+      metrics: [
+        { key: 'tickets.total', label: 'Total tickets', value: 100, source: 'halo' as const, category: 'operations' as const },
+        { key: 'licenses.unassigned', label: 'Licenses available (unassigned)', value: spend, source: 'cipp' as const, category: 'spend' as const, higherIsBetter: false },
+      ],
+    });
+    const open = buildReportModel({ client: anp, current: snap('2026-Q1', 14), previous: snap('2025-Q4', 10) });
+    expect(open.trends.some((t) => t.category === 'spend')).toBe(true);
+    const closed = buildReportModel({ client: anp, current: snap('2026-Q1', 14), previous: snap('2025-Q4', 10), config: { clientId: 'anp', hiddenSections: ['spend'] } });
+    expect(closed.trends.some((t) => t.category === 'spend')).toBe(false);
+    expect(closed.trends.some((t) => t.category === 'operations')).toBe(true);
+  });
+
   it('applies brand, hides sections, and carries custom sections + discussion', () => {
     expect(model.brand.name).toBe('Acme MSP');
     expect(model.brand.logoDataUri).toBe('data:image/png;base64,AAAA');

@@ -86,38 +86,66 @@ export async function listNinjaRoles(http: HttpTransport, cfg: NinjaCfg): Promis
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
-/** Query results (`/v2/queries/*`) come back as {results: [...]} with a cursor. */
+/**
+ * Query results (`/v2/queries/*`) come back as {results: [...]} with a cursor.
+ * `truncated` is true when the page cap was reached while the server still
+ * offered a next cursor, i.e. the rows are a lower bound, not the full set.
+ */
 async function queryAll(
   http: HttpTransport,
   cfg: NinjaCfg,
   path: string,
   extraParams: Record<string, string | number>,
   maxPages = 5,
-): Promise<Json[]> {
+): Promise<{ rows: Json[]; truncated: boolean }> {
+  const pageSize = 1000;
   const out: Json[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < maxPages; page++) {
-    const params: Record<string, string | number> = { ...extraParams, pageSize: 1000 };
+    const params: Record<string, string | number> = { ...extraParams, pageSize };
     if (cursor) params['cursor'] = cursor;
     const json = (await ninjaGet(http, cfg, path, params)) as Json | null;
     const rows = toArray<Json>(json, ['results']);
     out.push(...rows);
     const next = ((json?.['cursor'] as Json | undefined)?.['name'] ?? json?.['cursor']) as string | undefined;
-    if (!next || typeof next !== 'string' || rows.length === 0) break;
+    // A short page is the end of the list even if a (stale) cursor rides along.
+    if (!next || typeof next !== 'string' || rows.length < pageSize) return { rows: out, truncated: false };
     cursor = next;
   }
-  return out;
+  return { rows: out, truncated: true };
 }
 
-/** Normalize AV rows (one per device) into coverage metrics. */
-export function normalizeNinjaAv(rows: Json[]): MetricValue[] {
+/** Below this many install events in the quarter, a success rate is noise (2 of 3 reads as 66.7%). */
+export const MIN_PATCH_EVENTS = 10;
+
+/**
+ * Normalize AV rows into coverage metrics. Coverage is over `deviceCount`
+ * (every managed device) when given: a device with no AV row is uncovered,
+ * not invisible. Without it there is no honest denominator, so coverage is
+ * not reported. Definitions-current stays over the devices that report AV.
+ */
+export function normalizeNinjaAv(rows: Json[], deviceCount?: number): MetricValue[] {
   if (rows.length === 0) return [];
-  const on = rows.filter((r) => String(r['productState'] ?? '').toUpperCase() === 'ON').length;
+  const isOn = (r: Json) => String(r['productState'] ?? '').toUpperCase() === 'ON';
+  // A device with several AV products must count once.
+  const onDevices = new Set<string>();
+  let onWithoutId = 0;
+  for (const r of rows) {
+    if (!isOn(r)) continue;
+    const id = r['deviceId'];
+    if (id === undefined || id === null) onWithoutId++;
+    else onDevices.add(String(id));
+  }
   const current = rows.filter((r) => /up.?to.?date/i.test(String(r['definitionStatus'] ?? ''))).length;
-  return [
-    metric('endpoints.av_coverage_pct', 'AV coverage', round1((100 * on) / rows.length), { category: 'security', source: 'ninja', unit: '%', higherIsBetter: true }),
+  const out: MetricValue[] = [];
+  if (deviceCount !== undefined && deviceCount > 0) {
+    const on = Math.min(onDevices.size + onWithoutId, deviceCount);
+    out.push(metric('endpoints.av_coverage_pct', 'AV coverage', round1((100 * on) / deviceCount), { category: 'security', source: 'ninja', unit: '%', higherIsBetter: true }));
+  }
+  out.push(
     metric('endpoints.av_definitions_pct', 'AV definitions current', round1((100 * current) / rows.length), { category: 'security', source: 'ninja', unit: '%', higherIsBetter: true }),
-  ];
+  );
+  return out;
 }
 
 /**
@@ -132,7 +160,7 @@ export function normalizeNinjaPatchQuarter(installed: number, failed: number): M
   if (failed > 0) {
     out.push(metric('patch.failed_quarter', 'Patch failures this quarter', failed, { category: 'security', source: 'ninja', unit: 'count', higherIsBetter: false }));
   }
-  if (installed + failed > 0) {
+  if (installed + failed >= MIN_PATCH_EVENTS) {
     out.push(
       metric('patch.compliance_pct', 'Patch success rate (quarter)', round1((100 * installed) / (installed + failed)), {
         category: 'security',
@@ -232,11 +260,13 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
   // Devices in the organization — the role filter applies here, and the
   // surviving device ids scope every query below.
   let devices: Json[] = [];
+  let devicesOk = false;
   let allowedIds: Set<string> | undefined;
   const deviceNames = new Map<string, string>();
   try {
     const all = toArray<Json>(await ninjaGet(http, cfg, `organization/${encodeURIComponent(orgId)}/devices`, { pageSize: 1000 }), ['devices']);
     devices = roleFilter ? all.filter((d) => roleFilter.has(String(d['nodeRoleId'] ?? d['roleId'] ?? ''))) : all;
+    devicesOk = true;
     if (roleFilter) {
       allowedIds = new Set(devices.map((d) => String(d['id'] ?? '')));
       if (all.length > 0 && devices.length === 0) {
@@ -268,15 +298,27 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
 
   // Query rows carry deviceId — scope them to the role-filtered device set.
   const scoped = (rows: Json[]) => (allowedIds ? rows.filter((r) => allowedIds.has(String(r['deviceId'] ?? r['id'] ?? ''))) : rows);
+  // Run an org query, scope it, and say so when the page cap cut it short.
+  const truncatedLabels = new Set<string>();
+  const query = async (path: string, params: Record<string, string | number>, label: string): Promise<Json[]> => {
+    const { rows, truncated } = await queryAll(http, cfg, path, params);
+    if (truncated) {
+      truncatedLabels.add(label);
+      warnings.push(`NinjaOne ${label} query truncated at ${rows.length} rows (page cap reached) — the figure is a lower bound.`);
+    }
+    return scoped(rows);
+  };
 
   // (Deliberately NO "devices needing attention" — that's a technician queue
   // signal, not an executive QBR metric.)
 
   // Antivirus coverage (org-scoped query).
   try {
-    const av = scoped(await queryAll(http, cfg, 'queries/antivirus-status', df));
-    if (av.length > 0) metrics.push(...normalizeNinjaAv(av));
-    else warnings.push('NinjaOne antivirus query returned no rows for this organization.');
+    const av = await query('queries/antivirus-status', df, 'antivirus');
+    if (av.length > 0) {
+      metrics.push(...normalizeNinjaAv(av, devicesOk ? devices.length : undefined));
+      if (!devicesOk) warnings.push('NinjaOne AV coverage not reported: the device list was unavailable, so there is no denominator.');
+    } else warnings.push('NinjaOne antivirus query returned no rows for this organization.');
   } catch (e) {
     warnings.push(`NinjaOne antivirus query failed: ${e instanceof Error ? e.message : 'error'}`);
   }
@@ -284,24 +326,33 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
   // Quarterly patch compliance from the install history (INSTALLED vs FAILED
   // during the period), plus the current pending count as a snapshot.
   try {
-    const installed = scoped(await queryAll(http, cfg, 'queries/os-patch-installs', {
-      ...df,
-      status: 'INSTALLED',
-      installedAfter: ctx.period.start,
-      installedBefore: ctx.period.end,
-    }));
-    const failed = scoped(await queryAll(http, cfg, 'queries/os-patch-installs', {
-      ...df,
-      status: 'FAILED',
-      installedAfter: ctx.period.start,
-      installedBefore: ctx.period.end,
-    }));
-    metrics.push(...normalizeNinjaPatchQuarter(installed.length, failed.length));
+    const installed = await query(
+      'queries/os-patch-installs',
+      { ...df, status: 'INSTALLED', installedAfter: ctx.period.start, installedBefore: ctx.period.end },
+      'installed-patch history',
+    );
+    const failed = await query(
+      'queries/os-patch-installs',
+      { ...df, status: 'FAILED', installedAfter: ctx.period.start, installedBefore: ctx.period.end },
+      'failed-patch history',
+    );
+    const historyTruncated = truncatedLabels.has('installed-patch history') || truncatedLabels.has('failed-patch history');
+    // Each side is capped independently, so a ratio of two lower bounds can be
+    // skewed either way: keep the raw counts, drop the rate.
+    metrics.push(
+      ...normalizeNinjaPatchQuarter(installed.length, failed.length).filter((m) => !(historyTruncated && m.key === 'patch.compliance_pct')),
+    );
+    const events = installed.length + failed.length;
+    if (historyTruncated) {
+      warnings.push('NinjaOne patch success rate not reported: the install history was truncated at the page cap, so installed vs failed counts are incomplete.');
+    } else if (events < MIN_PATCH_EVENTS) {
+      warnings.push(`NinjaOne: too few patch events this quarter (${events}, need ${MIN_PATCH_EVENTS}) for a meaningful patch success rate — rate not reported.`);
+    }
   } catch (e) {
     warnings.push(`NinjaOne patch-install history failed: ${e instanceof Error ? e.message : 'error'}`);
   }
   try {
-    const pending = scoped(await queryAll(http, cfg, 'queries/os-patches', df));
+    const pending = await query('queries/os-patches', df, 'pending-patch');
     metrics.push(metric('patch.pending', 'Pending OS patches', pending.length, { category: 'security', source: 'ninja', unit: 'count', higherIsBetter: false }));
   } catch (e) {
     warnings.push(`NinjaOne patch query failed: ${e instanceof Error ? e.message : 'error'}`);
@@ -310,7 +361,7 @@ export async function collectNinjaDirect(ctx: CollectorContext, http: HttpTransp
   // Backup usage — the endpoint has no org filter, so filter rows by their
   // organizationId (counting all rows was wildly wrong for multi-org tenants).
   try {
-    const backup = scoped(await queryAll(http, cfg, 'queries/backup/usage', { includeLastBackupJobTimes: 'true' }));
+    const backup = await query('queries/backup/usage', { includeLastBackupJobTimes: 'true' }, 'backup usage');
     metrics.push(...normalizeNinjaBackup(backup, orgId, (id) => deviceNames.get(id)));
   } catch {
     // Backup module may not be licensed — not worth a warning.

@@ -15,8 +15,26 @@ describe('format helpers', () => {
     expect(formatPercent(87)).toBe('87%');
   });
 
+  it('whole-dollar amounts carry no cents; fractional ones keep two', () => {
+    expect(formatCurrency(4165)).toBe('$4,165');
+    expect(formatCurrency(441.1)).toBe('$441.10');
+    expect(formatCurrency(1_250_000)).toBe('$1,250,000');
+    expect(formatCurrency(-300)).toBe('-$300');
+  });
+
+  it('a move from zero reads as the honest pair, never as a percent or blank', () => {
+    const fromZero: MetricTrend = {
+      key: 'huntress.edr_incidents', label: 'EDR incidents', category: 'security',
+      current: 3, previous: 0, deltaAbs: 3, deltaPct: null, direction: 'up', sentiment: 'negative',
+    };
+    expect(trendDeltaText(fromZero)).toBe('0 → 3');
+    expect(formatTrend(fromZero)).toBe('▲ 0 → 3');
+    // A genuine "no prior quarter" stays blank.
+    expect(trendDeltaText({ ...fromZero, previous: null, deltaAbs: null, direction: 'na', sentiment: 'na' })).toBe('');
+  });
+
   it('formats metric values by unit', () => {
-    expect(formatValue({ value: 4165, unit: 'USD' })).toBe('$4,165.00');
+    expect(formatValue({ value: 4165, unit: 'USD' })).toBe('$4,165');
     expect(formatValue({ value: 87, unit: '%' })).toBe('87%');
     expect(formatValue({ value: 12_500_000, unit: 'events' })).toBe('12.5M');
     expect(formatValue({ value: 141, unit: 'count' })).toBe('141');
@@ -48,9 +66,10 @@ describe('format helpers', () => {
     expect(trendDeltaText({ ...base, current: 3, previous: 3, deltaAbs: 0, deltaPct: 0, direction: 'flat' })).toBe('flat');
   });
 
-  it('maps ratings to brand colors', () => {
-    expect(ratingColor('green')).toBe('#2e7d32');
-    expect(ratingColor('red')).toBe('#c62828');
-    expect(ratingColor('unknown')).toBe('#9e9e9e');
+  it('maps ratings to the shared semantic palette', () => {
+    expect(ratingColor('green')).toBe('#0e7c72');
+    expect(ratingColor('amber')).toBe('#9a5b00');
+    expect(ratingColor('red')).toBe('#b42318');
+    expect(ratingColor('unknown')).toBe('#6b7a90');
   });
 });

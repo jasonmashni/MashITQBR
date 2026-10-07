@@ -425,7 +425,7 @@ export async function syncClientMetrics(
   clientId: string,
   period: string,
   capturedAt: string = new Date().toISOString(),
-): Promise<{ snapshot: MetricSnapshot; warnings: string[]; documents: SyncDocument[] }> {
+): Promise<{ snapshot: MetricSnapshot; warnings: string[]; documents: SyncDocument[]; allFailed: boolean }> {
   const client = await intg.store.getClient(clientId);
   if (!client) throw new Error(`Unknown client: ${clientId}`);
   const refs = client.integrationRefs ?? {};
@@ -508,7 +508,9 @@ export async function syncClientMetrics(
     runs.push({
       source: 'checkpoint',
       run: async () =>
-        collectCheckpoint(ctx(refs.checkpoint ?? clientId), http, {
+        // Only a real tenant mapping scopes the query; never fall back to the
+        // internal QBR client id (the collector warns when nothing is mapped).
+        collectCheckpoint(ctx(refs.checkpoint), http, {
           baseUrl: checkpoint.config['baseUrl'] ?? '',
           token: await resolveSecret(secrets, checkpoint, 'token'),
           clientId: checkpoint.config['clientId'] || undefined,
@@ -549,9 +551,29 @@ export async function syncClientMetrics(
   if (runs.length === 0) {
     warnings.push('No integrations mapped for this client — configure connections and set the client\'s external ids.');
   }
-  await intg.store.putSnapshot(snapshot);
+
+  // Manual entries and imported PDF metrics are not re-collectable, so a
+  // re-sync carries them over from the existing snapshot. A collector reporting
+  // the same key wins; the kept copy is dropped and named in a warning.
+  const existing = await intg.store.getSnapshot(clientId, period);
+  const kept = (existing?.metrics ?? []).filter((m) => m.source === 'manual' || String(m.source).startsWith('pdf:'));
+  const collected = new Set(snapshot.metrics.map((m) => m.key));
+  for (const m of kept) {
+    if (collected.has(m.key)) {
+      warnings.push(`Metric "${m.key}" from ${m.source} was replaced by the synced value.`);
+      continue;
+    }
+    snapshot.metrics.push(m);
+  }
+  snapshot.warnings = warnings;
+
+  // Every collector came back empty-handed with a warning (it threw, or it
+  // caught its own HTTP error, as Huntress does): keep whatever was there
+  // rather than overwrite it.
+  const allFailed = runs.length > 0 && results.every((r) => r.metrics.length === 0 && r.warnings.length > 0);
+  if (!allFailed) await intg.store.putSnapshot(snapshot);
   const documents = results.flatMap((r) =>
     (r.documents ?? []).map((d) => ({ source: r.source, name: d.name, url: d.url, key: d.key })),
   );
-  return { snapshot, warnings, documents };
+  return { snapshot, warnings, documents, allFailed };
 }

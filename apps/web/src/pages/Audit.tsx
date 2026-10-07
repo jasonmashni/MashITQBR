@@ -47,7 +47,7 @@ export function Audit() {
       <Group justify="space-between">
         <div>
           <Title order={2}>Audit log</Title>
-          <Text c="dimmed" size="sm">Every change — who, what, and when — for compliance review.</Text>
+          <Text c="dimmed" size="sm">Every change, who, what, and when, for compliance review.</Text>
         </div>
         <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={load}>Refresh</Button>
       </Group>
@@ -67,7 +67,7 @@ export function Audit() {
         {loading ? (
           <Center h={160}><Loader /></Center>
         ) : filtered.length === 0 ? (
-          <Text c="dimmed" size="sm">No audit entries{query || action ? ' match the filter' : ' yet — actions will appear here as you work'}.</Text>
+          <Text c="dimmed" size="sm">No audit entries{query || action ? ' match the filter' : ' yet, actions will appear here as you work'}.</Text>
         ) : (
           <Table.ScrollContainer minWidth={760}>
             <Table highlightOnHover verticalSpacing="xs">

@@ -1,36 +1,57 @@
 name: Deploy
 
-# Manual by default; flip to push-on-main once secrets are configured.
+# Manual by default. The infra job provisions a FRESH environment from
+# infra/main.bicep and is off unless you tick "provision_infra": it replaces
+# every app setting on the Function App and creates a new Key Vault name, so
+# do not point it at the portal-managed live app without reading the README's
+# "Infrastructure as code" notes first.
 on:
   workflow_dispatch:
+    inputs:
+      provision_infra:
+        description: 'Run the Bicep deployment (new environment only; replaces app settings)'
+        type: boolean
+        default: false
 
 permissions:
-  id-token: write # OIDC federated login — no stored cloud secret
+  id-token: write # OIDC federated login; no stored cloud secret
   contents: read
 
 env:
   RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  # Must match functionAppName in infra/main.bicep for namePrefix=mashqbr env=prod.
+  BICEP_FUNCTION_APP_NAME: mashqbr-prod-func
 
 jobs:
   infra:
+    if: ${{ inputs.provision_infra }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Refuse to provision over a differently named app
+        run: |
+          if [ "${{ vars.FUNCTION_APP_NAME }}" != "$BICEP_FUNCTION_APP_NAME" ]; then
+            echo "FUNCTION_APP_NAME (${{ vars.FUNCTION_APP_NAME }}) does not match the Bicep app name ($BICEP_FUNCTION_APP_NAME)."
+            echo "The infra job would create a second Function App while the deploy job ships code to the first. Fix the variable or the template."
+            exit 1
+          fi
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: What-if
-        run: az deployment group what-if -g "$RESOURCE_GROUP" -f infra/main.bicep -p namePrefix=mashqbr env=prod sqlAdminLogin="${{ vars.SQL_ADMIN_LOGIN }}" sqlAdminObjectId="${{ vars.SQL_ADMIN_OBJECT_ID }}"
+        run: az deployment group what-if -g "$RESOURCE_GROUP" -f infra/main.bicep -p namePrefix=mashqbr env=prod aadClientId="${{ vars.AAD_CLIENT_ID }}" aadTenantId="${{ secrets.AZURE_TENANT_ID }}"
       - name: Deploy infrastructure
-        run: az deployment group create -g "$RESOURCE_GROUP" -f infra/main.bicep -p namePrefix=mashqbr env=prod sqlAdminLogin="${{ vars.SQL_ADMIN_LOGIN }}" sqlAdminObjectId="${{ vars.SQL_ADMIN_OBJECT_ID }}"
+        run: az deployment group create -g "$RESOURCE_GROUP" -f infra/main.bicep -p namePrefix=mashqbr env=prod aadClientId="${{ vars.AAD_CLIENT_ID }}" aadTenantId="${{ secrets.AZURE_TENANT_ID }}"
 
   # One Function App serves both the API and the React SPA. deploy:build
   # produces the self-contained apps/api/deploy folder (bundled API + built
   # web in www/ + runtime node_modules), mirroring the VS Code deploy path.
   deploy:
-    needs: infra
+    needs: [infra]
+    # Run after infra when it ran, and on its own when it was skipped.
+    if: ${{ always() && (needs.infra.result == 'success' || needs.infra.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

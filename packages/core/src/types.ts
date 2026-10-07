@@ -70,6 +70,12 @@ export interface MetricSnapshot {
   /** ISO-8601 timestamp the snapshot was captured/seeded. */
   capturedAt: string;
   metrics: MetricValue[];
+  /**
+   * Sync caveats persisted with the data (partial pulls, failed collectors,
+   * sampled counts). Rendered on the Data tab and as the report's "Data
+   * confidence" note so a caveat never dies with the sync toast.
+   */
+  warnings?: string[];
 }
 
 export type Quarter = 1 | 2 | 3 | 4;
@@ -151,6 +157,11 @@ export interface MaturityScorecard {
     rating: Rating;
     /** Fraction of total safeguard weight that could actually be measured (0..1). */
     coverage: number;
+    /**
+     * How much to trust the score: coverage below 0.4 is `low` (the score is
+     * withheld), below 0.7 is `medium` (shown as provisional), else `high`.
+     */
+    confidence: 'low' | 'medium' | 'high';
   };
   functions: FunctionScore[];
   safeguards: SafeguardResult[];

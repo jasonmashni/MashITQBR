@@ -130,7 +130,7 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     const draftCalls = calls;
     const second = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', { narrativeModel: model, narrativeCache: cache });
     expect(calls).toBe(draftCalls); // …and the repeat view costs nothing
-    expect(second.warnings.some((w) => /could not be verified/.test(w))).toBe(true);
+    expect(second.warnings.some((w) => /^The narrative cites a figure that does not match the data: /.test(w))).toBe(true);
   });
 
   it('never consults the cache for the offline drafter', async () => {

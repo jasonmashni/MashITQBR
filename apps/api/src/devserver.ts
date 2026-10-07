@@ -15,9 +15,14 @@ import type { ConnectionInput } from './connections.js';
 import type { PushInput } from './actions.js';
 import { actorFrom, principalFrom } from './auth.js';
 import { runWithActor } from './requestContext.js';
+import { gate } from './gate.js';
+import { INVALID_BODY, parseBody } from './body.js';
 import { resolveStaticFile, SECURITY_HEADERS } from './static.js';
+import { contentDisposition } from './contentDisposition.js';
 
 const PORT = Number(process.env['PORT'] ?? 7071);
+// Loopback only: the dev server has no Easy Auth in front of it.
+const HOST = '127.0.0.1';
 const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -25,16 +30,11 @@ const WWW = [resolve(HERE, '..', 'www'), resolve(process.cwd(), 'apps/web/dist')
   (d) => existsSync(join(d, 'index.html')),
 );
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+/** Parsed JSON object body, or null when it is malformed (the route answers 400). */
+async function readJson(req: IncomingMessage): Promise<Record<string, unknown> | null> {
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
-  const text = Buffer.concat(chunks).toString('utf8');
-  if (!text) return {};
-  try {
-    return JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
+  return parseBody(Buffer.concat(chunks).toString('utf8'));
 }
 
 type HeaderGet = (name: string) => string | undefined;
@@ -81,7 +81,10 @@ const routes: Route[] = [
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m, b) => h.putDiscussion(m[1]!, m[2]!, b) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/agenda$/, run: (m, b) => h.suggestQbrAgenda(m[1]!, m[2]!, undefined, Array.isArray(b['exclude']) ? (b['exclude'] as string[]) : []) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/sync$/, run: (m) => h.syncQbr(m[1]!, m[2]!) },
-  { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/status$/, run: (m, b) => h.putStatus(m[1]!, m[2]!, b['status']) },
+  { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/status$/, run: (m, b) => h.putStatus(m[1]!, m[2]!, b as { status: unknown; force?: unknown; reason?: unknown }) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/narrative\/approve$/, run: (m) => h.approveNarrative(m[1]!, m[2]!) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/disposition$/, run: (m, b) => h.dispositionQbrSkipped(m[1]!, m[2]!, b as { reason?: unknown }) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/package\/sent$/, run: (m) => h.markPackageSent(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/schedule$/, run: (m, b) => h.putSchedule(m[1]!, m[2]!, b as { scheduledAt?: string; joinUrl?: string }) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/actions\/push$/, run: (m, b) => h.pushQbrAction(m[1]!, m[2]!, b as { actionId?: string; target: PushInput['target'] }) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/email\.eml$/, run: (m, _b, url, header) => h.getEmailDraft(m[1]!, m[2]!, url.searchParams.get('ai'), header) },
@@ -123,17 +126,10 @@ const routes: Route[] = [
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   const path = url.pathname.replace(/\/+$/, '') || '/';
-  const cors = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    ...SECURITY_HEADERS,
-  };
+  // No CORS headers: the web app reaches this server same-origin (Vite proxy
+  // or the static SPA below), so cross-origin pages get nothing.
+  const cors = { ...SECURITY_HEADERS };
   try {
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204, cors);
-      return res.end();
-    }
     const header: HeaderGet = (name) => {
       const v = req.headers[name.toLowerCase()];
       return Array.isArray(v) ? v[0] : v;
@@ -142,19 +138,21 @@ const server = createServer(async (req, res) => {
       if (req.method !== rt.method) continue;
       const m = path.match(rt.re);
       if (!m) continue;
-      const b = req.method === 'PUT' || req.method === 'POST' ? await readJson(req) : {};
-      const result = await runWithActor(actorFrom(header), async () => rt.run(m, b, url, header));
+      const b = req.method === 'PUT' || req.method === 'POST' || req.method === 'PATCH' ? await readJson(req) : {};
+      const result = await runWithActor(actorFrom(header), async () =>
+        gate(path, header, () => (b === null ? INVALID_BODY : rt.run(m, b, url, header))),
+      );
       if (result.html !== undefined) { res.writeHead(result.status, { 'Content-Type': 'text/html; charset=utf-8', ...cors }); return res.end(result.html); }
       if (result.pdf !== undefined) { res.writeHead(result.status, { 'Content-Type': 'application/pdf', ...cors }); return res.end(result.pdf); }
       if (result.pptx !== undefined) {
-        const cd = result.filename ? `attachment; filename="${result.filename.replace(/["\\]/g, '')}"` : 'attachment';
+        const cd = result.filename ? contentDisposition(result.filename) : 'attachment';
         res.writeHead(result.status, { 'Content-Type': PPTX, 'Content-Disposition': cd, ...cors });
         return res.end(result.pptx);
       }
       if (result.file !== undefined) {
         res.writeHead(result.status, {
           'Content-Type': result.file.contentType,
-          'Content-Disposition': `attachment; filename="${result.file.filename.replace(/["\\]/g, '')}"`,
+          'Content-Disposition': contentDisposition(result.file.filename),
           ...cors,
         });
         return res.end(result.file.bytes);
@@ -180,4 +178,4 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`QBR dev API on http://localhost:${PORT}`));
+server.listen(PORT, HOST, () => console.log(`QBR dev API on http://${HOST}:${PORT}`));
