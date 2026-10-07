@@ -124,6 +124,12 @@ export interface BuildQbrOptions {
   narrativeModel?: NarrativeModel;
   /** Optional persistent cache — consulted only when `narrativeModel` is set. */
   narrativeCache?: NarrativeCache;
+  /**
+   * A narrative frozen at lock 1, used exactly as stored: no model call, no
+   * cache, no edits and no re-verification. Lock 2 passes it so the final
+   * package only refreshes the discussion, notes and ticket statuses.
+   */
+  frozenNarrative?: NarrativeResult;
   /** Author edits overlaid on the narrative — they always win. */
   narrativeEdits?: NarrativeEditFields;
   heldBy?: string;
@@ -193,6 +199,8 @@ export interface QbrReport {
   narrative: NarrativeResult;
   /** Non-fatal issues for the author to review before sending. */
   warnings: string[];
+  /** Set when an AI failure forced the offline draft (also listed in warnings). */
+  aiFailure?: string;
 }
 
 /**
@@ -261,7 +269,10 @@ export async function buildQbrReport(
 
   let narrative: NarrativeResult;
   let aiFailure: string | undefined;
-  if (opts.narrativeModel) {
+  const frozen = opts.frozenNarrative;
+  if (frozen) {
+    narrative = frozen;
+  } else if (opts.narrativeModel) {
     // Cache Claude runs on a fingerprint of exactly what the narrative depends
     // on. Cache failures must never fail a build; concurrent misses may both
     // call the model (last write wins) — acceptable for this traffic.
@@ -308,7 +319,8 @@ export async function buildQbrReport(
   }
 
   // Human edits win over whatever was generated — that's the approval loop.
-  const edits = opts.narrativeEdits;
+  // A frozen narrative already carries the edits it was locked with.
+  const edits = frozen ? undefined : opts.narrativeEdits;
   if (edits) {
     narrative = {
       ...narrative,
@@ -336,11 +348,14 @@ export async function buildQbrReport(
   // numbers, so the stored verification is never trusted as-is.
   // The v3 fields are derived after verification so the same prose is not
   // checked twice under two labels.
-  narrative = {
-    ...narrative,
-    verification: verifyNarrative(narrative.output, allowed, { allowedQuotes }),
-  };
-  narrative = { ...narrative, output: legacyFields(narrative.output) };
+  // A frozen narrative keeps the verification it was locked with.
+  if (!frozen) {
+    narrative = {
+      ...narrative,
+      verification: verifyNarrative(narrative.output, allowed, { allowedQuotes }),
+    };
+    narrative = { ...narrative, output: legacyFields(narrative.output) };
+  }
 
   // Pushed Halo tickets: ask Halo where each one stands now, so "Since last
   // quarter" and the conversations table do not report a stale status.
@@ -397,7 +412,7 @@ export async function buildQbrReport(
     warnings.push('No prior-quarter snapshot found — quarter-over-quarter trends are unavailable.');
   }
 
-  return { clientId, period: periodId, model, narrative, warnings };
+  return { clientId, period: periodId, model, narrative, warnings, ...(aiFailure ? { aiFailure } : {}) };
 }
 
 /**

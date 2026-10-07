@@ -24,7 +24,7 @@ import {
 import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
 import { renderDeck, renderPdf } from '@mashit/report';
 import { FetchHttpTransport, fetchHaloMeta, listNinjaRoles, type McpTransport } from '@mashit/integrations';
-import { buildQbrReport, narrativeEditsFromBody, renderQbrHtml } from './service.js';
+import { buildQbrReport, narrativeEditsFromBody, renderQbrHtml, type BuildQbrOptions, type QbrReport } from './service.js';
 import {
   dataStoreKind,
   docPath,
@@ -76,7 +76,7 @@ import { cleanFindings, createClaudeDocExtractor, pdfSourceSlug, type DocExtract
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 import { computeTriage } from './triage.js';
 import { dataLocked, isFinal, refuseIfLocked } from './locks.js';
-import { loadPackageFile, loadPackageModel, storePackage, type StoredModel } from './packages.js';
+import { loadPackageFile, loadPackageModel, storePackage, type FrozenDocument, type StoredModel, type StoredPackageJson } from './packages.js';
 
 export interface ApiResult {
   status: number;
@@ -299,12 +299,13 @@ export async function getQbr(clientId: string, period: string, ai: string | null
   }
 }
 
-async function buildReportFor(clientId: string, period: string, ai: string | null) {
+async function buildReportFor(clientId: string, period: string, ai: string | null, override: Partial<BuildQbrOptions> = {}) {
   const store = getDataStore();
   return buildQbrReport(storeDataSource(), clientId, period, {
     narrativeModel: aiModel(ai),
     narrativeCache: narrativeCacheFor(store, clientId, period),
     ...(await loadReportInputs(store, clientId, period)),
+    ...override,
   });
 }
 
@@ -322,29 +323,93 @@ export async function getReportHtml(clientId: string, period: string, ai: string
 async function buildFullPdf(clientId: string, period: string, ai: string | null): Promise<{ bytes: Buffer; filename: string }> {
   const report = await buildReportFor(clientId, period, ai);
   return {
-    bytes: await renderFullPdf(clientId, period, report.model),
+    bytes: (await renderFullPdf(clientId, period, report.model)).bytes,
     filename: deliverableFilename(report.model.client.name, report.model.period.label, 'pdf'),
   };
 }
 
-/** Render an already-built model to the full PDF (vendor reports appended). */
-async function renderFullPdf(clientId: string, period: string, model: StoredModel): Promise<Buffer> {
+/**
+ * Render an already-built model to the full PDF (vendor reports appended).
+ * `onlyIds` limits the appended reports to a frozen document list. An
+ * attachment load failure never fails the render; it comes back as a warning.
+ */
+async function renderFullPdf(
+  clientId: string,
+  period: string,
+  model: StoredModel,
+  onlyIds?: ReadonlySet<string>,
+): Promise<{ bytes: Buffer; warning?: string }> {
   const pdf = await renderPdf(model);
   // Vendor reports ride at the back of the deliverable (appendix lists them).
-  const attachments = await loadPdfAttachments(getDataStore(), getDocStore(), clientId, period).catch(() => []);
-  return appendPdfAttachments(pdf, attachments);
+  let attachments: Buffer[] = [];
+  let warning: string | undefined;
+  try {
+    attachments = await loadPdfAttachments(getDataStore(), getDocStore(), clientId, period, onlyIds);
+  } catch (e) {
+    const reason = (e instanceof Error ? e.message : 'unknown error').replace(/[.\s]+$/, '');
+    warning = `Attached reports could not be appended: ${reason}.`;
+  }
+  return { bytes: await appendPdfAttachments(pdf, attachments), ...(warning ? { warning } : {}) };
 }
+
+/** The stored package a lock names, with its JSON (undefined when absent). */
+async function lockedPackageJson(clientId: string, period: string, version: number | undefined) {
+  if (version === undefined) return undefined;
+  const record = (await getDataStore().listPackages(clientId, period)).find((p) => p.version === version);
+  return record ? loadPackageModel(getDocStore(), record) : undefined;
+}
+
+type Frozen =
+  | { ok: true; report: QbrReport; pkg: PackageRecord; warning?: string }
+  | { ok: false; report: QbrReport; refused: string };
 
 /**
  * Build the report once, render the PDF, deck and HTML from that single build
  * and store them as the next package version. Shared by lock 1 and lock 2.
+ *
+ * Lock 2 on a quarter with a pre-read lock reuses the narrative and document
+ * list stored at lock 1: no model call, and live edits to goals, config or
+ * documents do not reach the final package. Only the discussion, notes and
+ * live ticket statuses refresh. `refuse` may stop the freeze before anything
+ * is stored (Send refuses an AI fallback or a failed figure check).
  */
-async function freezePackage(clientId: string, period: string, stage: PackageStage) {
-  const report = await buildReportFor(clientId, period, null);
+async function freezePackage(
+  clientId: string,
+  period: string,
+  stage: PackageStage,
+  refuse?: (report: QbrReport) => string | undefined,
+): Promise<Frozen> {
+  const store = getDataStore();
+  const meta = await store.getQbr(clientId, period);
+  let prior: StoredPackageJson | undefined;
+  if (stage === 'final' && meta?.locks?.preread) {
+    prior = await lockedPackageJson(clientId, period, meta.locks.preread.version);
+    if (!prior) throw new Error('The stored pre-read package is missing; reopen the quarter to rebuild it');
+  }
+  const frozenDocs: FrozenDocument[] =
+    prior?.documents ??
+    (await store.listDocuments(clientId, period)).map((d) => ({
+      id: d.id,
+      name: d.name,
+      source: d.source,
+      ...(d.findings?.length ? { findings: d.findings } : {}),
+    }));
+  const documents = frozenDocs.map(({ id: _id, ...d }) => d);
+  // A pre-read package stored before narratives were kept falls back to a live build.
+  const report = await buildReportFor(
+    clientId,
+    period,
+    null,
+    prior?.narrative ? { narrativeModel: undefined, frozenNarrative: prior.narrative, documents } : { documents },
+  );
+  const refused = refuse?.(report);
+  if (refused) return { ok: false, report, refused };
   // After a reopen, the next package says when it was revised (footer, workstream C).
-  const revisedAt = (await getDataStore().getQbr(clientId, period))?.reopened?.at(-1)?.at;
+  const revisedAt = meta?.reopened?.at(-1)?.at;
   const model: StoredModel = revisedAt ? { ...report.model, revisedAt } : report.model;
-  const pkg = await storePackage(getDataStore(), getDocStore(), {
+  const pdf = await renderFullPdf(clientId, period, model, new Set(frozenDocs.map((d) => d.id)));
+  const warnings = pdf.warning ? [...report.warnings, pdf.warning] : report.warnings;
+  const pkg = await storePackage(store, getDocStore(), {
     clientId,
     period,
     stage,
@@ -352,13 +417,15 @@ async function freezePackage(clientId: string, period: string, stage: PackageSta
     artifacts: {
       model,
       verification: report.narrative.verification.ok,
-      warnings: report.warnings,
-      pdf: await renderFullPdf(clientId, period, model),
+      warnings,
+      narrative: report.narrative,
+      documents: frozenDocs,
+      pdf: pdf.bytes,
       pptx: await renderDeck(model),
       html: renderQbrHtml({ ...report, model }),
     },
   });
-  return { report, pkg };
+  return { ok: true, report, pkg, ...(pdf.warning ? { warning: pdf.warning } : {}) };
 }
 
 /**
@@ -807,6 +874,11 @@ export async function updateQbrDocument(
 
   const newName = typeof body['name'] === 'string' && body['name'].trim() ? body['name'].trim() : record.name;
   const newPeriod = typeof body['period'] === 'string' && PERIOD_RE.test(body['period']) ? body['period'] : record.period;
+  // A move must not drop a document into a frozen quarter either.
+  if (newPeriod !== period) {
+    const destLocked = await refuseIfLocked(clientId, newPeriod, 'data');
+    if (destLocked) return destLocked;
+  }
   const category = typeof body['category'] === 'string' ? body['category'] || undefined : record.category;
   const updated: DocumentRecord = { ...record, name: newName, period: newPeriod, category };
 
@@ -885,6 +957,8 @@ export async function extractQbrDocument(
   id: string,
   extractor?: DocExtractModel,
 ): Promise<ApiResult> {
+  const locked = await refuseIfLocked(clientId, period, 'data');
+  if (locked) return locked;
   if (!extractor && !process.env['ANTHROPIC_API_KEY']) {
     return err(501, 'AI metric extraction needs the ANTHROPIC_API_KEY app setting (same key the narrative uses).');
   }
@@ -1448,17 +1522,35 @@ async function finalLockFailed(clientId: string, period: string, saved: QbrRecor
  * package version at stage `final`, set `locks.final` and move the status to
  * at least `dispositioned`. A quarter that is already final is returned as is.
  */
-async function lockFinal(clientId: string, period: string): Promise<QbrRecord> {
+async function lockFinal(clientId: string, period: string): Promise<QbrRecord & { warning?: string }> {
   const existing = await getDataStore().getQbr(clientId, period);
   if (existing?.locks?.final) return existing;
-  const { pkg } = await freezePackage(clientId, period, 'final');
+  const frozen = await freezePackage(clientId, period, 'final');
+  if (!frozen.ok) throw new Error(frozen.refused);
+  const { pkg } = frozen;
   const now = new Date().toISOString();
   const saved = await patchQbr(clientId, period, {
     status: advanceStatus(existing?.status, 'dispositioned'),
     locks: { ...existing?.locks, final: { at: now, by: currentActor(), version: pkg.version } },
   });
   await audit('qbr.lock', `qbr:${clientId}/${period}`, `final v${pkg.version}`);
-  return saved;
+  return frozen.warning ? { ...saved, warning: frozen.warning } : saved;
+}
+
+/**
+ * Why Send must not lock this build, or undefined. An offline draft forced by
+ * an AI failure, or a narrative whose figures fail verification, is refused;
+ * an offline draft because AI is not configured still locks.
+ */
+export function sendRefusal(report: Pick<QbrReport, 'aiFailure' | 'narrative'>): string | undefined {
+  if (report.aiFailure) {
+    return 'The AI narrative failed, so this build fell back to the offline draft. Nothing was sent or locked. Regenerate the narrative, review it, then send again.';
+  }
+  const v = report.narrative.verification;
+  if (!v.ok && v.failures.some((f) => f.label !== 'limits')) {
+    return 'The narrative cites a figure that does not match the data. Nothing was sent or locked. Fix the narrative, then send again.';
+  }
+  return undefined;
 }
 
 /**
@@ -1549,12 +1641,13 @@ export async function markPackageSent(clientId: string, period: string): Promise
     return ok(existing?.packageSentAt ? existing : await patchQbr(clientId, period, { packageSentAt: new Date().toISOString() }));
   }
   // Lock 1: build once, store the pre-read package, freeze data and narrative.
-  let frozen;
+  let frozen: Frozen;
   try {
-    frozen = await freezePackage(clientId, period, 'preread');
+    frozen = await freezePackage(clientId, period, 'preread', sendRefusal);
   } catch (e) {
     return mapBuildError(e);
   }
+  if (!frozen.ok) return { status: 409, json: { error: frozen.refused, warnings: frozen.report.warnings } };
   const { report, pkg } = frozen;
   const now = new Date().toISOString();
   const saved = await patchQbr(clientId, period, {
@@ -1565,7 +1658,7 @@ export async function markPackageSent(clientId: string, period: string): Promise
   await seedReportDecisions(clientId, period, (report.narrative.output as { decisions?: Array<{ ask: string; why?: string }> }).decisions);
   if (!existing?.packageSentAt) audit('qbr.package_sent', `qbr:${clientId}/${period}`);
   await audit('qbr.lock', `qbr:${clientId}/${period}`, `preread v${pkg.version}`);
-  return ok(saved);
+  return ok(frozen.warning ? { ...saved, warning: frozen.warning } : saved);
 }
 
 export async function putSchedule(clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }): Promise<ApiResult> {

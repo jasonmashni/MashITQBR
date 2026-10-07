@@ -1,3 +1,4 @@
+import type { NarrativeResult } from '@mashit/narrative';
 import type { ReportModel } from '@mashit/report';
 import type { DataStore, DocContentStore, PackageRecord, PackageStage } from './store/index.js';
 
@@ -10,10 +11,31 @@ import type { DataStore, DocContentStore, PackageRecord, PackageStage } from './
 /** A stored model may carry the date of the reopen that produced it (workstream C renders it). */
 export type StoredModel = ReportModel & { revisedAt?: string };
 
+/** A document as the frozen build saw it (lock 2 reuses this list). */
+export interface FrozenDocument {
+  id: string;
+  name: string;
+  source: string;
+  findings?: Array<{ text: string; severity: 'info' | 'watch' | 'act' }>;
+}
+
+/** What the package JSON holds besides the files. */
+export interface StoredPackageJson {
+  model: StoredModel;
+  verification: boolean;
+  warnings: string[];
+  /** The narrative the build used; lock 2 reuses it with no model call. */
+  narrative?: NarrativeResult;
+  /** The documents the build used, for the model and the appended PDFs. */
+  documents?: FrozenDocument[];
+}
+
 export interface PackageArtifacts {
   model: StoredModel;
   verification: boolean;
   warnings: string[];
+  narrative?: NarrativeResult;
+  documents?: FrozenDocument[];
   pdf: Buffer;
   pptx: Buffer;
   html: string;
@@ -48,7 +70,14 @@ export async function storePackage(
     pptx: packagePath(clientId, period, version, 'pptx'),
     html: packagePath(clientId, period, version, 'html'),
   };
-  const json = JSON.stringify({ model: artifacts.model, verification: artifacts.verification, warnings: artifacts.warnings });
+  const stored: StoredPackageJson = {
+    model: artifacts.model,
+    verification: artifacts.verification,
+    warnings: artifacts.warnings,
+    ...(artifacts.narrative ? { narrative: artifacts.narrative } : {}),
+    ...(artifacts.documents ? { documents: artifacts.documents } : {}),
+  };
+  const json = JSON.stringify(stored);
   await docs.put(files.model, Buffer.from(json, 'utf8'), CONTENT_TYPE.model);
   await docs.put(files.pdf, artifacts.pdf, CONTENT_TYPE.pdf);
   await docs.put(files.pptx, artifacts.pptx, CONTENT_TYPE.pptx);
@@ -72,14 +101,11 @@ export async function latestPackage(store: DataStore, clientId: string, period: 
   return [...all].sort((a, b) => Number(b.stage === 'final') - Number(a.stage === 'final') || b.version - a.version)[0];
 }
 
-export async function loadPackageModel(
-  docs: DocContentStore,
-  record: PackageRecord,
-): Promise<{ model: StoredModel; verification: boolean; warnings: string[] } | undefined> {
+export async function loadPackageModel(docs: DocContentStore, record: PackageRecord): Promise<StoredPackageJson | undefined> {
   const bytes = await docs.get(record.files.model);
   if (!bytes) return undefined;
   try {
-    return JSON.parse(bytes.toString('utf8')) as { model: StoredModel; verification: boolean; warnings: string[] };
+    return JSON.parse(bytes.toString('utf8')) as StoredPackageJson;
   } catch {
     return undefined;
   }
