@@ -56,3 +56,18 @@ export function qbrStatusLabel(status: QbrStatus | string | undefined): string {
 export function statusAtLeast(current: QbrStatus | undefined, target: QbrStatus): boolean {
   return rank(current ?? 'draft') >= rank(target);
 }
+
+/** Agenda sources whose topic arrives from outside (suggestions, Halo, the inbox) and may carry PHI. */
+export const HIPAA_REWRITE_SOURCES = ['suggested', 'halo', 'email'] as const;
+
+/**
+ * True when a HIPAA client's agenda item still reads exactly as it arrived
+ * from its source: it cannot go on the report until the topic is rewritten.
+ * Items without a recorded sourceTopic (typed by hand, or older items) are
+ * not blocked here.
+ */
+export function hipaaTopicUnrewritten(item: { topic?: unknown; source?: string; sourceTopic?: string }, hipaa: boolean): boolean {
+  if (!hipaa || !item.source || !(HIPAA_REWRITE_SOURCES as readonly string[]).includes(item.source)) return false;
+  if (typeof item.sourceTopic !== 'string') return false;
+  return (typeof item.topic === 'string' ? item.topic : '').trim() === item.sourceTopic.trim();
+}

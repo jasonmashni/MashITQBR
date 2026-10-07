@@ -483,6 +483,7 @@ export function Workspace() {
               clientId={clientId}
               period={period}
               meta={meta}
+              hipaa={client?.hipaa === true}
               onSavedDiscussion={() => (discDirty.current = false)}
               onChanged={() => setRefresh((n) => n + 1)}
             />

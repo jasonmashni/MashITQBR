@@ -6,6 +6,7 @@ import {
   computeFlags,
   computeScorecard,
   daysSince,
+  hipaaTopicUnrewritten,
   isQbrStatus,
   lastPeriods,
   METRIC_CATEGORIES,
@@ -438,7 +439,8 @@ async function seedReportDecisions(clientId: string, period: string, decisions: 
   const store = getDataStore();
   const existing = await store.getDiscussion(clientId, period);
   const items = [...(existing?.items ?? [])];
-  const topics = new Set(items.map((i) => i.topic.trim().toLowerCase()));
+  // A stored item without a topic (written before validation) must not break the lock.
+  const topics = new Set(items.map((i) => (typeof i?.topic === 'string' ? i.topic.trim().toLowerCase() : '')).filter(Boolean));
   for (const d of asks) {
     const topic = d.ask.trim();
     if (topics.has(topic.toLowerCase())) continue;
@@ -552,6 +554,14 @@ export async function putConfig(clientId: string, body: Record<string, unknown>)
   audit('config.save', `client:${clientId}`);
   return ok(saved);
 }
+/** The minimum shape of an agenda item a client may save. */
+function isAgendaItemShape(it: unknown): boolean {
+  if (!it || typeof it !== 'object' || Array.isArray(it)) return false;
+  const r = it as Record<string, unknown>;
+  const filled = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+  return filled(r['id']) && filled(r['topic']) && (r['status'] === undefined || r['status'] === 'planned' || r['status'] === 'discussed');
+}
+
 export async function getDiscussion(clientId: string, period: string): Promise<ApiResult> {
   return ok((await getDataStore().getDiscussion(clientId, period)) ?? { clientId, period, items: [] });
 }
@@ -560,14 +570,30 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   if (locked) return locked;
   if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const store = getDataStore();
-  const items: DiscussionItem[] = Array.isArray(body['items']) ? (body['items'] as DiscussionItem[]) : [];
+  const raw: unknown[] = Array.isArray(body['items']) ? body['items'] : [];
+  // Every item needs a string id and topic (non-empty) and a known status;
+  // a malformed item would break lock 1 and the report build later.
+  const bad = raw.flatMap((it, i) => (isAgendaItemShape(it) ? [] : [i]));
+  if (bad.length) {
+    return err(400, `Agenda items at positions ${bad.join(', ')} are malformed. Each needs an id and a topic, and a status of planned or discussed.`);
+  }
+  const stored = (await store.getDiscussion(clientId, period))?.items ?? [];
+  const storedById = new Map(stored.map((i) => [i.id, i]));
+  const hipaa = (await storeDataSource(store).getClient(clientId))?.hipaa === true;
+  // HIPAA clients: an item that still reads as it arrived from Halo, a
+  // suggestion or the inbox stays off the report. The stored sourceTopic wins
+  // over the body so dropping it does not bypass the rule.
+  const items: DiscussionItem[] = (raw as DiscussionItem[]).map((i) => {
+    const sourceTopic = storedById.get(i.id)?.sourceTopic ?? i.sourceTopic;
+    const item = sourceTopic !== undefined ? { ...i, sourceTopic } : i;
+    return hipaaTopicUnrewritten(item, hipaa) && item.includeInReport !== false ? { ...item, includeInReport: false } : item;
+  });
   // knownIds = the ids the client loaded. A stored item in neither the body
   // nor knownIds was added behind the client's back (the email inbox), so it
   // is kept rather than erased. Without knownIds the body replaces the list.
   if (Array.isArray(body['knownIds'])) {
     const known = new Set((body['knownIds'] as unknown[]).filter((x): x is string => typeof x === 'string'));
-    const inBody = new Set(items.map((i) => i?.id));
-    const stored = (await store.getDiscussion(clientId, period))?.items ?? [];
+    const inBody = new Set(items.map((i) => i.id));
     items.push(...stored.filter((i) => !inBody.has(i.id) && !known.has(i.id)));
   }
   const saved = await store.putDiscussion({ clientId, period, items, notes: body['notes'] as string | undefined });

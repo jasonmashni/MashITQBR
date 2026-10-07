@@ -293,6 +293,11 @@ export interface DiscussionItem {
   source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report';
   /** Message id, Halo id, or other external reference for the source. */
   sourceRef?: string;
+  /**
+   * The topic as it arrived from the source (suggestion, Halo, inbox). For a
+   * HIPAA client the item stays off the report until the topic differs.
+   */
+  sourceTopic?: string;
 }
 
 /** The review-time discussion + notes for a client's QBR. */
