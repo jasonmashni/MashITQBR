@@ -248,7 +248,16 @@ export function Dashboard() {
                     <Table.Td>
                       {r.lastCompletedPeriod ? (
                         <Box>
-                          <Text size="sm" fw={500} data-num>{r.lastCompletedPeriod}</Text>
+                          <Anchor
+                            component={Link}
+                            to={`/clients/${r.clientId}?period=${r.lastCompletedPeriod}`}
+                            size="sm"
+                            fw={500}
+                            data-num
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {r.lastCompletedPeriod}
+                          </Anchor>
                           <Text size="xs" c="dimmed">Review complete</Text>
                         </Box>
                       ) : (
