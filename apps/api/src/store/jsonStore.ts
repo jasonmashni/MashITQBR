@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { AuditEvent, BookingRecord, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, NotificationRecord, OpportunityRecord, QbrRecord } from './types.js';
+import type { AuditEvent, BookingRecord, BudgetPlanRecord, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, NotificationRecord, OpportunityRecord, PackageRecord, QbrRecord } from './types.js';
 
 interface JsonShape {
   clients: Record<string, Client>;
@@ -16,6 +16,10 @@ interface JsonShape {
   documents: Record<string, DocumentRecord[]>;
   /** Opportunity board cards, keyed clientId. */
   opportunities: Record<string, OpportunityRecord[]>;
+  /** Frozen report packages, keyed clientId:period. */
+  packages: Record<string, PackageRecord[]>;
+  /** Budget plans, keyed clientId. */
+  budgets: Record<string, BudgetPlanRecord[]>;
   /** Newest first, capped locally. */
   audit: AuditEvent[];
   /** Booking links keyed by token. */
@@ -24,7 +28,7 @@ interface JsonShape {
   notifications: NotificationRecord[];
 }
 
-const EMPTY: JsonShape = { clients: {}, connections: {}, maps: {}, qbrs: {}, configs: {}, discussions: {}, snapshots: {}, narratives: {}, documents: {}, opportunities: {}, audit: [], bookings: {}, notifications: [] };
+const EMPTY: JsonShape = { clients: {}, connections: {}, maps: {}, qbrs: {}, configs: {}, discussions: {}, snapshots: {}, narratives: {}, documents: {}, opportunities: {}, packages: {}, budgets: {}, audit: [], bookings: {}, notifications: [] };
 const pk = (a: string, b: string) => `${a}:${b}`;
 
 /** File-backed DataStore for local development. */
@@ -183,6 +187,30 @@ export class JsonDataStore implements DataStore {
     const s = this.read();
     s.opportunities[clientId] = (s.opportunities[clientId] ?? []).filter((o) => o.id !== id);
     this.write(s);
+  }
+
+  async listPackages(clientId: string, period: string): Promise<PackageRecord[]> {
+    return [...(this.read().packages[pk(clientId, period)] ?? [])].sort((a, b) => a.version - b.version);
+  }
+  async putPackage(record: PackageRecord): Promise<PackageRecord> {
+    const s = this.read();
+    const key = pk(record.clientId, record.period);
+    s.packages[key] = [...(s.packages[key] ?? []).filter((p) => p.version !== record.version), record];
+    this.write(s);
+    return record;
+  }
+
+  async listBudgetPlans(clientId: string): Promise<BudgetPlanRecord[]> {
+    return [...(this.read().budgets[clientId] ?? [])].sort((a, b) => a.fiscalLabel - b.fiscalLabel);
+  }
+  async getBudgetPlan(clientId: string, fiscalLabel: number): Promise<BudgetPlanRecord | undefined> {
+    return (this.read().budgets[clientId] ?? []).find((b) => b.fiscalLabel === fiscalLabel);
+  }
+  async putBudgetPlan(record: BudgetPlanRecord): Promise<BudgetPlanRecord> {
+    const s = this.read();
+    s.budgets[record.clientId] = [...(s.budgets[record.clientId] ?? []).filter((b) => b.fiscalLabel !== record.fiscalLabel), record];
+    this.write(s);
+    return record;
   }
 
   async appendAudit(event: AuditEvent): Promise<void> {

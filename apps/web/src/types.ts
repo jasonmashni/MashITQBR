@@ -32,6 +32,8 @@ export interface Client {
   /** Strategic business goals the QBR aligns IT work to. */
   goals?: ClientGoal[];
   integrationRefs?: Record<string, string>;
+  /** 1..12; the month the client's fiscal year starts. Undefined means January. */
+  fiscalYearStartMonth?: number;
 }
 
 /** A collected metric (mirrors the server's MetricValue). */
@@ -196,6 +198,68 @@ export interface QbrMeta {
   meetingSkipped?: { at: string; reason?: string };
   /** Set when the last sync was refused because every tool failed; cleared by the next successful sync. */
   lastSyncAttempt?: { at: string; warnings: string[] };
+  /** Lock 1 (pre-read sent) and lock 2 (decisions captured). */
+  locks?: { preread?: LockInfo; final?: LockInfo };
+  reopened?: Array<{ at: string; by: string; stage: PackageStage; reason: string }>;
+}
+
+export interface LockInfo {
+  at: string;
+  by: string;
+  version: number;
+}
+export type PackageStage = 'preread' | 'final';
+
+export interface DocumentFinding {
+  text: string;
+  severity: 'info' | 'watch' | 'act';
+}
+
+export type BudgetCategory = 'managed_services' | 'licensing' | 'hardware' | 'projects' | 'support_hours' | 'compliance' | 'contingency';
+export type BudgetSource = 'halo' | 'cipp' | 'ninja' | 'hudu' | 'opportunities' | 'answer';
+export interface BudgetLine {
+  category: BudgetCategory;
+  low: number;
+  expected: number;
+  high: number;
+  basis: Array<{ source: BudgetSource; note: string }>;
+}
+export interface BudgetAnswers {
+  headcountChange?: number;
+  newLocations?: 0 | 1 | 2;
+  projects?: Array<{ name: string; low?: number; high?: number }>;
+  workstationUnitCost?: number;
+  refreshPolicy?: 'run_to_failure' | 'at_warranty_end' | 'early';
+  complianceDeadlines?: Array<{ what: string; when: string; estimate?: number }>;
+  copilotSeats?: number;
+  copilotSeatPrice?: number;
+  appetite?: 'lean' | 'balanced' | 'cautious';
+  notes?: string;
+}
+export interface BudgetContextItem {
+  title: string;
+  insight: string;
+  askClient: string;
+  sourceName?: string;
+  sourceUrl?: string;
+}
+export interface BudgetPlanRecord {
+  clientId: string;
+  fiscalLabel: number;
+  answers: BudgetAnswers;
+  assumptions: string[];
+  movers: string[];
+  lines: BudgetLine[];
+  totals: { low: number; expected: number; high: number };
+  caveats: string[];
+  status: 'draft' | 'published';
+  publishedPeriod?: string;
+  publishedAt?: string;
+  /** Internal only: shown in the planner, never on a client page. */
+  context?: { researchedAt: string; sourced: boolean; items: BudgetContextItem[] };
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
 }
 
 export interface QbrResponse {
@@ -203,6 +267,8 @@ export interface QbrResponse {
   warnings: string[];
   verification: boolean;
   meta: QbrMeta;
+  /** Present when the quarter is locked and served from a stored package. */
+  package?: { version: number; stage: PackageStage; createdAt: string };
 }
 
 export interface Brand {
@@ -230,6 +296,8 @@ export interface ReportConfig {
   sectionGuidance?: Record<string, string>;
   /** Metric keys left out of the report. */
   excludedMetrics?: string[];
+  /** Show "Since last quarter" on page one. Undefined means true. */
+  showSinceLastQuarter?: boolean;
 }
 
 export interface DiscussionItem {
@@ -245,6 +313,9 @@ export interface DiscussionItem {
   /** Agenda order (lower first). */
   sortOrder?: number;
   externalRef?: { system: string; id: string; status?: string };
+  /** Where the item came from. Undefined means typed by hand. */
+  source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report';
+  sourceRef?: string;
 }
 export interface Discussion {
   clientId: string;

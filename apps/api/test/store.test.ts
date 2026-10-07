@@ -105,3 +105,28 @@ describe('LocalSecretStore', () => {
     expect(await secrets.get('conn-x--token')).toBeUndefined();
   });
 });
+
+describe('packages and budget plans', () => {
+  it('stores package versions per client and period, oldest first', async () => {
+    const store = new JsonDataStore(dir);
+    const base = { clientId: 'c1', period: '2026-Q2', createdAt: '2026-10-07T00:00:00Z', createdBy: 'jason', warnings: [] as string[] };
+    await store.putPackage({ ...base, version: 2, stage: 'final', files: { model: 'm2', pdf: 'p2', pptx: 'x2', html: 'h2' } });
+    await store.putPackage({ ...base, version: 1, stage: 'preread', files: { model: 'm1', pdf: 'p1', pptx: 'x1', html: 'h1' } });
+    const list = await store.listPackages('c1', '2026-Q2');
+    expect(list.map((p) => p.version)).toEqual([1, 2]);
+    expect(await store.listPackages('c1', '2026-Q1')).toEqual([]);
+  });
+  it('stores one budget plan per client and fiscal label', async () => {
+    const store = new JsonDataStore(dir);
+    const plan = {
+      clientId: 'c1', fiscalLabel: 2027, answers: {}, assumptions: [], movers: [], lines: [], caveats: [],
+      totals: { low: 0, expected: 0, high: 0 }, status: 'draft' as const,
+      createdAt: '2026-10-07T00:00:00Z', updatedAt: '2026-10-07T00:00:00Z', updatedBy: 'jason',
+    };
+    await store.putBudgetPlan(plan);
+    await store.putBudgetPlan({ ...plan, assumptions: ['Headcount grows by two'] });
+    expect((await store.getBudgetPlan('c1', 2027))?.assumptions).toEqual(['Headcount grows by two']);
+    expect((await store.listBudgetPlans('c1')).length).toBe(1);
+    expect(await store.getBudgetPlan('c1', 2028)).toBeUndefined();
+  });
+});

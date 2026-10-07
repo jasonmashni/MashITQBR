@@ -268,6 +268,8 @@ export interface ReportConfig {
   sectionGuidance?: Partial<Record<MetricCategory, string>>;
   /** Org-level (stored on the org settings record): booking-page rules. */
   booking?: BookingSettings;
+  /** Show "Since last quarter" on page one. Undefined means true. */
+  showSinceLastQuarter?: boolean;
 }
 
 /** One captured discussion point from the QBR review (question/decision + response). */
@@ -287,6 +289,10 @@ export interface DiscussionItem {
   sortOrder?: number;
   /** Set once pushed to an external system (Halo ticket / Zomentum opportunity). */
   externalRef?: { system: 'halo' | 'zomentum'; id: string; status?: string };
+  /** Where the item came from. Undefined means typed by hand. */
+  source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report';
+  /** Message id, Halo id, or other external reference for the source. */
+  sourceRef?: string;
 }
 
 /** The review-time discussion + notes for a client's QBR. */
@@ -335,6 +341,8 @@ export interface Client {
   goals?: ClientGoal[];
   /** Map of integration -> per-client external identifier (e.g. Halo client id). */
   integrationRefs?: Partial<Record<IntegrationId, string>>;
+  /** 1..12; the month the client's fiscal year starts. Undefined means January. */
+  fiscalYearStartMonth?: number;
 }
 
 export interface Qbr {
@@ -347,4 +355,45 @@ export interface Qbr {
   actions: QbrAction[];
   createdAt: string;
   updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Budget planning (fiscal-year outlook). The shapes live here because core
+// owns the deterministic outlook math; the API store wraps them in a record.
+// ---------------------------------------------------------------------------
+
+export type BudgetCategory = 'managed_services' | 'licensing' | 'hardware' | 'projects' | 'support_hours' | 'compliance' | 'contingency';
+export type BudgetSource = 'halo' | 'cipp' | 'ninja' | 'hudu' | 'opportunities' | 'answer';
+
+/** One outlook line with the sources every number came from. */
+export interface BudgetLine {
+  category: BudgetCategory;
+  low: number;
+  expected: number;
+  high: number;
+  basis: Array<{ source: BudgetSource; note: string }>;
+}
+
+/** What only the client or the account manager can tell us. */
+export interface BudgetAnswers {
+  headcountChange?: number;
+  newLocations?: 0 | 1 | 2;
+  projects?: Array<{ name: string; low?: number; high?: number }>;
+  workstationUnitCost?: number;
+  refreshPolicy?: 'run_to_failure' | 'at_warranty_end' | 'early';
+  complianceDeadlines?: Array<{ what: string; when: string; estimate?: number }>;
+  copilotSeats?: number;
+  copilotSeatPrice?: number;
+  appetite?: 'lean' | 'balanced' | 'cautious';
+  notes?: string;
+}
+
+/** The client-facing part of a budget plan (what the report prints). */
+export interface BudgetOutlook {
+  fiscalLabel: number;
+  assumptions: string[];
+  movers: string[];
+  lines: BudgetLine[];
+  totals: { low: number; expected: number; high: number };
+  caveats: string[];
 }
