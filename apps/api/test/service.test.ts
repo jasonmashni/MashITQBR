@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { seedDataSource } from '../src/dataSource.js';
-import { _resetAiFailureCooldown, buildQbrReport, renderQbrHtml } from '../src/service.js';
+import { _resetAiFailureCooldown, buildQbrReport, narrativeEditsFromBody, renderQbrHtml } from '../src/service.js';
+import { v4Narrative } from './narrativeFixture.js';
 
 // Locked-quarter reads must never reach the narrative model: the handlers'
 // Claude factory is swapped for a spy so any call is visible.
@@ -46,13 +47,11 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
       narrativeModel: async () => {
         called = true;
-        return {
+        return v4Narrative({
           headline: 'Custom headline',
-          summary_paragraphs: ['Patch compliance held at 89%.'],
-          highlights: [],
-          recommendations: [],
+          lede: 'Patch compliance held at 89%.',
           figures_referenced: [{ label: 'patch', value: '89%' }],
-        };
+        });
       },
     });
     expect(called).toBe(true);
@@ -99,13 +98,11 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     let calls = 0;
     const model = async () => {
       calls++;
-      return {
+      return v4Narrative({
         headline: 'Cached headline',
-        summary_paragraphs: ['Patch compliance held at 89%.'],
-        highlights: [],
-        recommendations: [],
+        lede: 'Patch compliance held at 89%.',
         figures_referenced: [{ label: 'patch', value: '89%' }],
-      };
+      });
     };
     const backing = new Map<string, never>();
     const cache = {
@@ -132,13 +129,7 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     };
     const model = async () => {
       calls++;
-      return {
-        headline: 'Made up',
-        summary_paragraphs: [],
-        highlights: [],
-        recommendations: [],
-        figures_referenced: [{ label: 'phantom', value: '123456' }],
-      };
+      return v4Narrative({ headline: 'Made up', figures_referenced: [{ label: 'phantom', value: '123456' }] });
     };
     const first = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', { narrativeModel: model, narrativeCache: cache });
     expect(first.narrative.verification.ok).toBe(false);
@@ -166,13 +157,7 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
 
   it('survives a broken cache (falls back to the model)', async () => {
     const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
-      narrativeModel: async () => ({
-        headline: 'Resilient',
-        summary_paragraphs: [],
-        highlights: [],
-        recommendations: [],
-        figures_referenced: [],
-      }),
+      narrativeModel: async () => v4Narrative({ headline: 'Resilient' }),
       narrativeCache: {
         get: async () => {
           throw new Error('table offline');
@@ -198,6 +183,81 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     expect(report.model.executive.paragraphs.length).toBeGreaterThan(0); // offline draft retained
   });
 
+  it('derives the v3 fields from a v4 narrative for the report model', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () =>
+        v4Narrative({
+          lede: 'A calm quarter with one decision.',
+          did: ['Handled requests.', 'Patched devices.', 'Watched threats.'],
+          saw: ['Demand held.', 'Nothing spread.', 'Backups ran.'],
+          plan: {
+            now: [{ action: 'Fix the lab PC backup', owner: 'Mash IT' }],
+            next: [{ action: 'Quote the refresh', owner: 'Mash IT', decision: true }],
+            later: [{ action: 'Plan the budget', owner: 'ANP and Mash IT' }],
+          },
+        }),
+    });
+    expect(report.model.executive.paragraphs).toEqual(['A calm quarter with one decision.']);
+    expect(report.model.executive.highlights).toEqual(['Handled requests.', 'Patched devices.', 'Watched threats.', 'Demand held.', 'Nothing spread.', 'Backups ran.']);
+    expect(report.model.recommendations).toEqual(['Fix the lab PC backup (Mash IT)', 'Quote the refresh (Mash IT)', 'Plan the budget (ANP and Mash IT)']);
+    expect(report.narrative.verification.ok).toBe(true);
+    // Derived fields are not double-checked as separate prose.
+    expect(report.narrative.verification.checks.some((c) => c.label.startsWith('summary_paragraphs'))).toBe(false);
+  });
+
+  it('author edits to every v4 prose field win over the model', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => v4Narrative(),
+      narrativeEdits: {
+        lede: 'Edited lede.',
+        did: ['Edited one.', 'Edited two.', 'Edited three.'],
+        decisions: [{ ask: 'Edited ask' }],
+        plan: { now: [{ action: 'Edited action', owner: 'Mash IT' }], next: [], later: [] },
+      },
+    });
+    expect(report.narrative.output.did).toEqual(['Edited one.', 'Edited two.', 'Edited three.']);
+    expect(report.narrative.output.saw).toEqual(v4Narrative().saw); // untouched field keeps the model's text
+    expect(report.narrative.output.decisions).toEqual([{ ask: 'Edited ask' }]);
+    expect(report.model.executive.paragraphs).toEqual(['Edited lede.']);
+    expect(report.model.executive.highlights.slice(0, 3)).toEqual(['Edited one.', 'Edited two.', 'Edited three.']);
+    expect(report.model.recommendations).toEqual(['Edited action (Mash IT)']);
+  });
+
+  it('clearing decisions and the plan empties them on the model', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () =>
+        v4Narrative({ decisions: [{ ask: 'Approve it' }], plan: { now: [{ action: 'Do it', owner: 'Mash IT' }], next: [], later: [] } }),
+      narrativeEdits: { decisions: [], plan: { now: [], next: [], later: [] } },
+    });
+    expect(report.model.decisions).toEqual([]);
+    expect(report.model.plan).toEqual({ now: [], next: [], later: [] });
+  });
+
+  it('a pre-v4 edit maps its first paragraph to the lede and its highlights to what we did', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => v4Narrative(),
+      narrativeEdits: { summary_paragraphs: ['Old first paragraph.', 'Old second paragraph.'], highlights: ['One.', 'Two.', 'Three.'] },
+    });
+    expect(report.narrative.output.lede).toBe('Old first paragraph.');
+    expect(report.narrative.output.did).toEqual(['One.', 'Two.', 'Three.']);
+    expect(report.model.executive.lede).toBe('Old first paragraph.');
+    // A v4 edit for the same field wins over the v3 one.
+    const both = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => v4Narrative(),
+      narrativeEdits: { lede: 'New lede.', summary_paragraphs: ['Old.'] },
+    });
+    expect(both.narrative.output.lede).toBe('New lede.');
+  });
+
+  it('a limit breach in an edit is a verification failure with a warning', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => v4Narrative(),
+      narrativeEdits: { did: ['Only one bullet.'] },
+    });
+    expect(report.narrative.verification.ok).toBe(false);
+    expect(report.warnings.join(' ')).toContain('did: 1 item (3 to 4)');
+  });
+
   it('excludedMetrics vanish from sections, trends, and the AI input', async () => {
     const base = await buildQbrReport(seedDataSource, 'anp', '2026-Q1');
     const someKey = base.model.sections[0]!.rows[0]!.metric.key;
@@ -207,7 +267,7 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
       config: { clientId: 'anp', excludedMetrics: [someKey] },
       narrativeModel: async (messages) => {
         modelSawExcluded = messages.some((m) => m.content.includes(someKey));
-        return { headline: 'X', summary_paragraphs: [], highlights: [], recommendations: [], figures_referenced: [] };
+        return v4Narrative({ headline: 'X' });
       },
     });
     const keys = report.model.sections.flatMap((s) => s.rows.map((r) => r.metric.key));
@@ -235,6 +295,75 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     const html = renderQbrHtml(report);
     expect(html).toContain('Acme MSP');
     expect(html).toContain('OpenVPN removal?');
+  });
+});
+
+describe('since last quarter in the service', () => {
+  const previousDiscussion = [
+    { id: 'p1', topic: 'Clock-in tablet', disposition: 'create_ticket' as const, status: 'discussed' as const, externalRef: { system: 'halo' as const, id: '41882', status: 'Open' } },
+    { id: 'p2', topic: 'Studio 5000 access', status: 'planned' as const },
+  ];
+
+  it('looks up live Halo statuses for pushed items and passes revisedAt', async () => {
+    const asked: string[] = [];
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      previousDiscussion,
+      lookupTicketStatus: async (id) => {
+        asked.push(id);
+        return 'Closed';
+      },
+      revisedAt: '2026-10-09',
+    });
+    expect(asked).toEqual(['41882']);
+    expect(report.model.sinceLastQuarter.map((r) => [r.topic, r.status])).toEqual([
+      ['Clock-in tablet', 'done'],
+      ['Studio 5000 access', 'waiting'],
+    ]);
+    expect(report.model.revisedAt).toBe('2026-10-09');
+  });
+
+  it('falls back to the stored status when the lookup fails', async () => {
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      previousDiscussion,
+      lookupTicketStatus: async () => {
+        throw new Error('Halo down');
+      },
+    });
+    expect(report.model.sinceLastQuarter[0]!.status).toBe('in_progress');
+  });
+});
+
+describe('narrativeEditsFromBody', () => {
+  it('keeps every prose field and drops blanks', () => {
+    const edits = narrativeEditsFromBody({
+      headline: '  New headline ',
+      lede: '',
+      did: ['One', ' ', 'Two'],
+      saw: 'not an array',
+      decisions: [{ ask: 'Approve', why: ' ', by: 'Nov 15' }, { ask: '' }],
+      plan: { now: [{ action: 'Do it', owner: 'Mash IT', decision: true }, { action: '', owner: 'x' }], next: [], later: [] },
+      protection: [{ question: 'get_in', inPlace: 'MFA', thisQuarter: 'Fine' }, { question: 'nope', inPlace: 'x', thisQuarter: 'y' }],
+      recommendations: ['Legacy'],
+    });
+    expect(edits).toEqual({
+      headline: 'New headline',
+      did: ['One', 'Two'],
+      decisions: [{ ask: 'Approve', by: 'Nov 15' }],
+      plan: { now: [{ action: 'Do it', owner: 'Mash IT', decision: true }], next: [], later: [] },
+      protection: [{ question: 'get_in', inPlace: 'MFA', thisQuarter: 'Fine' }],
+      recommendations: ['Legacy'],
+    });
+  });
+
+  it('returns undefined when nothing was edited', () => {
+    expect(narrativeEditsFromBody({ headline: ' ', did: [], lede: '' })).toBeUndefined();
+  });
+
+  it('keeps an emptied decisions list and plan so the author can clear them', () => {
+    expect(narrativeEditsFromBody({ decisions: [], plan: { now: [], next: [], later: [] } })).toEqual({
+      decisions: [],
+      plan: { now: [], next: [], later: [] },
+    });
   });
 });
 

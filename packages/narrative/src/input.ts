@@ -5,13 +5,37 @@ import {
   computeTrends,
   hasTicketDigest,
   parsePeriod,
+  protectionRows,
   ticketDigest,
   type Client,
   type MaturityScorecard,
   type MetricSnapshot,
   type MetricTrend,
+  type ProtectionQuestionId,
   type TicketDigest,
 } from '@mashit/core';
+import { extractNumbers } from './numbers.js';
+
+/** A finding extracted from an attached vendor report. */
+export interface NarrativeDocumentFinding {
+  text: string;
+  severity: 'info' | 'watch' | 'act';
+}
+
+/** An attached vendor report as the narrative sees it. */
+export interface NarrativeDocument {
+  name: string;
+  source: string;
+  /** Short sentences an account manager must not miss; their figures are allowed. */
+  findings?: NarrativeDocumentFinding[];
+}
+
+/** One protection question with the measured safeguards behind it. */
+export interface NarrativeProtectionGroup {
+  question: ProtectionQuestionId;
+  rating: string;
+  safeguards: Array<{ title: string; score: number | null; rating: string; evidence: string }>;
+}
 
 /** Author steering for the narrative (focus, standing guidance, compliance). */
 export interface NarrativeDirection {
@@ -34,6 +58,12 @@ export interface NarrativeInput {
     overall: MaturityScorecard['overall'];
     functions: Array<{ function: string; score: number | null; rating: string }>;
     remediations: Array<{ title: string; score: number | null; evidence: string }>;
+    /**
+     * The five protection questions with their measured safeguards and
+     * evidence (unmeasured safeguards are left out). Optional so hand-built
+     * inputs in tests stay valid.
+     */
+    protection?: NarrativeProtectionGroup[];
   };
   /**
    * A sample of the ACTUAL ticket subjects this quarter, grouped by type. The
@@ -58,7 +88,7 @@ export interface NarrativeInput {
    * e.g. a Synology "Active Backup" report proves device backup exists even when
    * our API-based backup figure is 0 (Synology has no API).
    */
-  documents?: Array<{ name: string; source: string }>;
+  documents?: NarrativeDocument[];
   /** Present only when the author set direction — changes bust the AI cache. */
   direction?: NarrativeDirection;
   /**
@@ -85,8 +115,8 @@ export function buildNarrativeInput(
     current: MetricSnapshot;
     previous?: MetricSnapshot;
     direction?: NarrativeDirection;
-    /** Vendor reports attached to this QBR — so the model won't contradict them. */
-    documents?: Array<{ name: string; source: string }>;
+    /** Vendor reports attached to this QBR, so the model won't contradict them. */
+    documents?: NarrativeDocument[];
   },
   opts: { allowPhi?: boolean } = {},
 ): NarrativeInput {
@@ -124,6 +154,13 @@ export function buildNarrativeInput(
       overall: scorecard.overall,
       functions: scorecard.functions.map((f) => ({ function: f.function, score: f.score, rating: f.rating })),
       remediations: scorecard.remediations.map((r) => ({ title: r.title, score: r.score, evidence: r.evidence })),
+      protection: protectionRows(scorecard).map((row) => ({
+        question: row.id,
+        rating: row.rating,
+        safeguards: row.safeguards
+          .filter((sg) => sg.measured)
+          .map((sg) => ({ title: sg.title, score: sg.score, rating: sg.rating, evidence: sg.evidence })),
+      })),
     },
     ticketSamples: !withholdSubjects && hasTicketDigest(samples) ? samples : undefined,
     ticketInsights: ticketInsights.length
@@ -163,6 +200,7 @@ export function buildAllowedNumbers(input: NarrativeInput): number[] {
   add(input.scorecard.overall.coverage * 100); // coverage often cited as a %
   for (const f of input.scorecard.functions) add(f.score);
   for (const r of input.scorecard.remediations) add(r.score);
+  for (const g of input.scorecard.protection ?? []) for (const sg of g.safeguards) add(sg.score);
 
   // The ticket-insight talking points carry the figures they computed
   // (recurring-theme counts, SLA breaches…). Never regex the title/detail text:
@@ -170,6 +208,10 @@ export function buildAllowedNumbers(input: NarrativeInput): number[] {
   for (const i of input.ticketInsights ?? []) {
     for (const n of i.figures ?? []) add(n);
   }
+
+  // Attached-report findings are sentences the extractor read from the
+  // document; the prose may quote their figures ("389 days").
+  for (const d of input.documents ?? []) for (const f of d.findings ?? []) for (const n of extractNumbers(f.text)) add(n);
 
   // Period years / quarter numbers appear in prose and shouldn't be flagged.
   for (const p of [input.period, input.previousPeriod]) {

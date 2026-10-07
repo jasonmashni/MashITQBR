@@ -228,8 +228,16 @@ describe('lock 1: package sent', () => {
 
       const items = (await store.getDiscussion('mp', '2026-Q1'))?.items ?? [];
       const seeded = items.filter((i) => i.source === 'report');
-      expect(seeded).toHaveLength(1);
-      expect(seeded[0]).toMatchObject({ topic: 'Approve the firewall refresh', response: 'The current units reach end of support.', status: 'planned', includeInReport: true, sourceRef: 'page-one' });
+      // Seeded items mirror the page-one decisions frozen in the stored model
+      // (the v4 narrative or, when the model output is rejected, the offline draft).
+      const { loadPackageModel } = await import('../src/packages.js');
+      const frozen = await loadPackageModel(getDocStore(), pkgs[0]!);
+      const decisions = (frozen?.model as { decisions?: Array<{ ask: string; why?: string }> } | undefined)?.decisions ?? [];
+      expect(decisions.length).toBeGreaterThan(0);
+      expect(seeded.map((i) => i.topic)).toEqual(decisions.map((d) => d.ask));
+      for (const [i, d] of decisions.entries()) {
+        expect(seeded[i]).toMatchObject({ topic: d.ask, status: 'planned', includeInReport: true, sourceRef: 'page-one', ...(d.why ? { response: d.why } : {}) });
+      }
 
       const events = ((await h.getAudit('50')).json as { events: Array<{ action: string; detail?: string }> }).events;
       expect(events.some((e) => e.action === 'qbr.lock' && e.detail === 'preread v1')).toBe(true);
