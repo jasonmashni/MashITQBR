@@ -92,6 +92,29 @@ describe('designed PDF (pdfmake)', () => {
     expect((def as { pageSize?: string }).pageSize).toBe('LETTER');
   });
 
+  it('keeps the movers heading, caption and chart in one unbreakable block and prints the cover footer once', () => {
+    const mk = (key: string, current: number, previous: number, sentiment: 'positive' | 'negative') => ({
+      key,
+      label: key,
+      category: 'security' as const,
+      current,
+      previous,
+      deltaAbs: current - previous,
+      deltaPct: Math.round(((current - previous) / previous) * 1000) / 10,
+      direction: current > previous ? ('up' as const) : ('down' as const),
+      sentiment,
+    });
+    const withMovers = { ...model, trends: [mk('alerts.resolved', 12, 8, 'positive'), mk('patch.pending', 9, 5, 'negative')] };
+    const def = buildPdfDefinition(withMovers) as unknown as { content: unknown[] };
+    const json = JSON.stringify(def.content);
+    const movers = (def.content as Array<Record<string, unknown>>).find((n) => Array.isArray(n['stack']) && JSON.stringify(n['stack']).includes('What changed this quarter'));
+    expect(movers?.['unbreakable']).toBe(true);
+    expect(JSON.stringify(movers!['stack'])).toContain('"svg"');
+    const cover = (def.content as Array<Record<string, unknown>>).slice(0, 12);
+    expect(JSON.stringify(cover).match(/Prepared by Mash IT\. Confidential\./g) ?? []).toHaveLength(0);
+    expect(json).not.toMatch(/"fontSize":[0-7](\.|,|})/);
+  });
+
   it('never shouts: no uppercased labels, no middle-dot strings, no em dashes in chrome', () => {
     const text = JSON.stringify(buildPdfDefinition(model));
     expect(text).not.toMatch(/[A-Z]{6,} [A-Z]{6,}/); // "QUARTERLY BUSINESS", "TICKETS HANDLED"

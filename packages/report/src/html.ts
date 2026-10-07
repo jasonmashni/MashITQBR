@@ -113,7 +113,7 @@ th{color:var(--muted);font-weight:500;font-size:12px}
 .goal .g-align{color:var(--text);margin:6px 0 0}
 .goal .g-target{color:var(--muted);font-size:12px}
 @page{size:Letter;margin:14mm}
-@media print{html{background:#fff}.page{max-width:none;padding:0}body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+@media print{h1,h2,h3{break-after:avoid}.tiles,.figure,.confidence,.section-summary,.goal,tr{break-inside:avoid}html{background:#fff}.page{max-width:none;padding:0}body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 @media (max-width:640px){.page{padding:24px 16px}.scorecard{grid-template-columns:1fr 1fr}.tiles{grid-template-columns:1fr 1fr !important}.headline{font-size:22px}h1{font-size:28px}}
 `;
 }

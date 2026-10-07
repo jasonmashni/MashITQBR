@@ -129,6 +129,7 @@ function calloutBlock(text: string, accent: string, margin: number[] = [0, 2, 0,
       ],
     },
     layout: { defaultBorder: false, paddingLeft: () => 0, paddingRight: () => 0, paddingTop: () => 0, paddingBottom: () => 0 },
+    unbreakable: true,
     margin,
   };
 }
@@ -155,6 +156,7 @@ function confidenceBlock(m: ReportModel): Node | undefined {
       ],
     },
     layout: { defaultBorder: false, paddingLeft: () => 0, paddingRight: () => 0, paddingTop: () => 0, paddingBottom: () => 0 },
+    unbreakable: true,
     margin: [0, 4, 0, 12],
   };
 }
@@ -180,7 +182,7 @@ function sectionTable(section: ReportSection, brand: BrandTokens): Node {
   ];
   return {
     stack: [
-      { text: section.title, style: 'h2', color: brand.primary },
+      { text: section.title, style: 'h2', headlineLevel: 2, color: brand.primary },
       ...(section.summary ? [calloutBlock(section.summary, brand.accent)] : []),
       {
         table: { headerRows: 1, widths: hasPrior ? ['*', 90, 70] : ['*', 110], body },
@@ -207,6 +209,7 @@ function kpiBand(m: ReportModel): Node | undefined {
   if (tiles.length < 2) return undefined;
   const toneColor = (tone: string | undefined) => (tone === 'good' ? SEMANTIC.good : tone === 'bad' ? SEMANTIC.act : GRAY);
   return {
+    unbreakable: true,
     table: {
       widths: tiles.map(() => '*'),
       body: [
@@ -299,13 +302,6 @@ function coverPage(m: ReportModel): Node[] {
       bold: true,
       absolutePosition: { x: 52, y: PAGE.height - COVER_BAND_H + 40 },
     },
-    {
-      text: `Prepared by ${brand.orgName}. ${m.client.hipaa ? 'Contains confidential client information (HIPAA).' : 'Confidential.'}`,
-      color: '#ffffff',
-      opacity: 0.85,
-      fontSize: 9,
-      absolutePosition: { x: 52, y: PAGE.height - COVER_BAND_H + 62 },
-    },
     { text: '', pageBreak: 'after' },
   ];
 }
@@ -379,7 +375,7 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
 
   // Opening page: headline, narrative, at-a-glance tiles, data confidence, what changed.
   if (m.executive.headline || m.executive.paragraphs.length || selectKpiTiles(m).length >= 2) {
-    content.push({ text: 'Executive Summary', style: 'h1', color: brand.primary });
+    content.push({ text: 'Executive Summary', style: 'h1', headlineLevel: 1, color: brand.primary });
     if (m.executive.headline) content.push({ text: m.executive.headline, fontSize: 15, bold: true, color: brand.primary, lineHeight: 1.2, margin: [0, 0, 0, 10] });
     for (const p of m.executive.paragraphs) content.push({ text: p, style: 'body' });
     if (m.executive.highlights.length) {
@@ -391,15 +387,20 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
     if (confidence) content.push(confidence);
     const moversSvg = moversBarChartSvg(m.trends, { width: 508 });
     if (moversSvg) {
-      content.push({ text: 'What changed this quarter', style: 'h2', color: brand.primary, margin: [0, 12, 0, 2] });
-      content.push({ text: moversCaption(m.trends), style: 'small', margin: [0, 0, 0, 6] });
-      content.push({ svg: moversSvg, width: 508, margin: [0, 0, 0, 8] });
+      content.push({
+        unbreakable: true,
+        stack: [
+          { text: 'What changed this quarter', style: 'h2', headlineLevel: 2, color: brand.primary, margin: [0, 12, 0, 2] },
+          { text: moversCaption(m.trends), style: 'small', margin: [0, 0, 0, 6] },
+          { svg: moversSvg, width: 508, margin: [0, 0, 0, 8] },
+        ],
+      });
     }
   }
 
   // Strategic goals & IT alignment (qualitative; no figures, so no guardrail concern).
   if (m.goals.length) {
-    content.push({ text: 'Strategic Goals & IT Alignment', style: 'h1', color: brand.primary, pageBreak: 'before' });
+    content.push({ text: 'Strategic Goals & IT Alignment', style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' });
     content.push({ text: 'Your business objectives and how our services support them.', style: 'small', margin: [0, 0, 0, 8] });
     for (const g of m.goals) {
       content.push({
@@ -435,13 +436,13 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
 
   // Custom sections placed right after the summary
   for (const cs of m.customSections.filter((s) => s.placement === 'after-summary')) {
-    content.push({ text: cs.title, style: 'h2', color: brand.primary });
+    content.push({ text: cs.title, style: 'h2', headlineLevel: 2, color: brand.primary });
     for (const p of cs.body.split(/\n\s*\n/).filter(Boolean)) content.push({ text: p.trim(), style: 'body' });
   }
 
   // Maturity scorecard
   const s = m.scorecard;
-  content.push({ text: 'Security & Risk Maturity', style: 'h1', color: brand.primary, pageBreak: 'before' });
+  content.push({ text: 'Security & Risk Maturity', style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' });
   content.push(...maturityBlock(m, brand));
   // Plain-English explainer so a non-technical reader knows what the score is
   // (and is not); clients kept asking what "NIST" meant.
@@ -474,7 +475,7 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
     margin: [0, 0, 0, 14],
   });
   if (s.remediations.length) {
-    content.push({ text: 'Priority remediations', style: 'h2', color: brand.primary });
+    content.push({ text: 'Priority remediations', style: 'h2', headlineLevel: 2, color: brand.primary });
     content.push({
       ul: s.remediations.map((r) => ({ text: [{ text: `${r.title}: `, bold: true }, { text: r.evidence }], style: 'body', margin: [0, 1, 0, 1] })),
     });
@@ -482,41 +483,41 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
 
   // Metric sections
   if (m.sections.length) {
-    content.push({ text: 'Quarter in Numbers', style: 'h1', color: brand.primary, pageBreak: 'before' });
+    content.push({ text: 'Quarter in Numbers', style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' });
     for (const section of m.sections) content.push(sectionTable(section, brand));
   }
 
   // In-body custom sections
   for (const cs of m.customSections.filter((c) => (c.placement ?? 'in-body') === 'in-body')) {
-    content.push({ text: cs.title, style: 'h2', color: brand.primary });
+    content.push({ text: cs.title, style: 'h2', headlineLevel: 2, color: brand.primary });
     for (const p of cs.body.split(/\n\s*\n/).filter(Boolean)) content.push({ text: p.trim(), style: 'body' });
   }
 
   // Discussion & decisions from the meeting
   if (m.discussion.length || m.notes) {
-    content.push({ text: 'Active & Pending Conversations', style: 'h1', color: brand.primary, pageBreak: 'before' });
+    content.push({ text: 'Active & Pending Conversations', style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' });
     if (m.discussion.length) content.push(discussionTable(m.discussion, brand));
     if (m.notes) {
-      content.push({ text: 'Meeting notes', style: 'h2', color: brand.primary, margin: [0, 14, 0, 4] });
+      content.push({ text: 'Meeting notes', style: 'h2', headlineLevel: 2, color: brand.primary, margin: [0, 14, 0, 4] });
       content.push({ text: m.notes, style: 'body', italics: true });
     }
   }
 
   // Recommendations
   if (m.recommendations.length) {
-    content.push({ text: 'Recommendations & Next 90 Days', style: 'h1', color: brand.primary, pageBreak: 'before' });
+    content.push({ text: 'Recommendations & Next 90 Days', style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' });
     content.push({ ol: m.recommendations.map((r) => ({ text: r, style: 'body', margin: [0, 2, 0, 2] })) });
   }
 
   // End-placed custom sections
   for (const cs of m.customSections.filter((c) => c.placement === 'end')) {
-    content.push({ text: cs.title, style: 'h2', color: brand.primary });
+    content.push({ text: cs.title, style: 'h2', headlineLevel: 2, color: brand.primary });
     for (const p of cs.body.split(/\n\s*\n/).filter(Boolean)) content.push({ text: p.trim(), style: 'body' });
   }
 
   // Appendix: attached vendor reports
   if (m.documents.length) {
-    content.push({ text: 'Appendix: Attached Reports', style: 'h1', color: brand.primary, pageBreak: 'before' });
+    content.push({ text: 'Appendix: Attached Reports', style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' });
     content.push({ text: 'The following source reports accompany this review:', style: 'body' });
     content.push({
       ul: m.documents.map((d) => ({ text: [{ text: d.name, bold: true }, { text: `  (${d.source})`, color: GRAY }], style: 'body', margin: [0, 1, 0, 1] })),
