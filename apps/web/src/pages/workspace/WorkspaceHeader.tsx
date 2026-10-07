@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Title, Group, Button, Select, Badge, Tooltip, Text, Box, Menu, ActionIcon, Radio, Stack, Textarea } from '@mantine/core';
 import { IconDots, IconLockOpen, IconRefresh } from '@tabler/icons-react';
 import type { reportUrls } from '../../api.js';
-import type { PackageStage, QbrResponse } from '../../types.js';
+import type { PackageStage, QbrMeta, QbrResponse } from '../../types.js';
 import { ConfirmModal, RatingBadge, StatusBadge } from '../../ui.js';
 import { DeliverMenu } from './DeliverMenu.js';
 import type { Guard, Step } from './nextStep.js';
@@ -28,9 +28,12 @@ export function WorkspaceHeader({
   onPackageSent,
   lockNotice,
   onReopen,
+  meta: metaProp,
 }: {
   name: string;
   qbr: QbrResponse | null;
+  /** The quarter's record when the QBR itself failed to load (lock state from the period list). */
+  meta?: QbrMeta;
   periods: Array<{ value: string; label: string }>;
   period: string;
   onPeriodChange: (p: string) => void;
@@ -47,7 +50,7 @@ export function WorkspaceHeader({
   lockNotice?: string;
   onReopen: (stage: PackageStage, reason: string) => Promise<void>;
 }) {
-  const meta = qbr?.meta;
+  const meta = qbr?.meta ?? metaProp;
   const locks = meta?.locks;
   const locked = Boolean(lockNotice);
   const [reopenOpen, setReopenOpen] = useState(false);

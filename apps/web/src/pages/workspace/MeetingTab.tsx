@@ -34,7 +34,7 @@ import {
 } from '@tabler/icons-react';
 import { api } from '../../api.js';
 import type { Discussion, DiscussionItem, QbrResponse, SuggestedConversationsResponse } from '../../types.js';
-import { conversationItem, needsHipaaRewrite, pendingConversations } from './conversations.js';
+import { conversationItem, needsHipaaRewrite, pendingConversations, reportBlocked } from './conversations.js';
 import { uid } from '../../ui.js';
 import { toastError } from '../../toast.js';
 import { QBR_STATUS_ORDER, isQbrStatus, qbrStatusLabel, statusAtLeast, type QbrStatus } from '@mashit/core';
@@ -48,10 +48,13 @@ export function MeetingTab({
   clientId,
   period,
   meta,
+  hipaa: clientHipaa,
   onSavedDiscussion,
   onChanged,
 }: {
   disc: Discussion;
+  /** The client's HIPAA flag (used until the conversations response says). */
+  hipaa?: boolean;
   setDisc: (d: Discussion) => void;
   clientId: string;
   period: string;
@@ -102,10 +105,11 @@ export function MeetingTab({
   }, [clientId, period, convosReload]);
 
   const pendingConvos = convos ? pendingConversations(convos.items, disc.items) : [];
+  const hipaa = convos?.hipaa ?? clientHipaa === true;
 
   function addConversation(c: SuggestedConversationsResponse['items'][number]) {
     if (finalLocked) return;
-    setDisc({ ...disc, items: [...disc.items, conversationItem(c, convos?.hipaa === true, uid())] });
+    setDisc({ ...disc, items: [...disc.items, conversationItem(c, hipaa, uid())] });
     notifications.show({ color: 'good', message: 'Added to the agenda, expand on it below, then Save agenda.' });
   }
 
@@ -352,10 +356,18 @@ export function MeetingTab({
                   aria-label="Disposition"
                 />
                 <TextInput size="xs" placeholder="Owner" value={it.owner ?? ''} onChange={(e) => update(i, { owner: e.currentTarget.value })} />
-                <Checkbox size="xs" label="On report" checked={it.includeInReport !== false} onChange={(e) => update(i, { includeInReport: e.currentTarget.checked })} />
+                <Tooltip label="Rewrite this topic before putting it on the report." disabled={!reportBlocked(it, hipaa)}>
+                  <Checkbox
+                    size="xs"
+                    label="On report"
+                    checked={it.includeInReport !== false && !reportBlocked(it, hipaa)}
+                    disabled={reportBlocked(it, hipaa)}
+                    onChange={(e) => update(i, { includeInReport: e.currentTarget.checked })}
+                  />
+                </Tooltip>
                 {it.externalRef && <Badge color="good" variant="light">{it.externalRef.system} #{it.externalRef.id}</Badge>}
               </Group>
-              {needsHipaaRewrite(it, convos?.hipaa === true) && (
+              {needsHipaaRewrite(it, hipaa) && (
                 <Text size="xs" c="watch" mt={4}>Rewrite this topic before putting it on the report.</Text>
               )}
             </Fieldset>

@@ -11,6 +11,7 @@ import {
   CONVERSATION_LABEL,
   decisionSubline,
   DECISIONS_LEDE,
+  footerText,
   functionScoresText,
   hasPlan,
   howWeScore,
@@ -113,7 +114,8 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
       { rect: { x: 0, y: FOOTER_Y, w: PAGE_W, h: 7.5 - FOOTER_Y, fill: { color: PRIMARY } } },
       {
         text: {
-          text: `${brand.orgName} quarterly business review for ${model.client.name}, ${model.period.label}`,
+          // Same sentence as the PDF and HTML footer: confidentiality (HIPAA) and any revision date.
+          text: footerText(model),
           options: { x: CONTENT_X, y: FOOTER_Y, w: 10, h: 7.5 - FOOTER_Y, fontFace: FONT, fontSize: 9, color: 'FFFFFF', valign: 'middle', align: 'left' },
         },
       },

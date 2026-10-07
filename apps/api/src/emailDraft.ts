@@ -69,6 +69,11 @@ export function buildEmailDraft(input: EmailDraftInput): Buffer {
   return Buffer.from(lines.join(CRLF), 'utf8');
 }
 
+/** The QBR email and invite subject, plain (no dashes): "Mash IT QBR: Acme, Q2 2026". */
+export function qbrEmailSubject(orgName: string, clientName: string, periodLabel: string): string {
+  return `${orgName} QBR: ${clientName}, ${periodLabel}`;
+}
+
 /** The short, human email body — the report does the talking. */
 export function qbrEmailBody(args: {
   contactName?: string;
@@ -82,7 +87,7 @@ export function qbrEmailBody(args: {
   return [
     `Hi${first ? ` ${first}` : ''},`,
     '',
-    `Attached is your ${args.periodLabel} business review from ${args.orgName}. We'll walk through it together in our meeting — feel free to reach out with any questions in the meantime.`,
+    `Attached is your ${args.periodLabel} business review from ${args.orgName}. We'll walk through it together in our meeting. Feel free to reach out with any questions in the meantime.`,
     ...(args.bookingUrl
       ? ['', `Pick a time that works for you and a Teams invite will follow automatically: ${args.bookingUrl}`]
       : []),

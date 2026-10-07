@@ -98,14 +98,24 @@ describe('computeOutlook', () => {
 });
 
 describe('fix round 1 rulings', () => {
-  it('says Microsoft 365 on the agreement is already in managed services, without subtracting', () => {
+  it('with Microsoft 365 on the agreement, licensing carries only the deltas', () => {
     const plain = computeOutlook(facts, answers);
     const flagged = computeOutlook({ ...facts, seatPriceFromRecurring: true }, answers);
-    const sentence = 'Microsoft 365 billed on your Mash IT agreement is already in managed services';
-    expect(triple(line(flagged.lines, 'licensing'))).toEqual(triple(line(plain.lines, 'licensing')));
-    expect(line(flagged.lines, 'licensing').basis.map((b) => b.note)).toContain(sentence);
-    expect(flagged.caveats).toContain(`${sentence}.`);
+    // Base seats sit in managed services: low 0, expected adds 2 hires x $34.65 x 12,
+    // high adds 10 Copilot seats x $30 x 12 on top.
+    expect(triple(line(flagged.lines, 'licensing'))).toEqual([0, 832, 4432]);
+    const notes = line(flagged.lines, 'licensing').basis.map((b) => b.note);
+    expect(notes).toContain('Base Microsoft 365 seats are billed on your Mash IT agreement and counted in managed services.');
+    expect(notes.join(' ')).not.toMatch(/32 paid Microsoft 365 seats/);
+    // No contradicting caveat: the figure no longer double counts.
+    expect(flagged.caveats).toEqual([]);
     expect(plain.caveats).toEqual([]);
+    expect(triple(line(plain.lines, 'licensing'))).toEqual([13306, 14137, 17737]);
+  });
+
+  it('with Microsoft 365 on the agreement and no changes, licensing is zero', () => {
+    const out = computeOutlook({ ...facts, seatPriceFromRecurring: true }, { ...answers, headcountChange: 0, copilotSeats: undefined });
+    expect(triple(line(out.lines, 'licensing'))).toEqual([0, 0, 0]);
   });
 
   it('notes an early refresh priced without next-year warranty data', () => {

@@ -411,6 +411,8 @@ export interface DiscussionItem {
   /** Where the item came from. Undefined means typed by hand. */
   source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report';
   sourceRef?: string;
+  /** The topic as it arrived from the source; a HIPAA client's item stays off the report until the topic differs. */
+  sourceTopic?: string;
 }
 /** A conversation from Halo the Meeting tab offers to add to the agenda. */
 export interface SuggestedConversation {

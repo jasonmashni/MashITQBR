@@ -2,7 +2,9 @@ import { useState } from 'react';
 import { Button, Menu, Text } from '@mantine/core';
 import { IconChevronDown, IconFileText, IconFileTypePdf, IconMailForward, IconPresentation } from '@tabler/icons-react';
 import { api, type reportUrls } from '../../api.js';
-import { toastError, toastOk } from '../../toast.js';
+import { notifications } from '@mantine/notifications';
+import { toastOk } from '../../toast.js';
+import { errorDetail, sendPackageFlow } from './deliver.js';
 import type { Guard } from './nextStep.js';
 
 /**
@@ -32,32 +34,45 @@ export function DeliverMenu({
   const download = (url: string) => window.location.assign(url);
 
   /**
-   * Build the draft first, then stamp: a failed .eml build must not leave the
-   * quarter marked as sent (that stamp is what lets a quarter close without a
-   * meeting).
+   * Lock first, then download the draft built from the stored PDF, so the
+   * client receives exactly the frozen package. A refused lock (AI fallback,
+   * failed figure check) downloads nothing and shows the build warnings.
    */
   async function sendPackage() {
     setSending(true);
+    let locked = false;
     try {
-      const res = await fetch(urls.email);
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      const blob = await res.blob();
-      const name = res.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/)?.[1] ?? `QBR-${clientId}-${period}.eml`;
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      a.click();
-      URL.revokeObjectURL(a.href);
-      await api.markPackageSent(clientId, period);
+      await sendPackageFlow(
+        {
+          markSent: async () => {
+            await api.markPackageSent(clientId, period);
+            locked = true;
+          },
+          fetchEmail: async () => {
+            const res = await fetch(urls.email);
+            if (!res.ok) {
+              const body = (await res.json().catch(() => ({}))) as { error?: string };
+              throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+            }
+            const filename = res.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/)?.[1];
+            return { blob: await res.blob(), ...(filename ? { filename } : {}) };
+          },
+          save: (blob, name) => {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = name;
+            a.click();
+            URL.revokeObjectURL(a.href);
+          },
+        },
+        `QBR-${clientId}-${period}.eml`,
+      );
       toastOk('Package sent. The email draft is in your downloads; the quarter is stamped as sent.');
-      onPackageSent();
     } catch (e) {
-      toastError('Could not send the package', e);
+      notifications.show({ color: 'act', title: 'Could not send the package', message: errorDetail(e), autoClose: false });
     } finally {
       setSending(false);
+      if (locked) onPackageSent();
     }
   }
 
@@ -91,7 +106,7 @@ export function DeliverMenu({
         <Menu.Divider />
         <Menu.Item leftSection={<IconMailForward size={16} />} disabled={!guard.ok || sending} onClick={() => void sendPackage()}>
           <Text size="sm">Send package</Text>
-          <Text size="xs" c="dimmed">Downloads an Outlook draft with the PDF attached and marks the package sent.</Text>
+          <Text size="xs" c="dimmed">Locks the quarter, then downloads an Outlook draft with the stored PDF attached.</Text>
         </Menu.Item>
       </Menu.Dropdown>
     </Menu>

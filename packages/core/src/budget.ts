@@ -18,8 +18,8 @@ export interface BudgetFacts {
   seatMonthly?: number;
   /**
    * True when the seat price came from a recurring Microsoft line on the
-   * Mash IT agreement: that spend is already inside MRR, so the licensing
-   * line says so (no subtraction).
+   * Mash IT agreement: the base seats are already inside MRR, so the
+   * licensing line carries only the deltas (new seats and Copilot).
    */
   seatPriceFromRecurring?: boolean;
   devicesAgingOut?: number;
@@ -47,7 +47,7 @@ function line(category: BudgetCategory, low: number, expected: number, high: num
 }
 const note = (source: BudgetSource, text: string) => ({ source, note: text });
 
-export const M365_IN_AGREEMENT = 'Microsoft 365 billed on your Mash IT agreement is already in managed services';
+export const M365_IN_AGREEMENT = 'Base Microsoft 365 seats are billed on your Mash IT agreement and counted in managed services.';
 
 function managedServices(facts: BudgetFacts, answers: BudgetAnswers, caveats: string[]): BudgetLine {
   if (!has(facts.mrr)) {
@@ -80,15 +80,12 @@ function licensing(facts: BudgetFacts, answers: BudgetAnswers, caveats: string[]
     ]);
   }
   const price = facts.seatMonthly;
+  if (facts.seatPriceFromRecurring) return licensingDeltas(price, answers);
   const low = facts.paidSeats * price * 12;
   const basis: Basis = [
     note('cipp', `${facts.paidSeats} paid Microsoft 365 seats`),
     note('halo', `${money(price)} a seat a month from Halo invoices, times 12`),
   ];
-  if (facts.seatPriceFromRecurring) {
-    basis.push(note('halo', M365_IN_AGREEMENT));
-    caveats.push(`${M365_IN_AGREEMENT}.`);
-  }
   const change = answers.headcountChange ?? 0;
   const expected = Math.max(0, facts.paidSeats + change) * price * 12;
   if (change !== 0) {
@@ -101,6 +98,27 @@ function licensing(facts: BudgetFacts, answers: BudgetAnswers, caveats: string[]
     basis.push(note('answer', `High adds ${answers.copilotSeats} Copilot ${plural(answers.copilotSeats, 'seat', 'seats')} at ${money(answers.copilotSeatPrice)} a month`));
   }
   return line('licensing', low, expected, high, basis);
+}
+
+/**
+ * Microsoft 365 on the Mash IT agreement: the base seats are already in
+ * managed services, so licensing carries only what changes. Expected adds
+ * the new hires' seats; high adds Copilot on top. A smaller headcount is not
+ * subtracted (managed services does not subtract it either).
+ */
+function licensingDeltas(price: number, answers: BudgetAnswers): BudgetLine {
+  const basis: Basis = [note('halo', M365_IN_AGREEMENT)];
+  const hires = Math.max(0, answers.headcountChange ?? 0);
+  const expected = hires * price * 12;
+  if (hires > 0) {
+    basis.push(note('answer', `Expected adds ${hires} ${plural(hires, 'seat', 'seats')} for new hires at ${money(price)} a month, times 12`));
+  }
+  let high = expected;
+  if (has(answers.copilotSeats) && has(answers.copilotSeatPrice)) {
+    high = expected + answers.copilotSeats * answers.copilotSeatPrice * 12;
+    basis.push(note('answer', `High adds ${answers.copilotSeats} Copilot ${plural(answers.copilotSeats, 'seat', 'seats')} at ${money(answers.copilotSeatPrice)} a month`));
+  }
+  return line('licensing', 0, expected, high, basis);
 }
 
 type Policy = NonNullable<BudgetAnswers['refreshPolicy']>;

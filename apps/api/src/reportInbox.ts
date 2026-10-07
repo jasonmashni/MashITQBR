@@ -404,6 +404,8 @@ export async function pollReportInbox(
         sortOrder: maxOrder + 1,
         source: 'email',
         sourceRef: msg.id,
+        // For a HIPAA client the item stays off the report until the topic is rewritten.
+        sourceTopic: topic,
       };
       items.push(item);
       await store.putDiscussion({ clientId: client.id, period, items, ...(existing?.notes !== undefined ? { notes: existing.notes } : {}) });

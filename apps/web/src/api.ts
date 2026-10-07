@@ -39,15 +39,19 @@ import type {
  */
 function showLockWarning<T>(r: T): T {
   const warning = (r as { warning?: unknown } | null)?.warning;
-  if (typeof warning === 'string' && warning) notifications.show({ color: 'watch', title: 'Final package not stored', message: warning });
+  if (typeof warning === 'string' && warning) notifications.show({ color: 'watch', title: 'Package warning', message: warning });
   return r;
 }
 
-/** Thrown for a non-2xx response; `status` lets callers tell 401 from 409 from 500. */
+/**
+ * Thrown for a non-2xx response; `status` lets callers tell 401 from 409 from
+ * 500. `warnings` carries the build warnings a refused lock sends back.
+ */
 export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly warnings?: string[],
   ) {
     super(message);
     this.name = 'ApiError';
@@ -58,14 +62,16 @@ async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     let message = `${res.status} ${res.statusText}`;
+    let warnings: string[] | undefined;
     try {
-      const body = JSON.parse(text) as { error?: string };
+      const body = JSON.parse(text) as { error?: string; warnings?: unknown };
       if (body.error) message = body.error;
+      if (Array.isArray(body.warnings)) warnings = body.warnings.filter((w): w is string => typeof w === 'string');
     } catch {
       // A redirect to a login page, or a host error page: keep the status text.
       if (res.status === 401 || res.redirected) message = 'Not signed in';
     }
-    throw new ApiError(message, res.status);
+    throw new ApiError(message, res.status, warnings);
   }
   return res.json() as Promise<T>;
 }
@@ -213,10 +219,10 @@ export const api = {
     send('PUT', `/api/clients/${clientId}/qbr/${period}/status`, body).then(json<QbrMeta & { warning?: string }>).then(showLockWarning),
   /** Record that the report package went out (the explicit "Send package" step). */
   markPackageSent: (clientId: string, period: string) =>
-    send('POST', `/api/clients/${clientId}/qbr/${period}/package/sent`).then(json<QbrMeta>),
+    send('POST', `/api/clients/${clientId}/qbr/${period}/package/sent`).then(json<QbrMeta & { warning?: string }>).then(showLockWarning),
   /** Lock 2 on demand: store the final package and make the quarter read-only. */
   finalize: (clientId: string, period: string) =>
-    send('POST', `/api/clients/${clientId}/qbr/${period}/finalize`).then(json<QbrMeta>),
+    send('POST', `/api/clients/${clientId}/qbr/${period}/finalize`).then(json<QbrMeta & { warning?: string }>).then(showLockWarning),
   /** Audited reopen: `final` reopens the agenda and decisions, `preread` reopens everything. */
   reopen: (clientId: string, period: string, body: { stage: PackageStage; reason: string }) =>
     send('POST', `/api/clients/${clientId}/qbr/${period}/reopen`, body).then(json<QbrMeta>),

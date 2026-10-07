@@ -1,3 +1,4 @@
+import { HIPAA_REWRITE_SOURCES, hipaaTopicUnrewritten } from '@mashit/core';
 import type { DiscussionItem, SuggestedConversation } from '../../types.js';
 
 /** Suggestions not yet on the agenda (matched by the item's sourceRef). */
@@ -19,10 +20,20 @@ export function conversationItem(c: SuggestedConversation, hipaa: boolean, id: s
     disposition: 'pending',
     source: 'suggested',
     sourceRef: c.ref,
+    sourceTopic: c.topic,
   };
 }
 
-/** A Halo-sourced item on a HIPAA client's agenda: the author should rewrite the topic before it goes on the report. */
+/**
+ * A suggested, Halo or email item on a HIPAA client's agenda that still reads
+ * as it arrived (or has no recorded source topic): show the rewrite hint.
+ */
 export function needsHipaaRewrite(item: DiscussionItem, hipaa: boolean): boolean {
-  return hipaa && (item.source === 'suggested' || item.source === 'halo');
+  if (!hipaa || !item.source || !(HIPAA_REWRITE_SOURCES as readonly string[]).includes(item.source)) return false;
+  return item.sourceTopic === undefined || hipaaTopicUnrewritten(item, hipaa);
+}
+
+/** The On report toggle is off and disabled until the topic differs from the source topic (the server enforces it too). */
+export function reportBlocked(item: DiscussionItem, hipaa: boolean): boolean {
+  return hipaaTopicUnrewritten(item, hipaa);
 }

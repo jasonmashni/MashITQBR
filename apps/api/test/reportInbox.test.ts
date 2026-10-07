@@ -291,6 +291,7 @@ describe('pollReportInbox forward to QBR (no attachments)', () => {
       includeInReport: false,
       source: 'email',
       sourceRef: 'm1',
+      sourceTopic: 'New hire starting Nov 3',
       owner: 'Jason Mashni',
       sortOrder: 5,
     });

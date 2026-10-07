@@ -98,10 +98,13 @@ export function NarrativeEditor({
   configError,
   setConfig,
   onChanged,
+  lockedReason,
 }: {
   clientId: string;
   period: string;
   model: ReportModel;
+  /** The lock sentence when the quarter is data-locked: nothing here can be saved or regenerated. */
+  lockedReason?: string;
   aiEnabled: boolean;
   status: string;
   verified: boolean;
@@ -262,7 +265,7 @@ export function NarrativeEditor({
       : !verified
         ? 'A figure does not trace back to the data, or a field is over its limit. Fix it before approving.'
         : 'Marks the story ready to send. Forward only; reopening needs an override.';
-  const directionLocked = !config;
+  const directionLocked = !config || Boolean(lockedReason);
 
   // Style hits per field, listed under the editor (advisory, like the server's lint).
   const style = [
@@ -424,12 +427,16 @@ export function NarrativeEditor({
           </Alert>
         )}
         <Group>
-          <Button loading={busy === 'save'} onClick={save} disabled={!dirty}>
-            Save narrative
-          </Button>
-          <Button variant="default" loading={busy === 'regen'} onClick={() => setConfirmRegen(true)}>
-            Regenerate
-          </Button>
+          <Tooltip label={lockedReason} disabled={!lockedReason} multiline w={300}>
+            <Button loading={busy === 'save'} onClick={save} disabled={!dirty || Boolean(lockedReason)}>
+              Save narrative
+            </Button>
+          </Tooltip>
+          <Tooltip label={lockedReason} disabled={!lockedReason} multiline w={300}>
+            <Button variant="default" loading={busy === 'regen'} onClick={() => setConfirmRegen(true)} disabled={Boolean(lockedReason)}>
+              Regenerate
+            </Button>
+          </Tooltip>
           <Tooltip label={approveHint}>
             {/* data-disabled (not disabled) so the tooltip still explains why. */}
             <Button

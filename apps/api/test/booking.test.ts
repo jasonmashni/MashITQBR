@@ -206,7 +206,14 @@ describe('booking flow end-to-end (JSON store + fake Graph)', () => {
       updatedAt: new Date().toISOString(),
     });
     const booked = await h.publicBook(token, { start: '2026-08-03T10:00', name: 'A', email: 'a@b.co' });
-    expect(booked).toEqual({ status: 409, json: { error: 'This review is already closed. Please contact your account manager.' } });
+    const closed = { status: 409, json: { error: 'This review is already closed. Please contact your account manager.' } };
+    expect(booked).toEqual(closed);
+    // The page itself says the same thing instead of offering times.
+    expect(await h.publicBookingInfo(token)).toEqual(closed);
+    expect(await h.publicBookingSlots(token, '2026-08-03', '2026-08-07')).toEqual(closed);
+    // The email draft for a closed quarter carries no booking link.
+    const eml = (await h.getEmailDraft('mp', '2026-Q3', '0', (n) => (n === 'host' ? 'qbr.mashit.net' : undefined))).file?.bytes.toString('utf8') ?? '';
+    expect(eml).not.toContain('/book/');
     expect((await h.cancelQbrMeeting('mp', '2026-Q3')).json).toEqual({ error: 'locked', stage: 'final' });
     const header = (name: string) => (name.toLowerCase() === 'x-ms-token-aad-access-token' ? 'token' : null);
     const meeting = await h.createMeeting('mp', '2026-Q3', { start: '2026-08-03T15:00:00Z' }, header, async () => {

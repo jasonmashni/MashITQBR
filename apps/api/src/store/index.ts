@@ -114,9 +114,14 @@ export const BUDGET_LOAD_WARNING = 'Budget plan could not be loaded; plan versus
 export async function loadReportInputs(store: DataStore, clientId: string, period: string): Promise<ReportInputs> {
   const config = await store.getReportConfig(clientId);
   const org = await store.getReportConfig(ORG_SETTINGS_ID);
-  const d = await store.getDiscussion(clientId, period);
+  // Items stored before putDiscussion validated shapes may lack a topic; the
+  // report skips them rather than failing the build (and the lock).
+  const withTopic = (items: DiscussionItem[] | undefined) => items?.filter((i) => typeof i?.topic === 'string' && i.topic.trim().length > 0);
+  const dRaw = await store.getDiscussion(clientId, period);
+  const d = dRaw ? { ...dRaw, items: withTopic(dRaw.items) ?? [] } : undefined;
   const narrative = await store.getNarrative(clientId, period);
-  const previous = await store.getDiscussion(clientId, previousPeriod(period).id).catch(() => undefined);
+  const prevRaw = await store.getDiscussion(clientId, previousPeriod(period).id).catch(() => undefined);
+  const previous = prevRaw ? { ...prevRaw, items: withTopic(prevRaw.items) ?? [] } : undefined;
   const pushed = [...(previous?.items ?? []), ...(d?.items ?? [])].some((i) => i.externalRef?.system === 'halo');
   // Lazy import: the Halo transport is only loaded when there is a ticket to ask about.
   const lookupTicketStatus = pushed

@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { QbrRecord } from '../src/store/index.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,21 +7,21 @@ import { join } from 'node:path';
 // With ANTHROPIC_API_KEY set, the handlers' Claude factory returns this
 // grounded stub, which also carries page-one decisions (workstream C adds the
 // field to the narrative contract; lock 1 seeds them onto the agenda).
-const narrativeStub = vi.hoisted(() => ({ calls: 0 }));
+// `mode` lets a test make the model fail outright or cite a figure the data
+// does not hold, the two builds Send must refuse to lock.
+const narrativeStub = vi.hoisted(() => ({ calls: 0, mode: 'ok' as 'ok' | 'throw' | 'badFigure' }));
 vi.mock('@mashit/narrative', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@mashit/narrative')>();
+  const { v4Narrative } = await import('./narrativeFixture.js');
   return {
     ...actual,
     createClaudeNarrativeModel: () => async () => {
       narrativeStub.calls++;
-      return {
-        headline: 'A steady quarter',
-        summary_paragraphs: ['The quarter was steady.'],
-        highlights: [],
-        recommendations: [],
-        figures_referenced: [],
+      if (narrativeStub.mode === 'throw') throw new Error('overloaded_error');
+      return v4Narrative({
+        ...(narrativeStub.mode === 'badFigure' ? { lede: 'We closed 98765 tickets this quarter.' } : {}),
         decisions: [{ ask: 'Approve the firewall refresh', why: 'The current units reach end of support.' }],
-      };
+      });
     },
   };
 });
@@ -85,6 +85,59 @@ describe('markPackageSent', () => {
     expect(res.status).toBe(409);
     const store = (await import('../src/store/index.js')).getDataStore();
     expect((await store.getQbr('kpca', '2026-Q1'))?.packageSentAt).toBeUndefined();
+  });
+
+  describe('refuses to lock a build Send should not mail', () => {
+    afterEach(() => {
+      narrativeStub.mode = 'ok';
+      delete process.env['ANTHROPIC_API_KEY'];
+    });
+    const seedSnapshot = async (period: string) => {
+      const { SEED_SNAPSHOTS } = await import('@mashit/core');
+      const store = (await import('../src/store/index.js')).getDataStore();
+      const seed = SEED_SNAPSHOTS.find((s) => s.clientId === 'anp' && s.metrics.length > 1)!;
+      await store.putSnapshot({ ...seed, period });
+    };
+    const nothingLocked = async (period: string) => {
+      const store = (await import('../src/store/index.js')).getDataStore();
+      expect((await store.getQbr('anp', period))?.locks?.preread).toBeUndefined();
+      expect((await store.getQbr('anp', period))?.packageSentAt).toBeUndefined();
+      expect(await store.listPackages('anp', period)).toHaveLength(0);
+    };
+
+    it('409s when an AI failure forced the offline draft, with the build warnings', async () => {
+      const h = await import('../src/handlers.js');
+      await seedSnapshot('2020-Q1');
+      process.env['ANTHROPIC_API_KEY'] = 'test-key';
+      narrativeStub.mode = 'throw';
+      const res = await h.markPackageSent('anp', '2020-Q1');
+      expect(res.status).toBe(409);
+      const json = res.json as { error: string; warnings: string[] };
+      expect(json.error).toMatch(/AI narrative failed.*Nothing was sent or locked/);
+      expect(json.warnings.some((w) => /AI narrative failed/.test(w))).toBe(true);
+      await nothingLocked('2020-Q1');
+    });
+
+    it('409s when the narrative fails figure verification', async () => {
+      const h = await import('../src/handlers.js');
+      await seedSnapshot('2020-Q2');
+      process.env['ANTHROPIC_API_KEY'] = 'test-key';
+      narrativeStub.mode = 'badFigure';
+      const res = await h.markPackageSent('anp', '2020-Q2');
+      expect(res.status).toBe(409);
+      const json = res.json as { error: string; warnings: string[] };
+      expect(json.error).toMatch(/figure that does not match the data/);
+      expect(json.warnings.some((w) => /does not match the data/.test(w))).toBe(true);
+      await nothingLocked('2020-Q2');
+    });
+
+    it('still locks an offline draft when AI is simply not configured', async () => {
+      const h = await import('../src/handlers.js');
+      await seedSnapshot('2020-Q3');
+      const res = await h.markPackageSent('anp', '2020-Q3');
+      expect(res.status).toBe(200);
+      expect((res.json as QbrRecord).locks?.preread?.version).toBe(1);
+    });
   });
 
   it('keeps the first packageSentAt on a repeat call', async () => {
@@ -384,6 +437,36 @@ describe('locked reads serve the version the lock names', () => {
     const qbr = (await h.getQbr('anp', '2022-Q2', null)).json as { package: { version: number; stage: string } };
     expect(qbr.package).toMatchObject({ version: 1, stage: 'preread' });
     expect((await h.getReportPdf('anp', '2022-Q2', null)).pdf?.toString()).toBe('%PDF-v1');
+  });
+});
+
+describe('status moves around lock 2', () => {
+  const seedSnapshot = async (period: string) => {
+    const { SEED_SNAPSHOTS } = await import('@mashit/core');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    const seed = SEED_SNAPSHOTS.find((s) => s.clientId === 'anp' && s.metrics.length > 1)!;
+    await store.putSnapshot({ ...seed, period });
+  };
+
+  it('refuses a forced move below dispositioned on a final quarter', async () => {
+    const h = await import('../src/handlers.js');
+    await seedSnapshot('2022-Q3');
+    expect((await h.finalizeQbr('anp', '2022-Q3')).status).toBe(200);
+    const res = await h.putStatus('anp', '2022-Q3', { status: 'scheduled', force: true, reason: 'oops' });
+    expect(res).toEqual({ status: 409, json: { error: 'This quarter is finalized. Reopen it first.' } });
+    expect(await statusOf('2022-Q3')).toBe('dispositioned');
+    // Forward moves on a final quarter still work.
+    expect((await h.putStatus('anp', '2022-Q3', { status: 'actions_pushed' })).status).toBe(200);
+  });
+
+  it('archiving does not perform lock 2', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    await seedSnapshot('2022-Q4');
+    const res = await h.putStatus('anp', '2022-Q4', { status: 'archived' });
+    expect(res.status).toBe(200);
+    expect((res.json as QbrRecord).locks?.final).toBeUndefined();
+    expect(await store.listPackages('anp', '2022-Q4')).toHaveLength(0);
   });
 });
 

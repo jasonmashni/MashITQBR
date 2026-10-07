@@ -173,8 +173,8 @@ function confidenceBlock(m: ReportModel): Node | undefined {
           { text: '', fillColor: SEMANTIC.watch, border: [false, false, false, false] },
           {
             stack: [
-              { text: 'Data confidence', bold: true, fontSize: 9.5, color: SEMANTIC.watch, margin: [0, 0, 0, 3] },
-              { ul: m.dataConfidence.map((w) => ({ text: w, fontSize: 9, color: TEXT, margin: [0, 1, 0, 1] })) },
+              { text: 'Data confidence', bold: true, fontSize: 10.5, color: SEMANTIC.watch, margin: [0, 0, 0, 3] },
+              { ul: m.dataConfidence.map((w) => ({ text: w, fontSize: 10, color: TEXT, margin: [0, 1, 0, 1] })) },
             ],
             margin: [8, 6, 8, 6],
             fillColor: SEMANTIC.watchBg,

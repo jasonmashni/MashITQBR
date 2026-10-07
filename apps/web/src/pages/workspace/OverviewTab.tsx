@@ -15,6 +15,7 @@ import {
   Divider,
   Progress,
   Box,
+  Tooltip,
 } from '@mantine/core';
 import { RadarChart, BarChart, DonutChart } from '@mantine/charts';
 import { IconAlertTriangle, IconPencil, IconPaperclip, IconInfoCircle } from '@tabler/icons-react';
@@ -24,6 +25,7 @@ import type { DocumentInfo, QbrResponse, ReportConfig } from '../../types.js';
 import { RatingBadge, ratingColorKey, ratingWord } from '../../ui.js';
 import type { ReportModel } from '../../types.js';
 import { NarrativeEditor } from './NarrativeEditor.js';
+import { lockNotice } from './nextStep.js';
 
 /** Human names for the NIST CSF 2.0 functions; the enum never reaches the screen. */
 const FUNCTION_NAME: Record<string, string> = {
@@ -134,6 +136,8 @@ export function OverviewTab({
   const [editing, setEditing] = useState(false);
   const [docs, setDocs] = useState<DocumentInfo[]>([]);
   const { model } = qbr;
+  // A data-locked quarter keeps its frozen narrative: no edits, no regenerate.
+  const lockedReason = lockNotice(qbr.meta);
   const overall = model.scorecard.overall;
   const scored = overall.score !== null && overall.confidence !== 'low';
   const coveragePct = Math.round((overall.coverage ?? 0) * 100);
@@ -217,15 +221,18 @@ export function OverviewTab({
       <Card padding="lg">
         <Group justify="space-between" align="flex-start">
           <Title order={4}>Page one, {model.period.label}</Title>
-          <Button size="xs" variant="light" leftSection={<IconPencil size={14} />} onClick={() => setEditing((e) => !e)}>
-            {editing ? 'Close the editor' : 'Edit the narrative'}
-          </Button>
+          <Tooltip label={lockedReason} disabled={!lockedReason} multiline w={300}>
+            <Button size="xs" variant="light" leftSection={<IconPencil size={14} />} disabled={Boolean(lockedReason)} onClick={() => setEditing((e) => !e)}>
+              {editing && !lockedReason ? 'Close the editor' : 'Edit the narrative'}
+            </Button>
+          </Tooltip>
         </Group>
         <PageOnePreview model={model} />
       </Card>
 
-      {editing && (
+      {editing && !lockedReason && (
         <NarrativeEditor
+          lockedReason={lockedReason}
           clientId={clientId}
           period={period}
           model={model}
