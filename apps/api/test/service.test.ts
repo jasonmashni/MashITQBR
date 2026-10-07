@@ -527,6 +527,16 @@ describe('investment page data from the published budget plan', () => {
       lines: [{ category: 'managed_services', low: 118000, expected: 118000, high: 118000, basis: [{ source: 'halo', note: 'MRR' }] }],
       totals: { low: 118000, expected: 118000, high: 118000 },
       publishedPeriod: '2025-Q3',
+      published: {
+        at: 'x',
+        period: '2025-Q3',
+        lines: [{ category: 'managed_services', low: 118000, expected: 118000, high: 118000, basis: [{ source: 'halo', note: 'MRR' }] }],
+        totals: { low: 118000, expected: 118000, high: 118000 },
+        assumptions: [],
+        movers: [],
+        caveats: [],
+        unitCost: 1500,
+      },
     });
     await store.putBudgetPlan({
       ...base,
@@ -535,6 +545,16 @@ describe('investment page data from the published budget plan', () => {
       lines: [{ category: 'managed_services', low: 65520, expected: 65520, high: 69480, basis: [{ source: 'halo', note: 'MRR' }] }],
       totals: { low: 65520, expected: 65520, high: 69480 },
       publishedPeriod: '2026-Q3',
+      published: {
+        at: 'x',
+        period: '2026-Q3',
+        lines: [{ category: 'managed_services', low: 65520, expected: 65520, high: 69480, basis: [{ source: 'halo', note: 'MRR' }] }],
+        totals: { low: 65520, expected: 65520, high: 69480 },
+        assumptions: ['Two hires.'],
+        movers: ['A second site.'],
+        caveats: [],
+        unitCost: 1650,
+      },
       context: { researchedAt: 'x', sourced: true, items: [{ title: 'Secret benchmark title', insight: 'i', askClient: 'q' }] },
     });
     const build = async (period: string) =>
@@ -569,6 +589,36 @@ describe('investment page data from the published budget plan', () => {
     const q2 = await build('2026-Q2');
     expect(q2.model.investment?.comingUp.join(' ')).toContain('$1,500 per device');
     expect(q2.model.investment?.comingUp).toContain('At the Q3 review in October we will plan the 2027 budget together.');
+  });
+
+  it('reads only the published snapshot, never the working copy', async () => {
+    const { store, build } = await setup();
+    for (const fy of [2026, 2027]) {
+      const plan = (await store.getBudgetPlan('fy1', fy))!;
+      await store.putBudgetPlan({ ...plan, totals: { low: 1, expected: 2, high: 3 }, answers: { workstationUnitCost: 9999 } });
+    }
+    const q3 = (await build('2026-Q3')).model.investment!;
+    expect(q3.outlook?.totals.expected).toBe(65520);
+    expect(q3.planVsActual?.planned).toBe(118000);
+    expect(q3.comingUp.join(' ')).toContain('$1,650 per device');
+  });
+
+  it('warns instead of failing silently when the budget plan cannot be loaded', async () => {
+    const { store } = await setup();
+    const { loadReportInputs, storeDataSource, BUDGET_LOAD_WARNING } = await import('../src/store/index.js');
+    const broken = Object.assign(Object.create(Object.getPrototypeOf(store)), store, {
+      getBudgetPlan: async () => {
+        throw new Error('table unavailable');
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const inputs = await loadReportInputs(broken, 'fy1', '2026-Q2');
+    expect(inputs.budget).toBeUndefined();
+    expect(inputs.budgetWarning).toBe('Budget plan could not be loaded; plan versus actual omitted.');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+    const report = await buildQbrReport(storeDataSource(store), 'fy1', '2026-Q2', inputs);
+    expect(report.warnings).toContain(BUDGET_LOAD_WARNING);
   });
 
   it('leaves drafts off the report', async () => {

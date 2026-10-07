@@ -33,6 +33,7 @@ import {
   CATEGORY_LABEL,
   MONTHS,
   SOURCE_LABEL,
+  hasUnpublishedChanges,
   linesToSentences,
   money,
   plannerYear,
@@ -129,7 +130,7 @@ export function BudgetTab({ clientId, period, onPublished }: { clientId: string;
     return () => {
       live = false;
     };
-  }, [clientId, year.currentLabel, plan?.status]);
+  }, [clientId, year.currentLabel, plan?.status, plan?.publishedAt]);
 
   function adopt(p: BudgetPlanRecord | null) {
     setPlan(p);
@@ -208,7 +209,10 @@ export function BudgetTab({ clientId, period, onPublished }: { clientId: string;
               allowDeselect={false}
             />
             {plan?.status === 'published' ? (
-              <Badge color="good" variant="light">On the report</Badge>
+              <>
+                <Badge color="good" variant="light">On the report</Badge>
+                {hasUnpublishedChanges(plan) && <Badge color="watch" variant="light">Changes not on the report yet</Badge>}
+              </>
             ) : (
               <Badge color="slate" variant="light">Draft</Badge>
             )}
@@ -220,7 +224,7 @@ export function BudgetTab({ clientId, period, onPublished }: { clientId: string;
         </div>
         <Group gap="xs">
           <Button variant="default" loading={busy === 'outlook'} disabled={busy !== null} onClick={() => run('outlook')}>Re-run outlook</Button>
-          <Button loading={busy === 'publish'} disabled={busy !== null || !plan?.lines.length} onClick={() => run('publish')}>{publishLabel}</Button>
+          <Button loading={busy === 'publish'} disabled={busy !== null} onClick={() => run('publish')}>{publishLabel}</Button>
         </Group>
       </Group>
 

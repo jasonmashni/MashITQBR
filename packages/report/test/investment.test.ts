@@ -42,7 +42,7 @@ describe('investment model', () => {
   it('carries plan versus actual and the outlook only when a budget is passed', () => {
     expect(inv.outlook).toBeUndefined();
     expect(inv.planVsActual).toBeUndefined();
-    const planVsActual = { fiscalYearLabel: 'FY2026', planned: 118000, spent: 51597, pct: 44, note: 'Slightly under plan.' };
+    const planVsActual = { fiscalYearLabel: 'FY2026', planned: 118000, spent: 51597, pct: 44, note: 'Under plan, with 2 of 4 quarters invoiced.' };
     const planned = buildReportModel({ ...args, budget: { planVsActual, outlook } }).investment!;
     expect(planned.planVsActual).toEqual(planVsActual);
     expect(planned.outlook).toEqual(outlook);
@@ -53,6 +53,19 @@ describe('investment model', () => {
     expect(buildReportModel({ ...args, current: noSpend }).investment).toBeUndefined();
     expect(buildReportModel({ ...args, current: noSpend, budget: { outlook } }).investment?.outlook).toEqual(outlook);
     expect(buildReportModel({ ...args, config: { clientId: 'anp', hiddenSections: ['spend'] } }).investment).toBeUndefined();
+  });
+});
+
+describe('plan versus actual client text', () => {
+  it('states the percent once', async () => {
+    const { planVsActualText } = await import('../src/pages.js');
+    const { renderReportHtml } = await import('@mashit/report');
+    const planVsActual = { fiscalYearLabel: 'FY2026', planned: 118000, spent: 51597, pct: 44, note: 'Under plan, with 2 of 4 quarters invoiced.' };
+    const text = planVsActualText(planVsActual);
+    expect(text).toBe('$51,597 spent of the $118,000 we planned together, 44% of the plan. Under plan, with 2 of 4 quarters invoiced.');
+    expect(text.match(/44%/g)).toHaveLength(1);
+    const html = renderReportHtml(buildReportModel({ ...args, budget: { planVsActual } }));
+    expect(html.match(/44% of the plan/g)).toHaveLength(1);
   });
 });
 

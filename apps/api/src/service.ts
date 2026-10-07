@@ -151,6 +151,8 @@ export interface BuildQbrOptions {
    * model only, never to the narrative input (benchmarks stay internal).
    */
   budget?: import('./budget.js').ReportBudget;
+  /** A budget plan load failure, surfaced as a build warning. */
+  budgetWarning?: string;
 }
 
 /**
@@ -378,6 +380,7 @@ export async function buildQbrReport(
 
   const warnings: string[] = [];
   if (aiFailure) warnings.push(aiFailure);
+  if (opts.budgetWarning) warnings.push(opts.budgetWarning);
   if (!narrative.verification.ok) {
     // Neutral wording: the text may be the AI's or an author's edit.
     const figureFailures = narrative.verification.failures.filter((f) => f.label !== 'limits');

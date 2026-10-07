@@ -16,6 +16,12 @@ export interface BudgetFacts {
   paidSeats?: number;
   /** Microsoft 365 invoice line over seats, monthly. */
   seatMonthly?: number;
+  /**
+   * True when the seat price came from a recurring Microsoft line on the
+   * Mash IT agreement: that spend is already inside MRR, so the licensing
+   * line says so (no subtraction).
+   */
+  seatPriceFromRecurring?: boolean;
   devicesAgingOut?: number;
   devicesAgingNextYear?: number;
   /** Trailing four quarters of non-recurring invoiced. */
@@ -40,6 +46,8 @@ function line(category: BudgetCategory, low: number, expected: number, high: num
   return { category, low: Math.round(low), expected: Math.round(expected), high: Math.round(high), basis };
 }
 const note = (source: BudgetSource, text: string) => ({ source, note: text });
+
+export const M365_IN_AGREEMENT = 'Microsoft 365 billed on your Mash IT agreement is already in managed services';
 
 function managedServices(facts: BudgetFacts, answers: BudgetAnswers, caveats: string[]): BudgetLine {
   if (!has(facts.mrr)) {
@@ -77,6 +85,10 @@ function licensing(facts: BudgetFacts, answers: BudgetAnswers, caveats: string[]
     note('cipp', `${facts.paidSeats} paid Microsoft 365 seats`),
     note('halo', `${money(price)} a seat a month from Halo invoices, times 12`),
   ];
+  if (facts.seatPriceFromRecurring) {
+    basis.push(note('halo', M365_IN_AGREEMENT));
+    caveats.push(`${M365_IN_AGREEMENT}.`);
+  }
   const change = answers.headcountChange ?? 0;
   const expected = Math.max(0, facts.paidSeats + change) * price * 12;
   if (change !== 0) {
@@ -124,6 +136,9 @@ function hardware(facts: BudgetFacts, answers: BudgetAnswers, caveats: string[])
     nextYear > 0 ? note('ninja', `${agingNote.note}, plus ${nextYear} from the following year`) : agingNote,
     note('answer', `${money(answers.workstationUnitCost)} per device, ${POLICY_LABEL[policy]}${answers.refreshPolicy ? '' : ' (assumed)'}`),
   ];
+  if (policy === 'early' && facts.devicesAgingNextYear === undefined) {
+    basis.push(note('ninja', 'Priced as replace at warranty end; no next-year warranty data yet.'));
+  }
   return line('hardware', (base * lo) / 100, (base * ex) / 100, (base * hi) / 100, basis);
 }
 
@@ -227,5 +242,5 @@ export function planVsActual(
   const pct = Math.round((spent / planned) * 100);
   const share = (100 * quarters) / 4;
   const status = pct < share * 0.9 ? 'Under plan' : pct > share * 1.1 ? 'Over plan' : 'On plan';
-  return { planned, spent, pct, note: `${status}. ${pct}% of the plan spent with ${quarters} of 4 quarters invoiced.` };
+  return { planned, spent, pct, note: `${status}, with ${quarters} of 4 quarters invoiced.` };
 }

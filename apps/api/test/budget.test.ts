@@ -124,7 +124,9 @@ describe('budget API', () => {
     // One-time board items only; recurring and closed ones stay out.
     expect(triple(plan, 'projects')).toEqual([18000, 18000, 18000]);
     expect(plan.totals.expected).toBe(plan.lines.reduce((s, l) => s + l.expected, 0));
-    expect(plan.caveats).toEqual([]);
+    // The seat price came from a recurring Microsoft line, so it is already inside MRR.
+    expect(plan.lines.find((l) => l.category === 'licensing')!.basis.map((b) => b.note)).toContain('Microsoft 365 billed on your Mash IT agreement is already in managed services');
+    expect(plan.caveats).toEqual([`${'Microsoft 365 billed on your Mash IT agreement is already in managed services'}.`]);
     const stored = await (await store()).getBudgetPlan('acme', 2027);
     expect(stored?.lines).toHaveLength(7);
     const audit = await (await store()).listAudit(20);
@@ -157,14 +159,42 @@ describe('budget API', () => {
     expect(plan.status).toBe('published');
     expect(plan.publishedPeriod).toBe('2026-Q3');
     expect(plan.publishedAt).toBeTruthy();
+    expect(plan.published).toMatchObject({ period: '2026-Q3', totals: plan.totals, lines: plan.lines, unitCost: 1650 });
     const audit = await s.listAudit(30);
     expect(audit.some((a) => a.action === 'budget.publish' && a.detail?.includes('2026-Q3'))).toBe(true);
   });
 
-  it('refuses to publish a plan with no outlook yet', async () => {
+  it('keeps the published baseline until the plan is put on the report again', async () => {
+    const b = await import('../src/budget.js');
+    const h = await import('../src/handlers.js');
+    const expectedOnReport = async () => {
+      const res = await h.getQbr('acme', '2026-Q3', '0');
+      expect(res.status).toBe(200);
+      return (res.json as { model: { investment?: { outlook?: { totals: { expected: number } } } } }).model.investment?.outlook?.totals.expected;
+    };
+    const before = await expectedOnReport();
+    expect(before).toBe((await (await store()).getBudgetPlan('acme', 2027))!.published!.totals.expected);
+
+    await b.putBudget('acme', '2027', { answers: { ...answers, workstationUnitCost: 2000 } });
+    const edited = (((await b.recomputeBudget('acme', '2027')).json) as { plan: BudgetPlanRecord }).plan;
+    expect(edited.status).toBe('published');
+    expect(edited.totals.expected).not.toBe(before);
+    expect(await expectedOnReport()).toBe(before);
+
+    const republished = (((await b.publishBudget('acme', '2027')).json) as { plan: BudgetPlanRecord }).plan;
+    expect(republished.published?.totals.expected).toBe(edited.totals.expected);
+    expect(await expectedOnReport()).toBe(edited.totals.expected);
+  });
+
+  it('publish recomputes the outlook from the current answers', async () => {
     const b = await import('../src/budget.js');
     await b.putBudget('acme', '2028', { answers });
-    expect((await b.publishBudget('acme', '2028')).status).toBe(400);
+    const res = await b.publishBudget('acme', '2028');
+    expect(res.status).toBe(200);
+    const plan = (res.json as { plan: BudgetPlanRecord }).plan;
+    expect(plan.lines).toHaveLength(7);
+    expect(plan.published?.totals).toEqual(plan.totals);
+    expect(plan.published?.totals.expected).toBeGreaterThan(0);
   });
 
   it('uses the client fiscal start month for the planning period', async () => {
@@ -220,17 +250,39 @@ describe('budget industry context (internal only)', () => {
     const { buildQbrReport } = await import('../src/service.js');
     const { loadReportInputs, storeDataSource } = await import('../src/store/index.js');
     const { v4Narrative } = await import('./narrativeFixture.js');
+    const { SEED_SNAPSHOTS } = await import('@mashit/core');
     const s = await store();
-    const plan = await s.getBudgetPlan('acme', 2027);
-    expect(plan?.status).toBe('published');
-    expect(plan?.context?.items.length).toBe(2);
+    // Its own client and published plan, independent of the tests above.
+    await s.upsertClient({ id: 'ctxco', name: 'Context Co', industry: 'Manufacturing', fiscalYearStartMonth: 1 });
+    const seedSnap = SEED_SNAPSHOTS.find((x) => x.clientId === 'anp')!;
+    await s.putSnapshot({ ...seedSnap, clientId: 'ctxco', period: '2026-Q3' });
+    const lines = [{ category: 'managed_services' as const, low: 1000, expected: 1000, high: 1200, basis: [{ source: 'halo' as const, note: 'MRR' }] }];
+    const totals = { low: 1000, expected: 1000, high: 1200 };
+    await s.putBudgetPlan({
+      clientId: 'ctxco',
+      fiscalLabel: 2027,
+      answers: {},
+      assumptions: [],
+      movers: [],
+      lines,
+      totals,
+      caveats: [],
+      status: 'published',
+      publishedPeriod: '2026-Q3',
+      publishedAt: 'x',
+      published: { at: 'x', period: '2026-Q3', lines, totals, assumptions: [], movers: [], caveats: [] },
+      context: { researchedAt: 'x', sourced: true, items },
+      createdAt: 'x',
+      updatedAt: 'x',
+      updatedBy: 'jason',
+    });
     let messages = '';
-    const report = await buildQbrReport(storeDataSource(s), 'acme', '2026-Q3', {
+    const report = await buildQbrReport(storeDataSource(s), 'ctxco', '2026-Q3', {
       narrativeModel: async (m) => {
         messages += JSON.stringify(m);
         return v4Narrative();
       },
-      ...(await loadReportInputs(s, 'acme', '2026-Q3')),
+      ...(await loadReportInputs(s, 'ctxco', '2026-Q3')),
     });
     expect(messages.length).toBeGreaterThan(0);
     // The published plan's outlook does reach the report; only the context stays out.

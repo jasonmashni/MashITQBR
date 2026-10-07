@@ -206,7 +206,11 @@ export async function gatherBudgetFacts(store: DataStore, clientId: string, fisc
       const m365Invoiced = latest.metrics
         .filter((m) => m.key.startsWith('finance.invoiced.') && typeof m.value === 'number' && M365.test(m.label))
         .reduce((s, m) => s + (m.value as number), 0);
-      if (m365Monthly !== undefined && m365Monthly > 0) facts.seatMonthly = Math.round((m365Monthly / seats) * 100) / 100;
+      if (m365Monthly !== undefined && m365Monthly > 0) {
+        facts.seatMonthly = Math.round((m365Monthly / seats) * 100) / 100;
+        // Billed on the Mash IT agreement, so already inside MRR.
+        facts.seatPriceFromRecurring = true;
+      }
       else if (m365Invoiced > 0) facts.seatMonthly = Math.round((m365Invoiced / 3 / seats) * 100) / 100;
       known.push({
         text: `Microsoft 365: ${seats} paid seats${assigned !== undefined ? `, ${assigned} assigned` : ''}${facts.seatMonthly ? `, about ${money(facts.seatMonthly)} a seat a month` : ''}.`,
@@ -219,8 +223,9 @@ export async function gatherBudgetFacts(store: DataStore, clientId: string, fisc
       facts.perUserMonthly = Math.round((endUserMonthly / users) * 100) / 100;
     }
 
-    const expired = metricNum(latest, 'assets.warranty_expired') ?? metricNum(latest, 'assets.out_of_warranty');
-    const soon = metricNum(latest, 'assets.warranty_expiring_6mo') ?? metricNum(latest, 'assets.warranty_expiring') ?? metricNum(latest, 'assets.expiring_90d');
+    const expired = metricNum(latest, 'assets.warranty_expired');
+    // assets.warranty_expiring_6mo is what the seed snapshots carry; Hudu emits assets.expiring_90d.
+    const soon = metricNum(latest, 'assets.warranty_expiring_6mo') ?? metricNum(latest, 'assets.expiring_90d');
     if (expired !== undefined || soon !== undefined) {
       facts.devicesAgingOut = (expired ?? 0) + (soon ?? 0);
       const parts = [expired !== undefined ? `${expired} past warranty` : '', soon !== undefined ? `${soon} more expiring soon` : ''].filter(Boolean);
@@ -250,7 +255,8 @@ export async function planVsActualFor(
   startMonth: number,
   uptoPeriod: string,
 ): Promise<ReportBudget['planVsActual']> {
-  if (plan.status !== 'published') return undefined;
+  const snapshot = plan.status === 'published' ? plan.published : undefined;
+  if (!snapshot) return undefined;
   const spent: number[] = [];
   for (const p of fiscalPeriods(plan.fiscalLabel, startMonth)) {
     if (p > uptoPeriod) break;
@@ -258,7 +264,7 @@ export async function planVsActualFor(
     if (v !== undefined) spent.push(v);
   }
   if (spent.length === 0) return undefined;
-  return { fiscalYearLabel: `FY${plan.fiscalLabel}`, ...planVsActual(plan.totals.expected, spent), elapsedPct: (Math.min(4, spent.length) / 4) * 100 };
+  return { fiscalYearLabel: `FY${plan.fiscalLabel}`, ...planVsActual(snapshot.totals.expected, spent), elapsedPct: (Math.min(4, spent.length) / 4) * 100 };
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -331,18 +337,22 @@ export async function putBudget(clientId: string, fy: string, body: Record<strin
   return ok({ plan: saved });
 }
 
+/** The working copy with its outlook recomputed from current data and answers. */
+async function withOutlook(store: DataStore, plan: BudgetPlanRecord, startMonth: number): Promise<BudgetPlanRecord> {
+  const { facts } = await gatherBudgetFacts(store, plan.clientId, plan.fiscalLabel, startMonth);
+  const outlook = computeOutlook(facts, plan.answers);
+  return { ...plan, lines: outlook.lines, totals: outlook.totals, caveats: outlook.caveats };
+}
+
 export async function recomputeBudget(clientId: string, fy: string): Promise<ApiResult> {
   const r = await resolve(clientId, fy);
   if (isResult(r)) return r;
   const store = getDataStore();
   const existing = (await store.getBudgetPlan(clientId, r.label)) ?? emptyPlan(clientId, r.label);
-  const { facts } = await gatherBudgetFacts(store, clientId, r.label, startMonthOf(r.client));
-  const outlook = computeOutlook(facts, existing.answers);
+  // A published plan stays published; only the working copy changes until it is put on the report again.
+  const outlook = await withOutlook(store, existing, startMonthOf(r.client));
   const saved = await store.putBudgetPlan({
-    ...existing,
-    lines: outlook.lines,
-    totals: outlook.totals,
-    caveats: outlook.caveats,
+    ...outlook,
     updatedAt: new Date().toISOString(),
     updatedBy: currentActor(),
   });
@@ -356,16 +366,28 @@ export async function publishBudget(clientId: string, fy: string): Promise<ApiRe
   const store = getDataStore();
   const existing = await store.getBudgetPlan(clientId, r.label);
   if (!existing) return err(404, 'No budget plan for this fiscal year');
-  if (existing.lines.length === 0) return err(400, 'Run the outlook before putting it on the report');
   const period = planningPeriodFor(r.label, startMonthOf(r.client));
   const qbr = await store.getQbr(clientId, period);
   if (dataLocked(qbr)) return LOCKED(qbr?.locks?.final ? 'final' : 'preread');
+  // Publish what the answers say now, then freeze a copy for the report.
+  const fresh = await withOutlook(store, existing, startMonthOf(r.client));
   const now = new Date().toISOString();
+  const unitCost = fresh.answers.workstationUnitCost;
   const saved = await store.putBudgetPlan({
-    ...existing,
+    ...fresh,
     status: 'published',
     publishedPeriod: period,
     publishedAt: now,
+    published: {
+      at: now,
+      period,
+      lines: fresh.lines.map((l) => ({ ...l, basis: l.basis.map((b) => ({ ...b })) })),
+      totals: { ...fresh.totals },
+      assumptions: [...fresh.assumptions],
+      movers: [...fresh.movers],
+      caveats: [...fresh.caveats],
+      ...(unitCost !== undefined ? { unitCost } : {}),
+    },
     updatedAt: now,
     updatedBy: currentActor(),
   });
@@ -437,24 +459,26 @@ export async function budgetForPeriod(store: DataStore, clientId: string, period
   const source = storeDataSource(store);
   const startMonth = startMonthOf(await source.getClient(clientId));
   const fy = fiscalYearOf(period, startMonth);
+  // Only the snapshot taken at publish reaches the report, never the working copy.
   const published = async (label: number) => {
     const plan = await store.getBudgetPlan(clientId, label);
-    return plan?.status === 'published' ? plan : undefined;
+    return plan?.status === 'published' && plan.published ? plan : undefined;
   };
   const current = await published(fy.label);
   const next = isPlanningPeriod(period, startMonth) ? await published(fy.label + 1) : undefined;
   const actual = current ? await planVsActualFor(source.getSnapshot, current, startMonth, period) : undefined;
-  const outlook: BudgetOutlook | undefined = next
+  const snap = next?.published;
+  const outlook: BudgetOutlook | undefined = next && snap
     ? {
         fiscalLabel: next.fiscalLabel,
-        assumptions: [...next.assumptions],
-        movers: [...next.movers],
-        lines: next.lines.map((l) => ({ ...l, basis: l.basis.map((b) => ({ ...b })) })),
-        totals: { ...next.totals },
-        caveats: [...(next.caveats ?? [])],
+        assumptions: [...snap.assumptions],
+        movers: [...snap.movers],
+        lines: snap.lines.map((l) => ({ ...l, basis: l.basis.map((b) => ({ ...b })) })),
+        totals: { ...snap.totals },
+        caveats: [...snap.caveats],
       }
     : undefined;
-  const unitCost = next?.answers.workstationUnitCost ?? current?.answers.workstationUnitCost;
+  const unitCost = snap?.unitCost ?? current?.published?.unitCost;
   if (!actual && !outlook && unitCost === undefined) return undefined;
   return {
     ...(actual ? { planVsActual: actual } : {}),

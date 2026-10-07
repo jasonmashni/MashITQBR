@@ -21,7 +21,7 @@ const args = {
   discussion: anpQ2Discussion,
   previousDiscussion: anpQ1Discussion,
   documents: anpQ2Documents,
-  budget: { outlook, unitCost: 1400, planVsActual: { fiscalYearLabel: 'FY2026', planned: 118000, spent: 51597, pct: 44, note: 'Slightly under plan.' } },
+  budget: { outlook, unitCost: 1400, planVsActual: { fiscalYearLabel: 'FY2026', planned: 118000, spent: 51597, pct: 44, note: 'Under plan, with 2 of 4 quarters invoiced.' } },
 };
 const model = buildReportModel(args);
 

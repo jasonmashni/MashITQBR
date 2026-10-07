@@ -97,12 +97,32 @@ describe('computeOutlook', () => {
   });
 });
 
+describe('fix round 1 rulings', () => {
+  it('says Microsoft 365 on the agreement is already in managed services, without subtracting', () => {
+    const plain = computeOutlook(facts, answers);
+    const flagged = computeOutlook({ ...facts, seatPriceFromRecurring: true }, answers);
+    const sentence = 'Microsoft 365 billed on your Mash IT agreement is already in managed services';
+    expect(triple(line(flagged.lines, 'licensing'))).toEqual(triple(line(plain.lines, 'licensing')));
+    expect(line(flagged.lines, 'licensing').basis.map((b) => b.note)).toContain(sentence);
+    expect(flagged.caveats).toContain(`${sentence}.`);
+    expect(plain.caveats).toEqual([]);
+  });
+
+  it('notes an early refresh priced without next-year warranty data', () => {
+    const early = computeOutlook({ ...facts, devicesAgingNextYear: undefined }, { ...answers, refreshPolicy: 'early' });
+    expect(triple(line(early.lines, 'hardware'))).toEqual([21038, 24750, 28463]);
+    expect(line(early.lines, 'hardware').basis.map((b) => b.note)).toContain('Priced as replace at warranty end; no next-year warranty data yet.');
+    const known = computeOutlook(facts, { ...answers, refreshPolicy: 'early' });
+    expect(line(known.lines, 'hardware').basis.map((b) => b.note).join(' ')).not.toContain('no next-year warranty data');
+  });
+});
+
 describe('planVsActual', () => {
   it('compares spend with the pro-rata share', () => {
     const r = planVsActual(118000, [30578, 21019]);
     expect(r).toMatchObject({ planned: 118000, spent: 51597, pct: 44 });
     expect(r.note.startsWith('Under plan')).toBe(true);
-    expect(r.note).toContain('44% of the plan spent with 2 of 4 quarters invoiced.');
+    expect(r.note).toBe('Under plan, with 2 of 4 quarters invoiced.');
   });
   it('uses a relative 10% band around the share', () => {
     expect(planVsActual(100000, [24000]).note.startsWith('On plan')).toBe(true);

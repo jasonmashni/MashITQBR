@@ -1,6 +1,6 @@
 // Pure helpers for the Budget tab (kept out of the component so they test in node).
 import { fiscalYearOf, isPlanningPeriod, parsePeriod, planningPeriodFor } from '@mashit/core';
-import type { BudgetAnswers, BudgetCategory, BudgetContextItem, BudgetSource } from '../../types.js';
+import type { BudgetAnswers, BudgetCategory, BudgetContextItem, BudgetPlanRecord, BudgetSource } from '../../types.js';
 
 export const MONTHS = [
   'January',
@@ -138,3 +138,15 @@ export interface BudgetPlanVsActual {
   elapsedPct?: number;
 }
 export type { BudgetContextItem };
+
+/**
+ * True when a published plan's working copy (outlook, client sentences, unit
+ * cost) no longer matches the snapshot on the report.
+ */
+export function hasUnpublishedChanges(plan: BudgetPlanRecord): boolean {
+  const snap = plan.published;
+  if (plan.status !== 'published' || !snap) return false;
+  const working = JSON.stringify([plan.lines, plan.totals, plan.assumptions, plan.movers, plan.caveats, plan.answers.workstationUnitCost ?? null]);
+  const onReport = JSON.stringify([snap.lines, snap.totals, snap.assumptions, snap.movers, snap.caveats, snap.unitCost ?? null]);
+  return working !== onReport;
+}

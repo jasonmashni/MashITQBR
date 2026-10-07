@@ -104,7 +104,11 @@ export interface ReportInputs {
   documents?: Array<{ name: string; source: string; findings?: import('./types.js').DocumentFinding[] }>;
   /** Published budget plan data for the investment page (never the internal context). */
   budget?: import('../budget.js').ReportBudget;
+  /** Set when the budget plan could not be loaded (the report says so). */
+  budgetWarning?: string;
 }
+
+export const BUDGET_LOAD_WARNING = 'Budget plan could not be loaded; plan versus actual omitted.';
 
 /** Load persisted branding/config + discussion + narrative edits for a report build. */
 export async function loadReportInputs(store: DataStore, clientId: string, period: string): Promise<ReportInputs> {
@@ -124,7 +128,14 @@ export async function loadReportInputs(store: DataStore, clientId: string, perio
     ...(doc.findings?.length ? { findings: doc.findings } : {}),
   }));
   // Lazy import keeps the budget module (which imports this one) out of the load cycle.
-  const budget = await import('../budget.js').then((m) => m.budgetForPeriod(store, clientId, period)).catch(() => undefined);
+  let budgetWarning: string | undefined;
+  const budget = await import('../budget.js')
+    .then((m) => m.budgetForPeriod(store, clientId, period))
+    .catch((e: unknown) => {
+      console.warn(`Budget plan load failed for ${clientId} ${period}: ${e instanceof Error ? e.message : String(e)}`);
+      budgetWarning = BUDGET_LOAD_WARNING;
+      return undefined;
+    });
   return {
     config,
     orgBrand: org?.brand,
@@ -135,6 +146,7 @@ export async function loadReportInputs(store: DataStore, clientId: string, perio
     ...(previous?.items?.length ? { previousDiscussion: previous.items } : {}),
     ...(lookupTicketStatus ? { lookupTicketStatus } : {}),
     ...(budget ? { budget } : {}),
+    ...(budgetWarning ? { budgetWarning } : {}),
   };
 }
 
