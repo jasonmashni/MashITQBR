@@ -17,6 +17,7 @@ import type {
   NotificationInfo,
   Opportunity,
   Overview,
+  PackageStage,
   PeriodInfo,
   QbrMeta,
   QbrResponse,
@@ -196,7 +197,13 @@ export const api = {
   /** Record that the report package went out (the explicit "Send package" step). */
   markPackageSent: (clientId: string, period: string) =>
     send('POST', `/api/clients/${clientId}/qbr/${period}/package/sent`).then(json<QbrMeta>),
-  /** Client skipped the meeting: record the disposition and close the quarter as completed. */
+  /** Lock 2 on demand: store the final package and make the quarter read-only. */
+  finalize: (clientId: string, period: string) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/finalize`).then(json<QbrMeta>),
+  /** Audited reopen: `final` reopens the agenda and decisions, `preread` reopens everything. */
+  reopen: (clientId: string, period: string, body: { stage: PackageStage; reason: string }) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/reopen`, body).then(json<QbrMeta>),
+  /** Client skipped the meeting: record the disposition and store the final package. */
   dispositionSkipped: (clientId: string, period: string, reason?: string) =>
     send('POST', `/api/clients/${clientId}/qbr/${period}/disposition`, reason ? { reason } : {}).then(json<unknown>),
   putSchedule: (clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }) =>

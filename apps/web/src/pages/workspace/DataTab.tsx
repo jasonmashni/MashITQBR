@@ -56,6 +56,7 @@ export function DataTab({
   lastSyncAttempt,
   onDirty,
   onSaved,
+  lockNotice,
 }: {
   clientId: string;
   period: string;
@@ -67,7 +68,10 @@ export function DataTab({
   /** Reports staged-but-unsaved review changes so the parent can guard tab switches. */
   onDirty?: (dirty: boolean) => void;
   onSaved: () => void;
+  /** Set when the quarter is locked: the review is read-only and every control says why. */
+  lockNotice?: string;
 }) {
+  const locked = Boolean(lockNotice);
   const [snapshot, setSnapshot] = useState<SnapshotView | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
@@ -201,9 +205,11 @@ export function DataTab({
           Pulled {pulled}: {collected.length} metric{collected.length === 1 ? '' : 's'} from {sources.length} source{sources.length === 1 ? '' : 's'}.
           Untick anything you do not want in the QBR; the report, the scorecard and the narrative all respect it.
         </Text>
-        <Button loading={saving} onClick={save} disabled={!dirty}>
-          Save review
-        </Button>
+        <Tooltip label={lockNotice} disabled={!locked} multiline w={300}>
+          <Button loading={saving} onClick={save} disabled={!dirty || locked}>
+            Save review
+          </Button>
+        </Tooltip>
       </Group>
 
       {sources.map((source) => (
@@ -212,9 +218,11 @@ export function DataTab({
             <Badge color={source.startsWith('pdf:') ? 'navy' : 'brand'}>{source}</Badge>
             <Text size="xs" c="dimmed">{collected.filter((m) => m.source === source).length} metrics</Text>
             {source.startsWith('pdf:') && (
-              <Button size="compact-xs" variant="subtle" color="act" ml="auto" onClick={() => setRemoveSource(source)}>
-                Remove import
-              </Button>
+              <Tooltip label={lockNotice} disabled={!locked} multiline w={300}>
+                <Button size="compact-xs" variant="subtle" color="act" ml="auto" disabled={locked} onClick={() => setRemoveSource(source)}>
+                  Remove import
+                </Button>
+              </Tooltip>
             )}
           </Group>
           <Table verticalSpacing={6}>
@@ -234,6 +242,8 @@ export function DataTab({
                     <Table.Td>
                       <Checkbox
                         aria-label={`Include ${m.label}`}
+                        title={lockNotice}
+                        disabled={locked}
                         checked={!excluded.has(m.key)}
                         onChange={(e) => {
                           const next = new Set(excluded);
@@ -347,6 +357,8 @@ export function DataTab({
                 color="act"
                 variant="subtle"
                 aria-label={`Remove ${m.label}`}
+                title={lockNotice}
+                disabled={locked}
                 onClick={() => {
                   setManual(manual.filter((_, j) => j !== i));
                   markDirty();
@@ -356,20 +368,24 @@ export function DataTab({
               </ActionIcon>
             </Group>
           ))}
-          <Group align="flex-end" wrap="nowrap">
-            <TextInput label="Label" placeholder="Synology backup success" style={{ flex: 1 }} value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.currentTarget.value })} />
-            <TextInput label="Value" w={110} value={draft.value} onChange={(e) => setDraft({ ...draft, value: e.currentTarget.value })} />
-            <TextInput label="Unit" w={90} placeholder="%" value={draft.unit} onChange={(e) => setDraft({ ...draft, unit: e.currentTarget.value })} />
-            <Select
-              label="Category"
-              w={150}
-              data={SECTIONS.map(([key]) => key)}
-              value={draft.category}
-              onChange={(v) => v && setDraft({ ...draft, category: v })}
-              allowDeselect={false}
-            />
-            <Button variant="light" leftSection={<IconPlus size={14} />} onClick={addManual}>Add</Button>
-          </Group>
+          {locked ? (
+            <Text size="sm" c="dimmed">{lockNotice}</Text>
+          ) : (
+            <Group align="flex-end" wrap="nowrap">
+              <TextInput label="Label" placeholder="Synology backup success" style={{ flex: 1 }} value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.currentTarget.value })} />
+              <TextInput label="Value" w={110} value={draft.value} onChange={(e) => setDraft({ ...draft, value: e.currentTarget.value })} />
+              <TextInput label="Unit" w={90} placeholder="%" value={draft.unit} onChange={(e) => setDraft({ ...draft, unit: e.currentTarget.value })} />
+              <Select
+                label="Category"
+                w={150}
+                data={SECTIONS.map(([key]) => key)}
+                value={draft.category}
+                onChange={(v) => v && setDraft({ ...draft, category: v })}
+                allowDeselect={false}
+              />
+              <Button variant="light" leftSection={<IconPlus size={14} />} onClick={addManual}>Add</Button>
+            </Group>
+          )}
         </Stack>
       </Card>
     </Stack>

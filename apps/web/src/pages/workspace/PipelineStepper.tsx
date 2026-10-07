@@ -2,12 +2,12 @@ import { useState } from 'react';
 import { Group, Button, Card, Text, Stack, Textarea, Popover, UnstyledButton, Box } from '@mantine/core';
 import { IconCalendarOff, IconCheck } from '@tabler/icons-react';
 import { ConfirmModal } from '../../ui.js';
-import { readyToComplete, type Step } from './nextStep.js';
+import { readyToFinalize, type Step } from './nextStep.js';
 
 /**
  * The QBR pipeline at a glance: seven compact steps that wrap on narrow
  * screens, the current one in brand blue, done ones ticked in teal. Clicking
- * a step opens its tab. Closing the quarter asks first.
+ * a step opens its tab. Finalize asks first.
  */
 export function PipelineStepper({
   steps,
@@ -16,7 +16,8 @@ export function PipelineStepper({
   packageSent,
   period,
   goTab,
-  onComplete,
+  finalizeDue,
+  onFinalize,
   onSkipMeeting,
 }: {
   steps: Step[];
@@ -25,11 +26,13 @@ export function PipelineStepper({
   packageSent: boolean;
   period: string;
   goTab: (tab: string) => void;
-  onComplete: () => Promise<void>;
+  /** Completed without a final lock: Finalize is offered even if a step was skipped. */
+  finalizeDue: boolean;
+  onFinalize: () => Promise<void>;
   onSkipMeeting: (reason: string) => void | Promise<void>;
 }) {
   const closed = Boolean(steps[steps.length - 1]?.done);
-  const ready = readyToComplete(steps);
+  const ready = !closed && (readyToFinalize(steps) || finalizeDue);
   // The escape hatch when the client passes on the review: once the package is
   // out, the QBR can be dispositioned as "meeting skipped" and closed without
   // walking the Book / Hold steps.
@@ -95,7 +98,7 @@ export function PipelineStepper({
                 <Stack gap="xs">
                   <Text size="sm" fw={600}>Close {period} without a meeting</Text>
                   <Text size="xs" c="dimmed">
-                    The report package already went out. This records that the client skipped the review and closes the quarter; no meeting date is stored.
+                    The report package already went out. This records that the client skipped the review and stores the final package; no meeting date is stored.
                   </Text>
                   <Textarea
                     size="xs"
@@ -132,22 +135,22 @@ export function PipelineStepper({
           )}
           {ready && (
             <Button size="xs" color="good" leftSection={<IconCheck size={14} />} onClick={() => setConfirmClose(true)}>
-              Close the quarter
+              Finalize
             </Button>
           )}
         </Group>
       )}
       <ConfirmModal
         opened={confirmClose}
-        title={`Close ${period}?`}
-        confirmLabel="Close the quarter"
+        title={`Finalize ${period}?`}
+        confirmLabel="Finalize"
         color="good"
         loading={closing}
         onCancel={() => setConfirmClose(false)}
         onConfirm={async () => {
           setClosing(true);
           try {
-            await onComplete();
+            await onFinalize();
             setConfirmClose(false);
           } finally {
             setClosing(false);
@@ -155,10 +158,10 @@ export function PipelineStepper({
         }}
       >
         <Text size="sm">
-          This marks the review complete. The workspace will open on the next quarter from now on, and the dashboard will count this client as done for {period}.
+          This stores the final package with the captured decisions and makes {period} read-only. The dashboard will count this client as done for {period}.
         </Text>
         <Text size="sm" c="dimmed" mt="xs">
-          Reopening later needs an audited status override.
+          Reopening later needs a reason and is audited.
         </Text>
       </ConfirmModal>
     </Card>
