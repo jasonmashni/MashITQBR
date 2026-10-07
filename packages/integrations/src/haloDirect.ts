@@ -1217,3 +1217,100 @@ export async function createHaloTicket(http: HttpTransport, cfg: HaloCfg, input:
   const status = firstStr(created!, ['status_name', 'status']) ?? (num(created!['status_id']) !== undefined ? `status ${String(created!['status_id'])}` : undefined);
   return { id: String(id), status };
 }
+
+// ── Suggested conversations (workstream E) ─────────────────────────────────
+
+/** A conversation worth raising at the QBR, suggested from Halo. */
+export interface HaloConversation {
+  topic: string;
+  detail?: string;
+  source: 'halo_ticket' | 'halo_opportunity' | 'halo_note';
+  /** Unique across sources: `ticket:{id}`, `opportunity:{id}`, `note:{id}`. */
+  ref: string;
+  /** YYYY-MM-DD, or '' when the row carries no recognizable date. */
+  when: string;
+}
+
+/** Ticket classes that are conversations (requests, changes, problems), never incidents or alerts. */
+const CONVERSATION_CLASSES: ReadonlySet<ItilClass> = new Set(['service_request', 'change', 'problem']);
+const OPPORTUNITY_DATE_FIELDS = ['dateoccurred', 'dateoccured', 'datecreated', 'date_created', 'date'];
+const NOTE_DATE_FIELDS = ['date', 'datecreated', 'date_created', 'dateoccurred', 'datetime'];
+const CONVERSATION_CAP = 50;
+const truthy = (v: unknown) => v === true || v === 1 || v === 'true' || v === 'True';
+
+/**
+ * Conversations for one Halo client in a window: service requests, changes
+ * and problems raised by the primary contact or flagged VIP; opportunities;
+ * CRM notes. Newest first, capped at 50.
+ *
+ * The `Opportunities` and `CRMNote` paths (and their row field names) are
+ * UNVERIFIED against the Halo API docs; they mirror the MASH MCP tool names.
+ * Any failure on either adds one warning and the result is tickets only.
+ */
+export async function listHaloConversations(
+  http: HttpTransport,
+  cfg: HaloCfg,
+  args: { clientId: string; start: string; end: string; primaryContactEmail?: string },
+): Promise<{ items: HaloConversation[]; warnings: string[] }> {
+  const warnings: string[] = [];
+  const items: HaloConversation[] = [];
+  const startMs = Date.parse(args.start);
+  const endMs = Date.parse(args.end) + 24 * 3600 * 1000;
+  const contact = args.primaryContactEmail?.trim().toLowerCase();
+  const dateOf = (row: Json, fields: string[]) => firstDate(row, fields) ?? '';
+  const clipText = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
+
+  try {
+    const { rows } = await haloPageAll(http, cfg, 'Tickets', {
+      client_id: args.clientId,
+      datesearch: 'dateoccurred',
+      startdate: args.start,
+      enddate: args.end,
+    }, 'tickets', 3);
+    const needsTypeMap = rows.some((r) => !firstStr(r, ['tickettype_name', 'type']));
+    const typeMap = needsTypeMap ? await fetchTicketTypeMap(http, cfg) : new Map<string, string>();
+    for (const r of rows) {
+      if (!CONVERSATION_CLASSES.has(ticketClass(r, typeMap))) continue;
+      if (outsidePeriod(r, TICKET_OPENED_FIELDS, startMs, endMs)) continue;
+      const email = (firstStr(r, ['user_email', 'useremail', 'emailaddress']) ?? '').toLowerCase();
+      const fromContact = !!contact && email === contact;
+      if (!fromContact && !truthy(r['isvip']) && !truthy(r['vip'])) continue;
+      const topic = firstStr(r, ['summary', 'subject']);
+      if (!topic) continue;
+      const type = ticketTypeName(r, typeMap);
+      items.push({ topic: clipText(topic, 160), ...(type ? { detail: type } : {}), source: 'halo_ticket', ref: `ticket:${String(r['id'] ?? '')}`, when: dateOf(r, TICKET_OPENED_FIELDS) });
+    }
+  } catch (e) {
+    warnings.push(`Halo tickets unavailable: ${e instanceof Error ? e.message : 'error'}`);
+  }
+
+  let crmMissing = false;
+  try {
+    const json = await haloGet(http, cfg, 'Opportunities', { client_id: args.clientId });
+    for (const r of toArray<Json>(json, ['opportunities', 'tickets'])) {
+      if (outsidePeriod(r, OPPORTUNITY_DATE_FIELDS, startMs, endMs)) continue;
+      const topic = firstStr(r, ['summary', 'subject', 'name']);
+      if (!topic) continue;
+      const stage = firstStr(r, ['status_name', 'stage_name', 'stage']);
+      items.push({ topic: clipText(topic, 160), ...(stage ? { detail: stage } : {}), source: 'halo_opportunity', ref: `opportunity:${String(r['id'] ?? '')}`, when: dateOf(r, OPPORTUNITY_DATE_FIELDS) });
+    }
+  } catch {
+    crmMissing = true;
+  }
+  try {
+    const json = await haloGet(http, cfg, 'CRMNote', { client_id: args.clientId });
+    for (const r of toArray<Json>(json, ['crmnotes', 'notes', 'crm_notes'])) {
+      if (outsidePeriod(r, NOTE_DATE_FIELDS, startMs, endMs)) continue;
+      const note = (firstStr(r, ['note', 'notes', 'details', 'body']) ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      const topic = firstStr(r, ['subject', 'summary', 'title']) ?? (note ? clipText(note, 80) : undefined);
+      if (!topic) continue;
+      items.push({ topic: clipText(topic, 160), ...(note && note !== topic ? { detail: clipText(note, 300) } : {}), source: 'halo_note', ref: `note:${String(r['id'] ?? '')}`, when: dateOf(r, NOTE_DATE_FIELDS) });
+    }
+  } catch {
+    crmMissing = true;
+  }
+  if (crmMissing) warnings.push('Halo opportunities/CRM notes not available on this instance');
+
+  items.sort((a, b) => b.when.localeCompare(a.when));
+  return { items: items.slice(0, CONVERSATION_CAP), warnings };
+}
