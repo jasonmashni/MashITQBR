@@ -28,6 +28,10 @@ const WORD_MULTIPLIERS: Record<string, number> = {
 const NUMBER_RE =
   /(-?\$?\s?\d[\d,]*(?:\.\d+)?)\s*(?:(thousand|million|billion|trillion|mm|bn|[kmbt])\b)?\s*(%)?/gi;
 
+/** A capitalized month name followed by a day (and optional year) or by a year. */
+const MONTH_DATE =
+  /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:\d{1,2}(?:st|nd|rd|th)?(?:,?\s+(?:19|20)\d{2})?|(?:19|20)\d{2})\b/g;
+
 /**
  * Remove tokens that contain digits but are not figures, so the guardrail does
  * not flag (or accept) them as quantitative claims. Applied in order: ISO
@@ -42,6 +46,8 @@ export function stripNonFigures(text: string): string {
   // cannot carry a figure past the guardrail.
   return text
     .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+    // Calendar dates written with a month name ("Nov 15", "November 15th, 2026", "Jun 2026").
+    .replace(MONTH_DATE, ' ')
     .replace(/\bQ[1-4]\s*(?:19|20)\d{2}\b|\b(?:19|20)\d{2}-Q[1-4]\b/gi, ' ')
     .replace(/\bQ[1-4]\b/gi, ' ')
     .replace(/\bv\d+(\.\d+)?\b|\bCSF\s*\d+(\.\d+)?\b|\bM365\b|\bO365\b|\b24\/7\b/gi, ' ')

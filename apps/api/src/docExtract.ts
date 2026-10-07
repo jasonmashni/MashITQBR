@@ -43,6 +43,7 @@ export interface ExtractedFinding {
 
 const FINDING_SEVERITIES = ['info', 'watch', 'act'] as const;
 const MAX_FINDINGS = 5;
+const MAX_FINDING_WORDS = 25;
 const EMAIL_SHAPED = /\S+@\S+\.\S+/;
 
 export type DocExtractModel = (input: {
@@ -203,15 +204,16 @@ export function createClaudeDocExtractor(client: Anthropic = new Anthropic(), mo
 
 /**
  * Findings as stored: trimmed, a known severity (else info), nothing shaped
- * like an email address (a name or address must never reach the report), at
- * most five.
+ * like an email address (a name or address must never reach the report),
+ * nothing over 25 words, at most five.
  */
 export function cleanFindings(raw: unknown): ExtractedFinding[] {
   const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
   const out: ExtractedFinding[] = [];
   for (const r of rows) {
     const text = typeof r?.['text'] === 'string' ? r['text'].trim() : '';
-    if (!text || EMAIL_SHAPED.test(text)) continue;
+    // Dropped, never cut: a finding over 25 words or shaped like an address does not get stored.
+    if (!text || EMAIL_SHAPED.test(text) || text.split(/\s+/).length > MAX_FINDING_WORDS) continue;
     const severity = (FINDING_SEVERITIES as readonly unknown[]).includes(r['severity']) ? (r['severity'] as ExtractedFinding['severity']) : 'info';
     out.push({ text, severity });
   }

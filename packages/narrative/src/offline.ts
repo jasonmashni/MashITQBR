@@ -45,6 +45,18 @@ function fit(sentences: string[], limit: number): string {
   return out.join(' ');
 }
 
+/**
+ * Like fit, but never empty when there is text: a first sentence longer than
+ * the limit is split at its own sentence boundaries, and failing that cut to
+ * its first `limit` words.
+ */
+function fitOrCut(sentences: string[], limit: number): string {
+  const fitted = fit(sentences, limit);
+  if (fitted || !sentences.length) return fitted;
+  const parts = sentences[0]!.split(/(?<=[.!?;])\s+/).filter(Boolean);
+  return fit(parts, limit) || sentences[0]!.split(/\s+/).filter(Boolean).slice(0, limit).join(' ');
+}
+
 /** Take up to `max` bullets within the word limit, topping up from fallbacks to reach `min`. */
 function bullets(candidates: string[], fallbacks: string[], min: number, max: number): string[] {
   const ok = (b: string) => b && wordCount(b) <= NARRATIVE_LIMITS.bulletWords;
@@ -298,8 +310,8 @@ export function draftOfflineNarrative(input: NarrativeInput): NarrativeOutput {
       const happened = thisQuarter(q.id);
       return {
         question: q.id,
-        inPlace: evidence.length ? fit(evidence, NARRATIVE_LIMITS.protectionWords) : 'Not measured by our connected tools this quarter.',
-        thisQuarter: fit(
+        inPlace: evidence.length ? fitOrCut(evidence, NARRATIVE_LIMITS.protectionWords) : 'Not measured by our connected tools this quarter.',
+        thisQuarter: fitOrCut(
           (happened.length ? [...(rated ? [rated] : []), ...happened] : [rated ?? 'No data from connected tools this quarter.']).map(clean),
           NARRATIVE_LIMITS.protectionWords,
         ),

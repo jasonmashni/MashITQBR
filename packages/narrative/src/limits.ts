@@ -29,6 +29,7 @@ export function wordCount(text: string): number {
  */
 export function limitIssues(output: NarrativeOutput): string[] {
   const L = NARRATIVE_LIMITS;
+  const items = (n: number) => `${n} ${n === 1 ? 'item' : 'items'}`;
   const issues: string[] = [];
   const words = (field: string, text: string | undefined, limit: number) => {
     const n = wordCount(text ?? '');
@@ -39,18 +40,18 @@ export function limitIssues(output: NarrativeOutput): string[] {
   words('lede', output.lede, L.ledeWords);
   for (const key of ['did', 'saw'] as const) {
     const list = output[key] ?? [];
-    if (list.length < L.didMin || list.length > L.didMax) issues.push(`${key}: ${list.length} items (${L.didMin} to ${L.didMax})`);
+    if (list.length < L.didMin || list.length > L.didMax) issues.push(`${key}: ${items(list.length)} (${L.didMin} to ${L.didMax})`);
     list.forEach((b, i) => words(`${key}[${i}]`, b, L.bulletWords));
   }
   const decisions = output.decisions ?? [];
-  if (decisions.length > L.decisionsMax) issues.push(`decisions: ${decisions.length} items (limit ${L.decisionsMax})`);
+  if (decisions.length > L.decisionsMax) issues.push(`decisions: ${items(decisions.length)} (limit ${L.decisionsMax})`);
   for (const column of ['now', 'next', 'later'] as const) {
-    const items = output.plan?.[column] ?? [];
-    if (items.length > L.planPerColumn) issues.push(`plan.${column}: ${items.length} items (limit ${L.planPerColumn})`);
+    const planned = output.plan?.[column] ?? [];
+    if (planned.length > L.planPerColumn) issues.push(`plan.${column}: ${items(planned.length)} (limit ${L.planPerColumn})`);
   }
   const protection = output.protection ?? [];
   if (protection.length !== PROTECTION_QUESTION_IDS.length) {
-    issues.push(`protection: ${protection.length} items (exactly ${PROTECTION_QUESTION_IDS.length})`);
+    issues.push(`protection: ${items(protection.length)} (exactly ${PROTECTION_QUESTION_IDS.length})`);
   }
   protection.forEach((p, i) => {
     const expected = PROTECTION_QUESTION_IDS[i];

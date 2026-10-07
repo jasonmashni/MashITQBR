@@ -99,7 +99,7 @@ export function styleIssues(output: NarrativeOutput): string[] {
 /**
  * The prose fields of a narrative as {label, value} pairs, labeled by where
  * they sit in the output: `headline`, `lede`, `did[0]`, `saw[2]`,
- * `decisions[0].ask` (not `by`, a date), `plan.next[1].action`, `protection.recover.thisQuarter`,
+ * `decisions[0].ask`, `decisions[0].by`, `plan.next[1].action`, `protection.recover.thisQuarter`,
  * `section_summaries.security`, plus the deprecated v3 lists when present.
  */
 function proseFields(output: NarrativeOutput): NarrativeOutput['figures_referenced'] {
@@ -113,7 +113,8 @@ function proseFields(output: NarrativeOutput): NarrativeOutput['figures_referenc
   (output.decisions ?? []).forEach((d, i) => {
     add(`decisions[${i}].ask`, d.ask);
     add(`decisions[${i}].why`, d.why);
-    // `by` is a deadline ("Nov 15"), not a figure, so it is not number-checked.
+    // A deadline like "Nov 15" is stripped as a date; any other number in `by` is checked.
+    add(`decisions[${i}].by`, d.by);
   });
   for (const column of ['now', 'next', 'later'] as const) {
     (output.plan?.[column] ?? []).forEach((p, i) => {

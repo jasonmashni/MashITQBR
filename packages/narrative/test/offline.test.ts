@@ -193,3 +193,33 @@ describe('draftOfflineNarrative', () => {
     expect(r.ok).toBe(true);
   });
 });
+
+describe('draftOfflineNarrative protection fallback', () => {
+  it('never exceeds 40 words per field, even from one over-long evidence sentence', () => {
+    const long = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ') + '.';
+    const twoPart = 'Short first part; ' + Array.from({ length: 50 }, (_, i) => `w${i}`).join(' ') + '.';
+    const input = {
+      client: { name: 'X' },
+      period: { id: '2026-Q3', label: 'Q3 2026' },
+      metrics: [],
+      trends: [],
+      scorecard: {
+        overall: { score: null, rating: 'unknown', coverage: 0, confidence: 'low' },
+        functions: [],
+        remediations: [],
+        protection: [
+          { question: 'get_in', rating: 'green', safeguards: [{ title: 'MFA', score: 90, rating: 'green', evidence: long }] },
+          { question: 'know', rating: 'green', safeguards: [{ title: 'EDR', score: 90, rating: 'green', evidence: twoPart }] },
+        ],
+      },
+    } as unknown as Parameters<typeof draftOfflineNarrative>[0];
+    const draft = draftOfflineNarrative(input);
+    for (const p of draft.protection) {
+      expect(p.inPlace.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(40);
+      expect(p.inPlace.length).toBeGreaterThan(0);
+    }
+    expect(draft.protection[0]!.inPlace.split(/\s+/).length).toBe(40);
+    expect(draft.protection[1]!.inPlace).toBe('Short first part;');
+    expect(limitIssues(draft).filter((i) => i.startsWith('protection.'))).toEqual([]);
+  });
+});

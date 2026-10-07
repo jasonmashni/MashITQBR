@@ -172,6 +172,40 @@ describe('extractQbrDocument stores findings', () => {
     ]);
   });
 
+  it('cleans findings from any extractor before storing: no addresses, nothing over 25 words', async () => {
+    const h = await import('../src/handlers.js');
+    const { getDataStore, getDocStore, docPath } = await import('../src/store/index.js');
+    const store = getDataStore();
+    const record = {
+      id: 'doc2',
+      clientId: 'clinic',
+      period: '2026-Q2',
+      name: 'Backup digest.pdf',
+      source: 'upload',
+      contentType: 'application/pdf',
+      size: 10,
+      uploadedAt: '2026-07-01T00:00:00.000Z',
+      uploadedBy: 'test',
+    };
+    await store.putDocument(record);
+    await getDocStore().put(docPath('clinic', '2026-Q2', 'doc2', record.name), Buffer.from('%PDF-1.4 fake'), 'application/pdf');
+    const long = Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ');
+    const extractor: DocExtractModel = async () => ({
+      vendor: 'X',
+      periodHint: '',
+      metrics: [],
+      findings: [
+        { text: 'Backups for someone@example.com failed twice', severity: 'watch' },
+        { text: long, severity: 'act' },
+        { text: 'Two servers were not seen this week', severity: 'watch' },
+      ],
+      note: '',
+    });
+    const res = await h.extractQbrDocument('clinic', '2026-Q2', 'doc2', extractor);
+    expect(res.status).toBe(200);
+    expect((await store.getDocument('clinic', '2026-Q2', 'doc2'))?.findings).toEqual([{ text: 'Two servers were not seen this week', severity: 'watch' }]);
+  });
+
   it('loadReportInputs carries the previous quarter discussion for Since last quarter', async () => {
     const { getDataStore, loadReportInputs } = await import('../src/store/index.js');
     const store = getDataStore();

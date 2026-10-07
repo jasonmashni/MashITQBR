@@ -75,6 +75,24 @@ describe('page structure: PDF', () => {
     expect(text).not.toContain('How to read this score');
   });
 
+  it('page one shows the empty state when the author cleared every decision', () => {
+    const cleared = buildReportModel({ ...args, narrative: { ...anpQ2Narrative, decisions: [] } });
+    expect(cleared.decisions).toEqual([]);
+    const cols = [...walk(buildPdfDefinition(cleared)['content'])].find((n) => Array.isArray(n['columns']) && JSON.stringify(n['columns']).includes('What we need from you'));
+    expect(JSON.stringify(cols)).toContain('Nothing needs your decision this quarter.');
+    expect(JSON.stringify(cols)).not.toContain('"canvas":[{"type":"rect"');
+    expect(renderReportHtml(cleared)).toContain('Nothing needs your decision this quarter.');
+  });
+
+  it('a plan item flagged for a decision carries the matching decision date', () => {
+    const text = JSON.stringify(buildPdfDefinition(model));
+    // "Refresh plan and quotes for the 10 out-of-warranty devices" matches the decision dated Nov 15.
+    expect(text).toContain('Your decision by Nov 15');
+    expect(renderReportHtml(model)).toContain('Your decision by Nov 15');
+    // Page one prints the date with its reason.
+    expect(text).toContain('By Nov 15. Lands them before year end');
+  });
+
   it('page three shows conversation statuses and Now / Next / Later with owners and decisions', () => {
     const text = JSON.stringify(buildPdfDefinition(model));
     for (const chip of ['On plan', 'In progress', 'Waiting', 'Done', 'Closed']) expect(text).toContain(chip);
@@ -151,6 +169,29 @@ describe('page structure: deck', () => {
     expect(indices.every((i) => i > 0)).toBe(true);
     expect([...indices].sort((a, b) => a - b)).toEqual(indices);
     expect(slides.flat().join(' ')).toContain('Since last quarter');
+  });
+
+  it('Quarter in numbers opens with the movers, the plan carries decision dates, and page one never shrinks text', async () => {
+    const deck = await renderDeck(model);
+    const slides = await slideTexts(deck);
+    const numbers = slides.find((s) => s[0] === 'Quarter in numbers')!;
+    expect(numbers[1]).toBe('What changed this quarter');
+    expect(slides.flat().join(' ')).toContain('Your decision by Nov 15');
+    const { default: JSZip } = await import('jszip');
+    const zip = await JSZip.loadAsync(deck);
+    for (const n of [2, 3]) {
+      const xml = await zip.file(`ppt/slides/slide${n}.xml`)!.async('string');
+      expect(xml, `slide ${n}`).not.toContain('normAutofit');
+    }
+  });
+
+  it('page one flows to a continuation slide instead of shrinking when the columns are long', async () => {
+    const long = (n: number) => Array.from({ length: 17 }, (_, i) => `word${i}${n}`).join(' ');
+    const crowded = { ...model, executive: { ...model.executive, did: [long(1), long(2), long(3), long(4)], saw: [long(5), long(6), long(7), long(8)] } };
+    const slides = await slideTexts(await renderDeck(crowded));
+    const cont = slides.find((s) => s[0] === `${model.executive.headline} (cont.)`);
+    expect(cont).toBeDefined();
+    expect(cont!.join(' ')).toContain('What we did');
   });
 
   it('omits Since last quarter when there is nothing to show', async () => {

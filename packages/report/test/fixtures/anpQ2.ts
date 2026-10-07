@@ -107,7 +107,7 @@ export const anpQ2Narrative: NarrativeOutput = {
     'One lab PC has not backed up in over a year.',
   ],
   decisions: [
-    { ask: 'Approve replacing 10 out-of-warranty devices', by: 'By Nov 15 to land before year end' },
+    { ask: 'Approve replacing 10 out-of-warranty devices', why: 'Lands them before year end', by: 'Nov 15' },
     { ask: 'A monthly maintenance window for production PCs', why: 'Clears the patch backlog' },
     { ask: 'An owner for Copilot usage rules', why: 'Shadow AI report attached' },
   ],

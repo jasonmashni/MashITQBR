@@ -30,6 +30,10 @@ describe('narrative limits', () => {
     expect(verifyNarrative(out, allowed).ok).toBe(false);
   });
 
+  it('says item for one and items for many', () => {
+    expect(limitIssues({ ...v4base, did: ['a'], saw: ['a', 'b', 'c', 'd', 'e'] })).toEqual(['did: 1 item (3 to 4)', 'saw: 5 items (3 to 4)']);
+  });
+
   it('passes a compliant v4 output', () => {
     expect(limitIssues(v4base)).toEqual([]);
     expect(verifyNarrative(v4base, allowed).ok).toBe(true);

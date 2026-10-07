@@ -207,3 +207,44 @@ export function footerText(m: ReportModel): string {
   const base = `Prepared by ${m.brand.orgName}. ${m.client.hipaa ? 'Contains confidential client information (HIPAA).' : 'Confidential.'}`;
   return m.revisedAt ? `${base} Revised on ${revisedLabel(m.revisedAt)}.` : base;
 }
+
+/** "By Nov 15" from a decision's `by`, without doubling an author's own "By". */
+export function byText(by: string | undefined): string | undefined {
+  const t = by?.trim();
+  if (!t) return undefined;
+  return /^by\b/i.test(t) ? t.charAt(0).toUpperCase() + t.slice(1) : `By ${t}`;
+}
+
+/** The small line under a page one decision: "By Nov 15. Clears the patch backlog". */
+export function decisionSubline(d: { why?: string; by?: string }): string {
+  return [byText(d.by), d.why?.trim()].filter(Boolean).join('. ');
+}
+
+const significant = (text: string) =>
+  new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 4),
+  );
+
+/**
+ * The plan's decision mark: "Your decision by Nov 15" when a page one decision
+ * with a date matches the item (two or more shared words of four letters or
+ * more, best match wins), else "Your decision".
+ */
+export function planDecisionLabel(m: ReportModel, item: { action: string; decision?: boolean }): string | undefined {
+  if (!item.decision) return undefined;
+  const words = significant(item.action);
+  let best: { by: string; score: number } | undefined;
+  for (const d of m.decisions) {
+    const by = d.by?.trim();
+    if (!by) continue;
+    let score = 0;
+    for (const w of significant(d.ask)) if (words.has(w)) score++;
+    if (score >= 2 && (!best || score > best.score)) best = { by, score };
+  }
+  if (!best) return 'Your decision';
+  return `Your decision ${byText(best.by)!.replace(/^By\b/, 'by')}`;
+}

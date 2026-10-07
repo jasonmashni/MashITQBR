@@ -1,7 +1,7 @@
 import type { DiscussionItem, MetricTrend } from '@mashit/core';
 import { ratingColor, ratingWord, trendDeltaText, goalStatusLabel, goalStatusColor, SEMANTIC } from './format.js';
 import { formatValue } from './format.js';
-import { selectKpiTiles } from './charts.js';
+import { moversCaption, selectKpiTiles, selectMovers } from './charts.js';
 import { imageDims } from './images.js';
 import { conversationStatus, type ReportModel, type ReportSection } from './model.js';
 import {
@@ -9,6 +9,7 @@ import {
   BUDGET_CATEGORY_LABEL,
   conversationColor,
   CONVERSATION_LABEL,
+  decisionSubline,
   DECISIONS_LEDE,
   functionScoresText,
   hasPlan,
@@ -20,6 +21,7 @@ import {
   PLAN_COLUMNS,
   planningDecisions,
   PLANNING_LEDE,
+  planDecisionLabel,
   planningTitle,
   planVsActualText,
   PROTECTION_SUBTITLE,
@@ -316,13 +318,19 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     };
 
   // ── Page one: headline, lede, tiles, did / saw / need, since last quarter ─
+  // Nothing shrinks to fit: text boxes are sized from an estimate of the
+  // wrapped lines, and when the three columns do not fit under the lede and
+  // tiles they move, with Since last quarter, to a continuation slide.
   {
-    const s = pptx.addSlide({ masterName: 'QBR' });
-    heading(s, model.executive.headline || PAGE_TITLES.fallbackHeadline);
+    const lines = (text: string, charsPerLine: number) => Math.max(1, Math.ceil(text.length / charsPerLine));
+    let s = pptx.addSlide({ masterName: 'QBR' });
+    const title = model.executive.headline || PAGE_TITLES.fallbackHeadline;
+    heading(s, title);
     let y = BODY_Y;
     if (model.executive.lede) {
-      s.addText(model.executive.lede, { x: CONTENT_X, y, w: CONTENT_W, h: 0.8, fontFace: FONT, fontSize: 14, color: TEXT, valign: 'top', fit: 'shrink' });
-      y += 0.88;
+      const h = lines(model.executive.lede, 125) * 0.27 + 0.1;
+      s.addText(model.executive.lede, { x: CONTENT_X, y, w: CONTENT_W, h, fontFace: FONT, fontSize: 14, color: TEXT, valign: 'top' });
+      y += h + 0.1;
     }
     const tiles = selectKpiTiles(model);
     if (tiles.length >= 2) {
@@ -330,31 +338,41 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
       const tw = (CONTENT_W - gap * (tiles.length - 1)) / tiles.length;
       tiles.forEach((t, i) => {
         const x = CONTENT_X + i * (tw + gap);
-        s.addShape('rect', { x, y, w: tw, h: 0.82, fill: { color: hex(SEMANTIC.canvas) }, line: { type: 'none' } });
+        s.addShape('rect', { x, y, w: tw, h: 0.9, fill: { color: hex(SEMANTIC.canvas) }, line: { type: 'none' } });
         s.addText(
           [
             { text: t.value, options: { bold: true, fontSize: 20, color: hex(t.color), breakLine: true } },
             { text: t.label, options: { fontSize: 10, color: TEXT, breakLine: !!t.note } },
             ...(t.note ? [{ text: t.note, options: { fontSize: 10, color: GRAY } }] : []),
           ],
-          { x: x + 0.12, y, w: tw - 0.24, h: 0.82, fontFace: FONT, valign: 'middle', fit: 'shrink' },
+          { x: x + 0.12, y, w: tw - 0.24, h: 0.9, fontFace: FONT, valign: 'middle' },
         );
       });
-      y += 0.97;
+      y += 1.05;
     }
-    const sinceH = model.sinceLastQuarter.length ? 0.32 + 0.24 * model.sinceLastQuarter.length : 0;
-    const colH = FOOTER_Y - 0.15 - y - (sinceH ? sinceH + 0.12 : 0);
     const colW = (CONTENT_W - 0.4) / 3;
+    const perLine = 0.22;
+    const listHeight = (items: string[]) => items.reduce((h, t) => h + lines(t, 40) * perLine + 0.08, 0);
+    const needHeight = model.decisions.reduce((h, d) => h + lines(d.ask, 40) * perLine + (decisionSubline(d) ? lines(decisionSubline(d), 48) * 0.18 : 0) + 0.08, 0);
+    const bodyH = Math.max(listHeight(model.executive.did), listHeight(model.executive.saw), needHeight, perLine) + 0.1;
+    const colH = 0.5 + bodyH;
+    const sinceH = model.sinceLastQuarter.length ? 0.36 + 0.24 * model.sinceLastQuarter.length : 0;
+    if (y + colH + (sinceH ? sinceH + 0.15 : 0) > FOOTER_Y - 0.15) {
+      notes(s, model.executive.lede ?? '');
+      s = pptx.addSlide({ masterName: 'QBR' });
+      heading(s, `${title} (cont.)`);
+      y = BODY_Y;
+    }
     const bullets = (items: string[]) =>
       items.length
         ? items.map((t, i) => ({ text: t, options: { bullet: { code: '2022' }, color: TEXT, paraSpaceAfter: i === items.length - 1 ? 0 : 6 } }))
         : [{ text: 'Nothing to report this quarter.', options: { color: GRAY } }];
-    const column = (i: number, title: string, body: Array<{ text: string; options: Record<string, unknown> }>, need = false) => {
+    const column = (i: number, heading: string, body: Array<{ text: string; options: Record<string, unknown> }>, need = false) => {
       const x = CONTENT_X + i * (colW + 0.2);
       if (need) s.addShape('rect', { x, y, w: colW, h: colH, fill: { color: hex(SEMANTIC.watchBg) }, line: { type: 'none' } });
       s.addShape('rect', { x, y, w: colW, h: 0.04, fill: { color: need ? hex(SEMANTIC.watch) : RULE }, line: { type: 'none' } });
-      s.addText(title, { x: x + (need ? 0.1 : 0), y: y + 0.08, w: colW - 0.2, h: 0.32, fontFace: FONT, fontSize: 13, bold: true, color: need ? hex(SEMANTIC.watch) : PRIMARY, valign: 'top' });
-      s.addText(body, { x: x + (need ? 0.1 : 0), y: y + 0.45, w: colW - 0.2, h: colH - 0.5, fontFace: FONT, fontSize: 12, valign: 'top', fit: 'shrink' });
+      s.addText(heading, { x: x + (need ? 0.1 : 0), y: y + 0.08, w: colW - 0.2, h: 0.32, fontFace: FONT, fontSize: 13, bold: true, color: need ? hex(SEMANTIC.watch) : PRIMARY, valign: 'top' });
+      s.addText(body, { x: x + (need ? 0.1 : 0), y: y + 0.45, w: colW - 0.2, h: bodyH, fontFace: FONT, fontSize: 12, valign: 'top' });
     };
     column(0, 'What we did', bullets(model.executive.did));
     column(1, 'What we saw', bullets(model.executive.saw));
@@ -363,7 +381,7 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
       'What we need from you',
       model.decisions.length
         ? model.decisions.flatMap((d, i) => {
-            const sub = [d.by, d.why].filter(Boolean).join('. ');
+            const sub = decisionSubline(d);
             return [
               { text: `□  ${d.ask}`, options: { color: TEXT, breakLine: true } },
               ...(sub ? [{ text: sub, options: { color: GRAY, fontSize: 10, breakLine: i < model.decisions.length - 1 } }] : []),
@@ -372,10 +390,10 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
         : [{ text: 'Nothing needs your decision this quarter.', options: { color: TEXT } }],
       true,
     );
+    y += colH + 0.15;
     if (model.sinceLastQuarter.length) {
-      const sy = FOOTER_Y - 0.15 - sinceH;
-      s.addShape('rect', { x: CONTENT_X, y: sy, w: CONTENT_W, h: sinceH, fill: { color: hex(SEMANTIC.canvas) }, line: { type: 'none' } });
-      s.addShape('rect', { x: CONTENT_X, y: sy, w: 0.06, h: sinceH, fill: { color: PRIMARY }, line: { type: 'none' } });
+      s.addShape('rect', { x: CONTENT_X, y, w: CONTENT_W, h: sinceH, fill: { color: hex(SEMANTIC.canvas) }, line: { type: 'none' } });
+      s.addShape('rect', { x: CONTENT_X, y, w: 0.06, h: sinceH, fill: { color: PRIMARY }, line: { type: 'none' } });
       s.addText(
         [
           { text: 'Since last quarter', options: { bold: true, color: hex(SEMANTIC.ink), breakLine: true } },
@@ -384,7 +402,7 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
             options: { color: TEXT, breakLine: i < model.sinceLastQuarter.length - 1 },
           })),
         ],
-        { x: CONTENT_X + 0.2, y: sy, w: CONTENT_W - 0.3, h: sinceH, fontFace: FONT, fontSize: 11, valign: 'middle', fit: 'shrink' },
+        { x: CONTENT_X + 0.2, y, w: CONTENT_W - 0.3, h: sinceH, fontFace: FONT, fontSize: 11, valign: 'middle' },
       );
     }
     notes(
@@ -467,7 +485,7 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
       const cell = (key: (typeof PLAN_COLUMNS)[number]['key'], i: number) => {
         const p = model.plan[key][i];
         return {
-          text: p ? `${p.action}\n${p.owner}${p.decision ? '\nYour decision' : ''}` : '',
+          text: p ? `${p.action}\n${p.owner}${p.decision ? `\n${planDecisionLabel(model, p)}` : ''}` : '',
           options: { fontFace: FONT, fontSize: 11, color: TEXT },
         };
       };
@@ -582,13 +600,52 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     );
   }
 
-  // ── Quarter in numbers (appendix slides) ────────────────────────────────
+  // ── Quarter in numbers (appendix slides), opening with the movers ───────
   const qoq = operationalQoQ(model.trends);
-  if (model.sections.length || qoq.length >= 2) {
+  const movers = selectMovers(model.trends);
+  if (model.sections.length || qoq.length >= 2 || movers.length >= 2) {
     const s = pptx.addSlide({ masterName: 'QBR' });
     heading(s, PAGE_TITLES.numbers);
-    if (qoq.length >= 2) {
+    if (movers.length >= 2) {
+      s.addText('What changed this quarter', { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: 0.35, fontFace: FONT, fontSize: 15, bold: true, color: PRIMARY, valign: 'top' });
+      s.addText(moversCaption(model.trends), { x: CONTENT_X, y: BODY_Y + 0.38, w: CONTENT_W, h: 0.45, fontFace: FONT, fontSize: 10, color: GRAY, valign: 'top' });
+      const labels = movers.map((m) => `${m.label} (${m.deltaText})`);
       s.addChart(
+        pptx.ChartType.bar,
+        [
+          { name: 'Improved', labels, values: movers.map((m) => (m.good ? m.magnitude : 0)) },
+          { name: 'Needs attention', labels, values: movers.map((m) => (m.good ? 0 : -m.magnitude)) },
+        ],
+        {
+          x: CONTENT_X, y: BODY_Y + 0.9, w: CONTENT_W, h: FOOTER_Y - 0.3 - (BODY_Y + 0.9),
+          barDir: 'bar',
+          barGrouping: 'stacked',
+          chartColors: [hex(SEMANTIC.good), hex(SEMANTIC.act)],
+          catAxisOrientation: 'maxMin',
+          catAxisLabelFontFace: FONT,
+          catAxisLabelFontSize: 11,
+          catAxisLabelPos: 'low',
+          valAxisHidden: true,
+          valGridLine: { style: 'none' },
+          showLegend: true,
+          legendPos: 'b',
+          legendFontFace: FONT,
+          legendFontSize: 10,
+        },
+      );
+      notes(s, `Lead with what moved most: ${movers.map((m) => `${m.label} ${m.deltaText}`).join(', ')}. The detailed tables follow as appendix slides.`);
+    } else {
+      const summaries = model.sections.map((sec) => `${sec.title}${sec.summary ? `: ${sec.summary}` : ''}`);
+      s.addText(
+        summaries.map((t, i) => ({ text: t, options: { bullet: { code: '2022' }, color: TEXT, paraSpaceAfter: i === summaries.length - 1 ? 0 : 10 } })),
+        { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: FOOTER_Y - 0.2 - BODY_Y, fontFace: FONT, fontSize: 14, valign: 'top' },
+      );
+      notes(s, 'The detailed tables follow as appendix slides; skim them only if the client asks.');
+    }
+    if (qoq.length >= 2) {
+      const q = pptx.addSlide({ masterName: 'QBR' });
+      heading(q, 'Service desk, quarter over quarter');
+      q.addChart(
         pptx.ChartType.bar,
         [
           { name: model.previousPeriod?.label ?? 'Previous', labels: qoq.map((t) => t.label), values: qoq.map((t) => t.previous ?? 0) },
@@ -610,22 +667,15 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
           dataLabelColor: TEXT,
         },
       );
-      s.addText('Support ticket volume this quarter versus last. Automated system alerts are excluded so the human-facing work is comparable.', {
+      q.addText('Support ticket volume this quarter versus last. Automated system alerts are excluded so the human-facing work is comparable.', {
         x: CONTENT_X, y: FOOTER_Y - 0.55, w: CONTENT_W, h: 0.4, fontFace: FONT, fontSize: 10, color: GRAY, italic: true, valign: 'top',
       });
       notes(
-        s,
+        q,
         `Talk to the trend, not the bars. ${qoq
           .map((t) => `${t.label}: ${t.previous ?? 0} to ${t.current ?? 0}`)
           .join(', ')}. Frame improvement as the value of proactive management; frame any increase honestly and say what you're doing about it.`,
       );
-    } else {
-      const lines = model.sections.map((sec) => `${sec.title}${sec.summary ? `: ${sec.summary}` : ''}`);
-      s.addText(
-        lines.map((t, i) => ({ text: t, options: { bullet: { code: '2022' }, color: TEXT, paraSpaceAfter: i === lines.length - 1 ? 0 : 10 } })),
-        { x: CONTENT_X, y: BODY_Y, w: CONTENT_W, h: FOOTER_Y - 0.2 - BODY_Y, fontFace: FONT, fontSize: 14, valign: 'top', fit: 'shrink' },
-      );
-      notes(s, 'The detailed tables follow as appendix slides; skim them only if the client asks.');
     }
     addMaturitySlide();
     for (const section of model.sections) addSectionSlides(pptx, section, theme);

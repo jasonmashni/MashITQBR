@@ -9,6 +9,7 @@ import {
   BUDGET_CATEGORY_LABEL,
   conversationColor,
   CONVERSATION_LABEL,
+  decisionSubline,
   DECISIONS_LEDE,
   DENSE_TABLE_ROWS,
   footerText,
@@ -22,6 +23,7 @@ import {
   PLAN_COLUMNS,
   planningDecisions,
   PLANNING_LEDE,
+  planDecisionLabel,
   planningTitle,
   planVsActualText,
   PROTECTION_SUBTITLE,
@@ -388,7 +390,7 @@ function pageOne(m: ReportModel): Node[] {
             width: '*',
             stack: [
               { text: d.ask, style: 'body', margin: [0, 0, 0, 1] },
-              ...([d.by, d.why].filter(Boolean).length ? [{ text: [d.by, d.why].filter(Boolean).join('. '), style: 'small' }] : []),
+              ...(decisionSubline(d) ? [{ text: decisionSubline(d), style: 'small' }] : []),
             ],
           },
         ],
@@ -518,7 +520,7 @@ function decisionsPage(m: ReportModel): Node[] {
                 stack: [
                   { text: p.action, bold: true, fontSize: 10.5, color: SEMANTIC.ink },
                   { text: p.owner, style: 'small' },
-                  ...(p.decision ? [{ text: 'Your decision', bold: true, fontSize: 8.5, color: SEMANTIC.watch }] : []),
+                  ...(p.decision ? [{ text: planDecisionLabel(m, p), bold: true, fontSize: 8.5, color: SEMANTIC.watch }] : []),
                 ],
                 margin: [0, 0, 0, 8],
               }))

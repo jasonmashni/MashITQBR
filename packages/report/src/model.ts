@@ -304,8 +304,9 @@ export function buildReportModel(args: {
     decisions: narrative?.decisions ?? [],
     plan: (() => {
       const plan = narrative?.plan;
-      if (plan && (plan.now.length || plan.next.length || plan.later.length)) return { now: plan.now, next: plan.next, later: plan.later };
-      // A narrative with no plan: the recommendations (or their fallbacks) become the Now column.
+      // A v4 plan is shown as written, even when the author cleared it.
+      if (plan) return { now: plan.now ?? [], next: plan.next ?? [], later: plan.later ?? [] };
+      // A narrative with no plan (v3): the recommendations (or their fallbacks) become the Now column.
       return { now: recommendations.slice(0, 3).map((action) => ({ action, owner: 'Mash IT' })), next: [], later: [] };
     })(),
     scorecard,

@@ -23,7 +23,7 @@ import {
 import { createClaudeNarrativeModel, type NarrativeModel } from '@mashit/narrative';
 import { renderDeck, renderPdf } from '@mashit/report';
 import { FetchHttpTransport, fetchHaloMeta, listNinjaRoles, type McpTransport } from '@mashit/integrations';
-import { buildQbrReport, renderQbrHtml } from './service.js';
+import { buildQbrReport, narrativeEditsFromBody, renderQbrHtml } from './service.js';
 import {
   dataStoreKind,
   docPath,
@@ -68,7 +68,7 @@ import { appendPdfAttachments, loadPdfAttachments, pdfFirstPages } from './pdfMe
 import { createClaudeDocMatcher, type DocMatchModel } from './docMatch.js';
 import { buildAgendaContext, createClaudeAgendaSuggester, offlineAgenda, type AgendaModel } from './agenda.js';
 import { createClaudeResearcher, type ResearchModel } from './research.js';
-import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
+import { cleanFindings, createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from './docExtract.js';
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 import { computeTriage } from './triage.js';
 
@@ -474,23 +474,15 @@ export async function getNarrativeState(clientId: string, period: string): Promi
 
 /** Save author edits — undefined/blank fields fall back to the generated text. */
 export async function putNarrativeEdits(clientId: string, period: string, body: Record<string, unknown>): Promise<ApiResult> {
-  const lines = (v: unknown): string[] | undefined => {
-    if (!Array.isArray(v)) return undefined;
-    const out = v.map((s) => String(s).trim()).filter(Boolean);
-    return out.length ? out : undefined;
-  };
-  const headline = typeof body['headline'] === 'string' && body['headline'].trim() ? body['headline'].trim() : undefined;
-  const summary_paragraphs = lines(body['summary_paragraphs']);
-  const highlights = lines(body['highlights']);
-  const recommendations = lines(body['recommendations']);
+  // Every v4 prose field (and the v3 lists for older clients); blanks dropped,
+  // an emptied decisions list or plan kept so the author can clear them.
+  const fields = narrativeEditsFromBody(body);
 
   const store = getDataStore();
   const existing = await store.getNarrative(clientId, period);
   const now = new Date().toISOString();
-  const empty = !headline && !summary_paragraphs && !highlights && !recommendations;
-  const edits = empty
-    ? undefined
-    : { headline, summary_paragraphs, highlights, recommendations, editedBy: currentActor(), editedAt: now };
+  const empty = !fields;
+  const edits = fields ? { ...fields, editedBy: currentActor(), editedAt: now } : undefined;
 
   await store.putNarrative({ clientId, period, inputHash: existing?.inputHash, result: existing?.result, edits, updatedAt: now });
   audit('narrative.edit', `qbr:${clientId}/${period}`, empty ? 'edits cleared' : 'edited');
@@ -801,7 +793,8 @@ export async function extractQbrDocument(
       coveredEntity: client?.hipaa === true,
     });
     // Findings ride on the document record so every later report build reads them.
-    const document = { ...record, findings: extraction.findings ?? [] };
+    // Cleaned here too, so an injected extractor cannot store an address or an over-long finding.
+    const document = { ...record, findings: cleanFindings(extraction.findings) };
     await store.putDocument(document);
     audit('document.extract', `qbr:${clientId}/${record.period}`, `${record.name} → ${extraction.metrics.length} metric(s), ${document.findings.length} finding(s)`);
     return ok({ extraction, source: pdfSourceSlug(extraction.vendor), document });

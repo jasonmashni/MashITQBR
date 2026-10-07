@@ -8,6 +8,7 @@ import {
   BUDGET_CATEGORY_LABEL,
   conversationColor,
   CONVERSATION_LABEL,
+  decisionSubline,
   DECISIONS_LEDE,
   DENSE_TABLE_ROWS,
   footerText,
@@ -21,6 +22,7 @@ import {
   PLAN_COLUMNS,
   planningDecisions,
   PLANNING_LEDE,
+  planDecisionLabel,
   planningTitle,
   planVsActualText,
   PROTECTION_SUBTITLE,
@@ -199,7 +201,7 @@ function renderPageOne(m: ReportModel): string {
   const decisions = m.decisions.length
     ? m.decisions
         .map((d) => {
-          const sub = [d.by, d.why].filter(Boolean).join('. ');
+          const sub = decisionSubline(d);
           return `<div class="decision"><span class="box"></span><span>${esc(d.ask)}${sub ? `<small>${esc(sub)}</small>` : ''}</span></div>`;
         })
         .join('')
@@ -298,7 +300,7 @@ function renderDecisions(m: ReportModel): string {
               ? m.plan[c.key]
                   .map(
                     (p) =>
-                      `<div class="it"><b>${esc(p.action)}</b><span class="who">${esc(p.owner)}</span>${p.decision ? '<span class="dec">Your decision</span>' : ''}</div>`,
+                      `<div class="it"><b>${esc(p.action)}</b><span class="who">${esc(p.owner)}</span>${p.decision ? `<span class="dec">${esc(planDecisionLabel(m, p) ?? '')}</span>` : ''}</div>`,
                   )
                   .join('')
               : '<p class="small muted">Nothing planned yet.</p>'

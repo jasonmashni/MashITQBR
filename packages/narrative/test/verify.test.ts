@@ -69,6 +69,7 @@ describe('verifyNarrative', () => {
       'saw[2]',
       'decisions[0].ask',
       'decisions[0].why',
+      'decisions[0].by',
       'plan.now[0].action',
       'plan.now[0].owner',
       'plan.later[0].action',
@@ -184,5 +185,18 @@ describe('attached report findings', () => {
     });
     expect(buildAllowedNumbers(withFinding)).toContain(389);
     expect(verifyNarrative(v4({ saw }), buildAllowedNumbers(withFinding)).ok).toBe(true);
+  });
+});
+
+describe('decision deadlines', () => {
+  const withBy = (by: string) => v4({ decisions: [{ ask: 'Approve the refresh', by }] });
+  it('a month and day is a date, not a figure', () => {
+    expect(verifyNarrative(withBy('Nov 15'), []).ok).toBe(true);
+    expect(verifyNarrative(withBy('November 15th, 2026'), []).ok).toBe(true);
+  });
+  it('a figure in the deadline is still checked', () => {
+    const r = verifyNarrative(withBy('Before the $48,000 renewal'), []);
+    expect(r.ok).toBe(false);
+    expect(r.failures.map((f) => f.label)).toEqual(['decisions[0].by']);
   });
 });

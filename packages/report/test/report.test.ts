@@ -42,13 +42,15 @@ describe('buildReportModel', () => {
     expect(model.plan.next[0]).toEqual({ action: 'Replace ANP-LAP-006', owner: 'Mash IT', decision: true });
   });
 
-  it('a narrative without a plan puts the recommendations in the Now column', () => {
+  it('a v3 narrative without a plan puts the recommendations in the Now column; a cleared v4 plan stays empty', () => {
     const noPlan = buildReportModel({
       client: anp,
       current: findSeedSnapshot('anp', '2026-Q1')!,
-      narrative: { ...narrative, plan: { now: [], next: [], later: [] } },
+      narrative: { ...narrative, plan: undefined } as unknown as NarrativeOutput,
     });
     expect(noPlan.plan.now.map((p) => p.action)).toEqual(['Plan the May hardware refresh', 'Replace ANP-LAP-006']);
+    const cleared = buildReportModel({ client: anp, current: findSeedSnapshot('anp', '2026-Q1')!, narrative: { ...narrative, plan: { now: [], next: [], later: [] } } });
+    expect(cleared.plan).toEqual({ now: [], next: [], later: [] });
   });
 
   it('escapes narrative and discussion text in the HTML', () => {

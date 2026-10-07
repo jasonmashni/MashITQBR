@@ -92,8 +92,9 @@ export function narrativeEditsFromBody(body: Record<string, unknown>): Narrative
     lede: text(body['lede']),
     did: lines(body['did']),
     saw: lines(body['saw']),
-    decisions: decisions.length ? decisions : undefined,
-    plan: plan && PLAN_COLUMNS.some((c) => plan[c].length) ? plan : undefined,
+    // Present in the body means edited, even when emptied: an author can clear them.
+    decisions: Array.isArray(body['decisions']) ? decisions : undefined,
+    plan,
     protection: protection.length ? protection : undefined,
     summary_paragraphs: lines(body['summary_paragraphs']),
     highlights: lines(body['highlights']),
@@ -307,11 +308,14 @@ export async function buildQbrReport(
       output: {
         ...narrative.output,
         ...(edits.headline !== undefined && edits.headline !== '' ? { headline: edits.headline } : {}),
-        ...(edits.lede ? { lede: edits.lede } : {}),
-        ...(edits.did?.length ? { did: edits.did } : {}),
+        // A pre-v4 edit with no v4 counterpart still wins: its first paragraph
+        // becomes the lede and its highlights become what we did. Nothing is
+        // truncated; an over-limit result fails verification and says so.
+        ...(edits.lede ? { lede: edits.lede } : edits.summary_paragraphs?.length ? { lede: edits.summary_paragraphs[0]! } : {}),
+        ...(edits.did?.length ? { did: edits.did } : edits.highlights?.length ? { did: edits.highlights } : {}),
         ...(edits.saw?.length ? { saw: edits.saw } : {}),
-        ...(edits.decisions?.length ? { decisions: edits.decisions } : {}),
-        ...(edits.plan && PLAN_COLUMNS.some((c) => edits.plan![c]?.length) ? { plan: edits.plan } : {}),
+        ...(edits.decisions !== undefined ? { decisions: edits.decisions } : {}),
+        ...(edits.plan !== undefined ? { plan: edits.plan } : {}),
         ...(edits.protection?.length ? { protection: edits.protection } : {}),
         ...(edits.summary_paragraphs?.length ? { summary_paragraphs: edits.summary_paragraphs } : {}),
         ...(edits.highlights?.length ? { highlights: edits.highlights } : {}),

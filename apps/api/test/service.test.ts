@@ -206,13 +206,39 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     expect(report.model.recommendations).toEqual(['Edited action (Mash IT)']);
   });
 
+  it('clearing decisions and the plan empties them on the model', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () =>
+        v4Narrative({ decisions: [{ ask: 'Approve it' }], plan: { now: [{ action: 'Do it', owner: 'Mash IT' }], next: [], later: [] } }),
+      narrativeEdits: { decisions: [], plan: { now: [], next: [], later: [] } },
+    });
+    expect(report.model.decisions).toEqual([]);
+    expect(report.model.plan).toEqual({ now: [], next: [], later: [] });
+  });
+
+  it('a pre-v4 edit maps its first paragraph to the lede and its highlights to what we did', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => v4Narrative(),
+      narrativeEdits: { summary_paragraphs: ['Old first paragraph.', 'Old second paragraph.'], highlights: ['One.', 'Two.', 'Three.'] },
+    });
+    expect(report.narrative.output.lede).toBe('Old first paragraph.');
+    expect(report.narrative.output.did).toEqual(['One.', 'Two.', 'Three.']);
+    expect(report.model.executive.lede).toBe('Old first paragraph.');
+    // A v4 edit for the same field wins over the v3 one.
+    const both = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => v4Narrative(),
+      narrativeEdits: { lede: 'New lede.', summary_paragraphs: ['Old.'] },
+    });
+    expect(both.narrative.output.lede).toBe('New lede.');
+  });
+
   it('a limit breach in an edit is a verification failure with a warning', async () => {
     const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
       narrativeModel: async () => v4Narrative(),
       narrativeEdits: { did: ['Only one bullet.'] },
     });
     expect(report.narrative.verification.ok).toBe(false);
-    expect(report.warnings.join(' ')).toContain('did: 1 items (3 to 4)');
+    expect(report.warnings.join(' ')).toContain('did: 1 item (3 to 4)');
   });
 
   it('excludedMetrics vanish from sections, trends, and the AI input', async () => {
@@ -313,7 +339,14 @@ describe('narrativeEditsFromBody', () => {
   });
 
   it('returns undefined when nothing was edited', () => {
-    expect(narrativeEditsFromBody({ headline: ' ', did: [], plan: { now: [], next: [], later: [] } })).toBeUndefined();
+    expect(narrativeEditsFromBody({ headline: ' ', did: [], lede: '' })).toBeUndefined();
+  });
+
+  it('keeps an emptied decisions list and plan so the author can clear them', () => {
+    expect(narrativeEditsFromBody({ decisions: [], plan: { now: [], next: [], later: [] } })).toEqual({
+      decisions: [],
+      plan: { now: [], next: [], later: [] },
+    });
   });
 });
 
