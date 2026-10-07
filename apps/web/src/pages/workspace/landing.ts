@@ -1,4 +1,5 @@
 import type { LockInfo, QbrMeta, QbrStatus } from '../../types.js';
+import { lockNotice } from './nextStep.js';
 
 /** One row of the client's quarter list (GET /api/clients/{id}/periods), newest first. */
 export interface LandingPeriod {
@@ -47,4 +48,17 @@ export function qbrLoadError(status: number | undefined, message: string): { tit
     return { title: 'Stored package missing', text: 'The stored package for this quarter is missing. Reopen the quarter to rebuild it.' };
   }
   return { title: 'Could not build the report', text: `${message}. Try a Sync, or check the client's tool mappings on the Integrations page.` };
+}
+
+/**
+ * The lock sentence for every locked quarter in the list, keyed by period.
+ * The Reports tab spans all quarters, so each row checks its own quarter.
+ */
+export function lockedPeriodNotices(list: LandingPeriod[], clientId: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const row of list) {
+    const notice = lockNotice(metaFromPeriodList(list, clientId, row.period));
+    if (notice) out[row.period] = notice;
+  }
+  return out;
 }

@@ -18,7 +18,7 @@ import { OpportunitiesTab } from './workspace/OpportunitiesTab.js';
 import { StudioTab } from './workspace/StudioTab.js';
 import { BudgetTab } from './workspace/BudgetTab.js';
 import { deliverableGuard, deriveSteps, lockNotice, primaryStep, type Step } from './workspace/nextStep.js';
-import { chooseLandingPeriod, metaFromPeriodList, nextPeriodIn, qbrLoadError, type LandingPeriod } from './workspace/landing.js';
+import { chooseLandingPeriod, lockedPeriodNotices, metaFromPeriodList, nextPeriodIn, qbrLoadError, type LandingPeriod } from './workspace/landing.js';
 
 /** The quarter the calendar is in right now, e.g. 2026-Q4 (UTC, same as the API). */
 function currentQuarterId(d = new Date()): string {
@@ -268,6 +268,11 @@ export function Workspace() {
   const next = primaryStep(steps, meta);
   const notice = lockNotice(meta);
   const finalized = Boolean(meta?.locks?.final);
+  // Lock sentence per quarter for the Reports tab (it spans every quarter);
+  // the selected quarter follows its freshly loaded record.
+  const lockedPeriods = lockedPeriodNotices(periodList, clientId);
+  if (notice) lockedPeriods[period] = notice;
+  else if (qbr?.meta) delete lockedPeriods[period];
   const nextQuarter = finalized ? nextPeriodIn(periodList, period) : undefined;
   const guard = deliverableGuard({
     hasQbr: Boolean(qbr),
@@ -461,6 +466,7 @@ export function Workspace() {
               refresh={refresh}
               reportsMailbox={system?.reportsMailbox ?? null}
               aiEnabled={system?.ai ?? false}
+              lockedPeriods={lockedPeriods}
               onChanged={() => setRefresh((n) => n + 1)}
             />
           )}
