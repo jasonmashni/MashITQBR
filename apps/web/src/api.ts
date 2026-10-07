@@ -13,6 +13,7 @@ import type {
   DocumentInfo,
   HaloMeta,
   Me,
+  NarrativeEdits,
   MetricRow,
   NotificationInfo,
   Opportunity,
@@ -149,12 +150,12 @@ export const api = {
   // Narrative editor
   getNarrative: (clientId: string, period: string) =>
     send('GET', `/api/clients/${clientId}/qbr/${period}/narrative`).then(
-      json<{ edits: { headline?: string; summary_paragraphs?: string[]; highlights?: string[]; recommendations?: string[]; editedBy: string; editedAt: string } | null; hasCached: boolean }>,
+      json<{ edits: (NarrativeEdits & { editedBy: string; editedAt: string }) | null; hasCached: boolean }>,
     ),
   putNarrative: (
     clientId: string,
     period: string,
-    edits: { headline?: string; summary_paragraphs?: string[]; highlights?: string[]; recommendations?: string[] },
+    edits: NarrativeEdits,
   ) => send('PUT', `/api/clients/${clientId}/qbr/${period}/narrative`, edits).then(json<{ edits: unknown }>),
   regenerateNarrative: (clientId: string, period: string) =>
     send('POST', `/api/clients/${clientId}/qbr/${period}/narrative/regenerate`).then(json<{ cleared: boolean }>),

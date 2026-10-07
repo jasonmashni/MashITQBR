@@ -169,12 +169,84 @@ export interface MetricTrend {
   sentiment: string;
 }
 
+export type ProtectionQuestionId = 'get_in' | 'know' | 'recover' | 'keep_up' | 'run_well';
+export interface PlanItem {
+  action: string;
+  owner: string;
+  /** True when the item needs the client's yes. */
+  decision?: boolean;
+}
+export interface NarrativeDecision {
+  ask: string;
+  why?: string;
+  by?: string;
+}
+export interface NarrativePlan {
+  now: PlanItem[];
+  next: PlanItem[];
+  later: PlanItem[];
+}
+export interface NarrativeProtection {
+  question: ProtectionQuestionId;
+  inPlace: string;
+  thisQuarter: string;
+}
+
+/** Author edits to the v4 narrative (every field optional: blank keeps the generated text). */
+export interface NarrativeEdits {
+  headline?: string;
+  lede?: string;
+  did?: string[];
+  saw?: string[];
+  decisions?: NarrativeDecision[];
+  plan?: NarrativePlan;
+  protection?: NarrativeProtection[];
+  /** v3 fields from edits saved before v4. */
+  summary_paragraphs?: string[];
+  highlights?: string[];
+  recommendations?: string[];
+}
+
+export interface SinceLastRow {
+  topic: string;
+  status: 'done' | 'in_progress' | 'waiting' | 'closed';
+  detail?: string;
+}
+
+export interface ProtectionRowView {
+  id: ProtectionQuestionId;
+  question: string;
+  rating: Rating;
+  functions: Array<{ function: string; score: number | null }>;
+  safeguards: Array<{ id: string; title: string; evidence: string; measured: boolean; rating: Rating }>;
+  inPlace?: string;
+  thisQuarter?: string;
+}
+
+export interface InvestmentView {
+  invoiced: number;
+  recurring: number;
+  variable: number;
+  previousInvoiced?: number;
+  breakdown: Array<{ label: string; amount: number; recurring: boolean }>;
+  planVsActual?: { fiscalYearLabel: string; planned: number; spent: number; pct: number; note: string };
+  comingUp: string[];
+  outlook?: Pick<BudgetPlanRecord, 'fiscalLabel' | 'assumptions' | 'movers' | 'lines' | 'totals' | 'caveats'>;
+}
+
 export interface ReportModel {
   client: { name: string; industry?: string; hipaa?: boolean };
   period: { id: string; label: string };
   previousPeriod?: { id: string; label: string };
   brand?: { name?: string; logoDataUri?: string };
-  executive: { headline?: string; paragraphs: string[]; highlights: string[] };
+  /** lede, did and saw are v4; optional so a stored pre-v4 model still renders. */
+  executive: { headline?: string; paragraphs: string[]; highlights: string[]; lede?: string; did?: string[]; saw?: string[] };
+  decisions?: NarrativeDecision[];
+  plan?: NarrativePlan;
+  sinceLastQuarter?: SinceLastRow[];
+  protection?: ProtectionRowView[];
+  investment?: InvestmentView;
+  revisedAt?: string;
   scorecard: {
     overall: { score: number | null; rating: Rating; coverage: number; confidence: Confidence };
     functions: FunctionScore[];
