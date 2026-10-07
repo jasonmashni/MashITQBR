@@ -1,4 +1,4 @@
-import { extractNumbers, matchesAllowed, stripAllowedQuotes } from './numbers.js';
+import { extractNumbers, matchesAllowed, stripAllowedQuotes, stripDeadline } from './numbers.js';
 import { limitIssues } from './limits.js';
 import type { NarrativeOutput } from './schema.js';
 
@@ -113,8 +113,8 @@ function proseFields(output: NarrativeOutput): NarrativeOutput['figures_referenc
   (output.decisions ?? []).forEach((d, i) => {
     add(`decisions[${i}].ask`, d.ask);
     add(`decisions[${i}].why`, d.why);
-    // A deadline like "Nov 15" is stripped as a date; any other number in `by` is checked.
-    add(`decisions[${i}].by`, d.by);
+    // Only here is a month-name date ("Nov 15") stripped; any other number in `by` is checked.
+    add(`decisions[${i}].by`, d.by === undefined ? undefined : stripDeadline(d.by));
   });
   for (const column of ['now', 'next', 'later'] as const) {
     (output.plan?.[column] ?? []).forEach((p, i) => {

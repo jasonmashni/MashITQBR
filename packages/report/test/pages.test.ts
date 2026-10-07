@@ -93,6 +93,27 @@ describe('page structure: PDF', () => {
     expect(text).toContain('By Nov 15. Lands them before year end');
   });
 
+  it('a deadline that is not a date prints as written, and stopwords never make a match', () => {
+    const plan = { now: [{ action: 'Approve the firewall budget', owner: 'ANP', decision: true }], next: [{ action: 'Review that with your team', owner: 'Mash IT', decision: true }], later: [] };
+    const m = buildReportModel({
+      ...args,
+      narrative: {
+        ...anpQ2Narrative,
+        decisions: [
+          { ask: 'Approve the firewall budget request', by: 'Before the board meeting' },
+          { ask: 'Agree with your team about that', by: 'Dec 1' },
+        ],
+        plan,
+      },
+    });
+    const text = JSON.stringify(buildPdfDefinition(m));
+    expect(text).toContain('Your decision: Before the board meeting');
+    expect(text).not.toContain('Your decision by Dec 1'); // shares only stopwords
+    expect(text).toContain('Before the board meeting'); // page one, not "By Before..."
+    expect(text).not.toContain('By Before');
+    expect(text).toContain('By Dec 1');
+  });
+
   it('page three shows conversation statuses and Now / Next / Later with owners and decisions', () => {
     const text = JSON.stringify(buildPdfDefinition(model));
     for (const chip of ['On plan', 'In progress', 'Waiting', 'Done', 'Closed']) expect(text).toContain(chip);

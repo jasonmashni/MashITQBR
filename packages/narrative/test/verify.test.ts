@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { SEED_CLIENTS, findSeedSnapshot } from '@mashit/core';
-import { buildAllowedNumbers, buildAllowedQuotes, buildNarrativeInput, verifyFigures, verifyNarrative, type NarrativeInput, type NarrativeOutput } from '@mashit/narrative';
+import { buildAllowedNumbers, buildAllowedQuotes, buildNarrativeInput, extractNumbers, verifyFigures, verifyNarrative, type NarrativeInput, type NarrativeOutput } from '@mashit/narrative';
 import { v4 } from './v4.js';
 
 describe('verifyFigures', () => {
@@ -193,6 +193,16 @@ describe('decision deadlines', () => {
   it('a month and day is a date, not a figure', () => {
     expect(verifyNarrative(withBy('Nov 15'), []).ok).toBe(true);
     expect(verifyNarrative(withBy('November 15th, 2026'), []).ok).toBe(true);
+  });
+  it('prose after a month name keeps its figures', () => {
+    const sep = verifyNarrative(v4({ lede: 'In September 87 alerts were closed.' }), []);
+    expect(sep.ok).toBe(false);
+    expect(sep.failures[0]!.unmatched).toEqual([87]);
+    const may = verifyNarrative(v4({ lede: 'In May 15 laptops were replaced.' }), []);
+    expect(may.ok).toBe(false);
+    expect(may.failures[0]!.unmatched).toEqual([15]);
+    expect(extractNumbers('In September 87 alerts were closed.')).toEqual([87]);
+    expect(extractNumbers('Approve by Nov 15')).toEqual([15]);
   });
   it('a figure in the deadline is still checked', () => {
     const r = verifyNarrative(withBy('Before the $48,000 renewal'), []);

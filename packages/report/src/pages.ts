@@ -208,11 +208,22 @@ export function footerText(m: ReportModel): string {
   return m.revisedAt ? `${base} Revised on ${revisedLabel(m.revisedAt)}.` : base;
 }
 
-/** "By Nov 15" from a decision's `by`, without doubling an author's own "By". */
+const MONTH_NAME = /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b/;
+
+/** True when a deadline reads as a date ("Nov 15", "11/15", "2026-11-15"). */
+function looksLikeDate(text: string): boolean {
+  return MONTH_NAME.test(text) || /\d/.test(text);
+}
+
+/**
+ * A decision's deadline for print: a date reads "By Nov 15" (an author's own
+ * "By" is not doubled); anything else ("Before the board meeting") as written.
+ */
 export function byText(by: string | undefined): string | undefined {
   const t = by?.trim();
   if (!t) return undefined;
-  return /^by\b/i.test(t) ? t.charAt(0).toUpperCase() + t.slice(1) : `By ${t}`;
+  if (/^by\b/i.test(t) || !looksLikeDate(t)) return t.charAt(0).toUpperCase() + t.slice(1);
+  return `By ${t}`;
 }
 
 /** The small line under a page one decision: "By Nov 15. Clears the patch backlog". */
@@ -220,19 +231,24 @@ export function decisionSubline(d: { why?: string; by?: string }): string {
   return [byText(d.by), d.why?.trim()].filter(Boolean).join('. ');
 }
 
+const STOPWORDS = new Set([
+  'with', 'your', 'this', 'that', 'from', 'have', 'will', 'into', 'more', 'than',
+  'over', 'each', 'they', 'them', 'their', 'been', 'were', 'what', 'when', 'which',
+]);
 const significant = (text: string) =>
   new Set(
     text
       .toLowerCase()
       .replace(/[^a-z0-9\s-]/g, ' ')
       .split(/\s+/)
-      .filter((w) => w.length >= 4),
+      .filter((w) => w.length >= 4 && !STOPWORDS.has(w)),
   );
 
 /**
  * The plan's decision mark: "Your decision by Nov 15" when a page one decision
  * with a date matches the item (two or more shared words of four letters or
- * more, best match wins), else "Your decision".
+ * more, stopwords ignored, best match wins), "Your decision: Before the board
+ * meeting" when the matching deadline is not a date, else "Your decision".
  */
 export function planDecisionLabel(m: ReportModel, item: { action: string; decision?: boolean }): string | undefined {
   if (!item.decision) return undefined;
@@ -246,5 +262,6 @@ export function planDecisionLabel(m: ReportModel, item: { action: string; decisi
     if (score >= 2 && (!best || score > best.score)) best = { by, score };
   }
   if (!best) return 'Your decision';
-  return `Your decision ${byText(best.by)!.replace(/^By\b/, 'by')}`;
+  const text = byText(best.by)!;
+  return /^By\b/.test(text) ? `Your decision ${text.replace(/^By\b/, 'by')}` : `Your decision: ${text}`;
 }

@@ -28,7 +28,11 @@ const WORD_MULTIPLIERS: Record<string, number> = {
 const NUMBER_RE =
   /(-?\$?\s?\d[\d,]*(?:\.\d+)?)\s*(?:(thousand|million|billion|trillion|mm|bn|[kmbt])\b)?\s*(%)?/gi;
 
-/** A capitalized month name followed by a day (and optional year) or by a year. */
+/**
+ * A capitalized month name followed by a day (and optional year) or by a
+ * year. Used only on decision deadlines (stripDeadline): in ordinary prose
+ * "In September 87 alerts were closed" must keep its 87.
+ */
 const MONTH_DATE =
   /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:\d{1,2}(?:st|nd|rd|th)?(?:,?\s+(?:19|20)\d{2})?|(?:19|20)\d{2})\b/g;
 
@@ -46,8 +50,6 @@ export function stripNonFigures(text: string): string {
   // cannot carry a figure past the guardrail.
   return text
     .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
-    // Calendar dates written with a month name ("Nov 15", "November 15th, 2026", "Jun 2026").
-    .replace(MONTH_DATE, ' ')
     .replace(/\bQ[1-4]\s*(?:19|20)\d{2}\b|\b(?:19|20)\d{2}-Q[1-4]\b/gi, ' ')
     .replace(/\bQ[1-4]\b/gi, ' ')
     .replace(/\bv\d+(\.\d+)?\b|\bCSF\s*\d+(\.\d+)?\b|\bM365\b|\bO365\b|\b24\/7\b/gi, ' ')
@@ -104,4 +106,12 @@ export function stripAllowedQuotes(text: string, allowedQuotes: Iterable<string>
   const known = new Set([...allowedQuotes].map((q) => q.trim().toLowerCase()).filter(Boolean));
   if (!known.size) return text;
   return text.replace(/“([^”]*)”/g, (m, inner: string) => (known.has(inner.trim().toLowerCase()) ? ' ' : m));
+}
+
+/**
+ * A decision deadline with its calendar dates removed ("Nov 15", "November
+ * 15th, 2026"), so the guardrail checks only the figures left in it.
+ */
+export function stripDeadline(text: string): string {
+  return text.replace(MONTH_DATE, ' ');
 }
