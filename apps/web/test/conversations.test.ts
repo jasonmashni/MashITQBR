@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { conversationItem, pendingConversations } from '../src/pages/workspace/conversations.js';
+import { conversationItem, needsHipaaRewrite, pendingConversations } from '../src/pages/workspace/conversations.js';
 import type { DiscussionItem, SuggestedConversation } from '../src/types.js';
 
 const conv = (ref: string, topic = `topic ${ref}`): SuggestedConversation => ({ topic, source: 'halo_ticket', ref, when: '2026-08-04' });
@@ -32,5 +32,15 @@ describe('conversationItem', () => {
     expect(item.includeInReport).toBe(false);
     expect(item.response).toBeUndefined();
     expect(JSON.stringify(item)).not.toContain('Patient');
+  });
+});
+
+describe('needsHipaaRewrite', () => {
+  it('flags Halo-sourced items only for HIPAA clients', () => {
+    expect(needsHipaaRewrite({ id: 'a', topic: 't', source: 'suggested' }, true)).toBe(true);
+    expect(needsHipaaRewrite({ id: 'a', topic: 't', source: 'halo' }, true)).toBe(true);
+    expect(needsHipaaRewrite({ id: 'a', topic: 't', source: 'email' }, true)).toBe(false);
+    expect(needsHipaaRewrite({ id: 'a', topic: 't' }, true)).toBe(false);
+    expect(needsHipaaRewrite({ id: 'a', topic: 't', source: 'suggested' }, false)).toBe(false);
   });
 });

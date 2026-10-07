@@ -21,3 +21,8 @@ export function conversationItem(c: SuggestedConversation, hipaa: boolean, id: s
     sourceRef: c.ref,
   };
 }
+
+/** A Halo-sourced item on a HIPAA client's agenda: the author should rewrite the topic before it goes on the report. */
+export function needsHipaaRewrite(item: DiscussionItem, hipaa: boolean): boolean {
+  return hipaa && (item.source === 'suggested' || item.source === 'halo');
+}

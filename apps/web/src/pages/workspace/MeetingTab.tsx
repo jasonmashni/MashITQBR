@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Title,
   Group,
@@ -34,7 +34,7 @@ import {
 } from '@tabler/icons-react';
 import { api } from '../../api.js';
 import type { Discussion, DiscussionItem, QbrResponse, SuggestedConversationsResponse } from '../../types.js';
-import { conversationItem, pendingConversations } from './conversations.js';
+import { conversationItem, needsHipaaRewrite, pendingConversations } from './conversations.js';
 import { uid } from '../../ui.js';
 import { toastError } from '../../toast.js';
 import { QBR_STATUS_ORDER, isQbrStatus, qbrStatusLabel, statusAtLeast, type QbrStatus } from '@mashit/core';
@@ -70,6 +70,17 @@ export function MeetingTab({
   const [convosError, setConvosError] = useState<string | null>(null);
   const [convosReload, setConvosReload] = useState(0);
   const finalLocked = Boolean(meta?.locks?.final);
+
+  // Every item id this tab has seen for the quarter. Sent with the save so the
+  // server keeps items added behind our back (a forwarded email) instead of
+  // treating them as deleted.
+  const seenIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    seenIds.current = new Set();
+  }, [clientId, period]);
+  useEffect(() => {
+    for (const it of disc.items) seenIds.current.add(it.id);
+  }, [disc]);
 
   // Conversations from Halo for this quarter (requests, opportunities, CRM notes).
   useEffect(() => {
@@ -171,8 +182,8 @@ export function MeetingTab({
     try {
       // Agenda order is the on-screen order.
       const items = disc.items.map((it, i) => ({ ...it, sortOrder: i }));
-      await api.putDiscussion(clientId, period, { ...disc, items });
-      setDisc({ ...disc, items });
+      const saved = await api.putDiscussion(clientId, period, { ...disc, items }, [...seenIds.current]);
+      setDisc({ ...disc, items: saved.items ?? items });
       notifications.show({ color: 'good', message: 'Agenda saved, answered items flow onto the final report.' });
       onSavedDiscussion?.();
       onChanged();
@@ -344,6 +355,9 @@ export function MeetingTab({
                 <Checkbox size="xs" label="On report" checked={it.includeInReport !== false} onChange={(e) => update(i, { includeInReport: e.currentTarget.checked })} />
                 {it.externalRef && <Badge color="good" variant="light">{it.externalRef.system} #{it.externalRef.id}</Badge>}
               </Group>
+              {needsHipaaRewrite(it, convos?.hipaa === true) && (
+                <Text size="xs" c="watch" mt={4}>Rewrite this topic before putting it on the report.</Text>
+              )}
             </Fieldset>
           ))}
         </Stack>

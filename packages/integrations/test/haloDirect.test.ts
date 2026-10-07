@@ -1078,3 +1078,22 @@ describe('listHaloConversations', () => {
     expect(out.items.map((i) => i.ref)).toEqual(['ticket:3']);
   });
 });
+
+describe('listHaloConversations limits', () => {
+  const cfg = { baseUrl: 'https://conv2.halopsa.com', clientId: 'conv-test-2', clientSecret: 's' };
+  it('skips rows without an id and warns when the cap is hit', async () => {
+    const tickets = [
+      { summary: 'No id', tickettype_name: 'Service Request', isvip: true, dateoccurred: '2026-08-01' },
+      ...Array.from({ length: 60 }, (_, i) => ({ id: i + 1, summary: `Request ${i + 1}`, tickettype_name: 'Service Request', isvip: true, dateoccurred: '2026-08-02' })),
+    ];
+    const { http } = fakeHttp([
+      tokenRoute(),
+      { match: (r) => r.url.includes('/api/Tickets'), respond: () => ({ status: 200, json: { record_count: tickets.length, tickets } }) },
+      { match: (r) => r.url.includes('/api/Opportunities') || r.url.includes('/api/CRMNote'), respond: () => ({ status: 200, json: [] }) },
+    ]);
+    const out = await listHaloConversations(http, cfg, { clientId: '62', start: '2026-07-01', end: '2026-09-30' });
+    expect(out.items).toHaveLength(50);
+    expect(out.items.some((i) => i.topic === 'No id')).toBe(false);
+    expect(out.warnings).toEqual(['Halo returned more than 50 items for this quarter; showing the first 50.']);
+  });
+});

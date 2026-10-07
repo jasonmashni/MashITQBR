@@ -105,23 +105,30 @@ export function plainTextBody(body: { contentType?: string; content?: string } |
       .replace(/&gt;/gi, '>')
       .replace(/&quot;/gi, '"')
       .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&#x([0-9a-f]+);/gi, (_m, hex: string) => safeChar(parseInt(hex, 16)))
+      .replace(/&#(\d+);/g, (_m, dec: string) => safeChar(parseInt(dec, 10)))
       .replace(/&amp;/gi, '&');
   }
   if (!text.trim()) text = fallback;
   return text.replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+/** A numeric character reference as text; out-of-range code points become a space. */
+function safeChar(code: number): string {
+  return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ' ';
+}
+
 /**
  * The quarter a forwarded conversation lands on: the newest of the last 8
- * periods that has a snapshot, unless a newer quarter is already final (then
- * the past is closed and the current calendar quarter is used). Never a
- * quarter with a final lock: undefined when even the fallback is final.
+ * periods that has a snapshot and no final lock (final quarters are skipped),
+ * else the current calendar quarter. Never a quarter with a final lock:
+ * undefined when even the fallback is final.
  */
 export async function openQuarterFor(store: DataStore, clientId: string, now: Date): Promise<string | undefined> {
   const current = periodFor(now).id;
   for (const period of lastPeriods(current, 8)) {
     const qbr = await store.getQbr(clientId, period);
-    if (qbr?.locks?.final) break;
+    if (qbr?.locks?.final) continue;
     if (await store.getSnapshot(clientId, period)) return period;
   }
   const qbr = await store.getQbr(clientId, current);
@@ -260,7 +267,9 @@ export async function pollReportInbox(
 
     const listRes = await fetchFn(
       `${mbx}/mailFolders/${folder}/messages?$filter=isRead eq false&$top=25&$select=id,subject,hasAttachments,from,toRecipients,ccRecipients,body,bodyPreview`,
-      { headers },
+      // Graph returns the body as plain text with this header (documented on
+      // List messages); the HTML stripper stays as a fallback.
+      { headers: { ...headers, Prefer: 'outlook.body-content-type="text"' } },
     );
     if (!listRes.ok) {
       if (folder !== 'inbox') continue; // junk access is optional

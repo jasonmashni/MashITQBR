@@ -16,6 +16,7 @@ import {
   roadmapValue,
   statusAtLeast,
   type ClientGoal,
+  type DiscussionItem,
   type MetricCategory,
   type MetricValue,
   type QbrStatus,
@@ -502,7 +503,16 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   if (locked) return locked;
   if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const store = getDataStore();
-  const items = Array.isArray(body['items']) ? (body['items'] as never[]) : [];
+  const items: DiscussionItem[] = Array.isArray(body['items']) ? (body['items'] as DiscussionItem[]) : [];
+  // knownIds = the ids the client loaded. A stored item in neither the body
+  // nor knownIds was added behind the client's back (the email inbox), so it
+  // is kept rather than erased. Without knownIds the body replaces the list.
+  if (Array.isArray(body['knownIds'])) {
+    const known = new Set((body['knownIds'] as unknown[]).filter((x): x is string => typeof x === 'string'));
+    const inBody = new Set(items.map((i) => i?.id));
+    const stored = (await store.getDiscussion(clientId, period))?.items ?? [];
+    items.push(...stored.filter((i) => !inBody.has(i.id) && !known.has(i.id)));
+  }
   const saved = await store.putDiscussion({ clientId, period, items, notes: body['notes'] as string | undefined });
   audit('discussion.save', `qbr:${clientId}/${period}`, `${saved.items.length} item(s)`);
 

@@ -1237,6 +1237,7 @@ const OPPORTUNITY_DATE_FIELDS = ['dateoccurred', 'dateoccured', 'datecreated', '
 const NOTE_DATE_FIELDS = ['date', 'datecreated', 'date_created', 'dateoccurred', 'datetime'];
 const CONVERSATION_CAP = 50;
 const truthy = (v: unknown) => v === true || v === 1 || v === 'true' || v === 'True';
+const hasId = (row: Json) => row['id'] !== undefined && row['id'] !== null && String(row['id']) !== '';
 
 /**
  * Conversations for one Halo client in a window: service requests, changes
@@ -1270,6 +1271,7 @@ export async function listHaloConversations(
     const needsTypeMap = rows.some((r) => !firstStr(r, ['tickettype_name', 'type']));
     const typeMap = needsTypeMap ? await fetchTicketTypeMap(http, cfg) : new Map<string, string>();
     for (const r of rows) {
+      if (!hasId(r)) continue;
       if (!CONVERSATION_CLASSES.has(ticketClass(r, typeMap))) continue;
       if (outsidePeriod(r, TICKET_OPENED_FIELDS, startMs, endMs)) continue;
       const email = (firstStr(r, ['user_email', 'useremail', 'emailaddress']) ?? '').toLowerCase();
@@ -1288,6 +1290,7 @@ export async function listHaloConversations(
   try {
     const json = await haloGet(http, cfg, 'Opportunities', { client_id: args.clientId });
     for (const r of toArray<Json>(json, ['opportunities', 'tickets'])) {
+      if (!hasId(r)) continue;
       if (outsidePeriod(r, OPPORTUNITY_DATE_FIELDS, startMs, endMs)) continue;
       const topic = firstStr(r, ['summary', 'subject', 'name']);
       if (!topic) continue;
@@ -1300,6 +1303,7 @@ export async function listHaloConversations(
   try {
     const json = await haloGet(http, cfg, 'CRMNote', { client_id: args.clientId });
     for (const r of toArray<Json>(json, ['crmnotes', 'notes', 'crm_notes'])) {
+      if (!hasId(r)) continue;
       if (outsidePeriod(r, NOTE_DATE_FIELDS, startMs, endMs)) continue;
       const note = (firstStr(r, ['note', 'notes', 'details', 'body']) ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
       const topic = firstStr(r, ['subject', 'summary', 'title']) ?? (note ? clipText(note, 80) : undefined);
@@ -1312,5 +1316,8 @@ export async function listHaloConversations(
   if (crmMissing) warnings.push('Halo opportunities/CRM notes not available on this instance');
 
   items.sort((a, b) => b.when.localeCompare(a.when));
+  if (items.length > CONVERSATION_CAP) {
+    warnings.push(`Halo returned more than ${CONVERSATION_CAP} items for this quarter; showing the first ${CONVERSATION_CAP}.`);
+  }
   return { items: items.slice(0, CONVERSATION_CAP), warnings };
 }

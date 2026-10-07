@@ -343,3 +343,77 @@ describe('pollReportInbox forward to QBR (no attachments)', () => {
     expect((await store.getDiscussion('halo-62', '2026-Q4'))!.items).toHaveLength(1);
   });
 });
+
+describe('open quarter and body handling (fix round 1)', () => {
+  const cfg = { mailbox: 'qbr-reports@mashit.net', tenantId: 't', clientId: 'c', clientSecret: 's' };
+  const now = new Date('2026-10-07T12:00:00Z');
+  const final = { final: { at: now.toISOString(), by: 'x', version: 2 } };
+  function graph(body?: { contentType: string; content: string }) {
+    const patched: string[] = [];
+    const listHeaders: Array<Record<string, string>> = [];
+    const fetchFn = (async (url: string, init?: RequestInit) => {
+      const ok = (json: unknown) => ({ ok: true, status: 200, json: async () => json }) as unknown as Response;
+      if (url.includes('/oauth2/v2.0/token')) return ok({ access_token: 't', expires_in: 3600 });
+      if (init?.method === 'PATCH') {
+        patched.push(String(JSON.parse(String(init.body)).categories));
+        return ok({});
+      }
+      if (url.includes('/mailFolders/inbox/messages?')) {
+        listHeaders.push((init?.headers ?? {}) as Record<string, string>);
+        return ok({
+          value: [
+            {
+              id: 'q1',
+              subject: 'Fw: Topic',
+              hasAttachments: false,
+              from: { emailAddress: { address: 'jason@mashit.net', name: 'Jason' } },
+              toRecipients: [{ emailAddress: { address: 'qbr-reports+halo-62@mashit.net' } }],
+              body: body ?? { contentType: 'text', content: 'hello' },
+            },
+          ],
+        });
+      }
+      return ok({ value: [] });
+    }) as never;
+    return { fetchFn, patched, listHeaders };
+  }
+  async function setup(sub: string) {
+    const store = new JsonDataStore(join(dir, sub));
+    const docs = new LocalDocStore(join(dir, sub, 'docs'));
+    await store.upsertClient({ id: 'halo-62', name: 'Madison Pediatric Associates' });
+    return { store, docs };
+  }
+  const snap = (period: string) => ({ clientId: 'halo-62', period, capturedAt: now.toISOString(), metrics: [] });
+  const qbr = (period: string) => ({ clientId: 'halo-62', period, status: 'completed' as const, locks: final, updatedAt: now.toISOString() });
+
+  it('skips a final quarter and routes to the newest open quarter with a snapshot', async () => {
+    const { store, docs } = await setup('oq-a');
+    await store.putSnapshot(snap('2026-Q3'));
+    await store.putSnapshot(snap('2026-Q2'));
+    await store.upsertQbr(qbr('2026-Q3'));
+    const { fetchFn } = graph();
+    await pollReportInbox(cfg, store, docs, fetchFn, now);
+    expect(await store.getDiscussion('halo-62', '2026-Q3')).toBeUndefined();
+    expect((await store.getDiscussion('halo-62', '2026-Q2'))!.items).toHaveLength(1);
+  });
+
+  it('categorizes the message quarter closed when every candidate is final', async () => {
+    const { store, docs } = await setup('oq-b');
+    await store.putSnapshot(snap('2026-Q3'));
+    await store.upsertQbr(qbr('2026-Q3'));
+    await store.upsertQbr(qbr('2026-Q4'));
+    const { fetchFn, patched } = graph();
+    const result = await pollReportInbox(cfg, store, docs, fetchFn, now);
+    expect(result).toMatchObject({ agenda: 0, unrouted: 1 });
+    expect(patched).toEqual(['QBR: quarter closed']);
+    expect(await store.getDiscussion('halo-62', '2026-Q4')).toBeUndefined();
+  });
+
+  it('asks Graph for plain-text bodies and decodes numeric entities in the HTML fallback', async () => {
+    const { store, docs } = await setup('oq-c');
+    const { fetchFn, listHeaders } = graph({ contentType: 'html', content: '<p>It&#39;s &#x41;&#66;C</p>' });
+    await pollReportInbox(cfg, store, docs, fetchFn, now);
+    expect(listHeaders[0]!['Prefer']).toBe('outlook.body-content-type="text"');
+    expect((await store.getDiscussion('halo-62', '2026-Q4'))!.items[0]!.response).toBe("It's ABC");
+  });
+});
