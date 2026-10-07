@@ -115,6 +115,17 @@ describe('designed PDF (pdfmake)', () => {
     expect(json).not.toMatch(/"fontSize":[0-7](\.|,|})/);
   });
 
+  it('moves a heading to the next page when nothing follows it on its page', () => {
+    type BreakFn = (node: { headlineLevel?: number }, followingNodesOnPage: unknown[]) => boolean;
+    const def = buildPdfDefinition(model) as unknown as { pageBreakBefore?: BreakFn };
+    expect(typeof def.pageBreakBefore).toBe('function');
+    // pdfmake only collects the following nodes when the callback declares at least two parameters.
+    expect(def.pageBreakBefore!.length).toBeGreaterThanOrEqual(2);
+    expect(def.pageBreakBefore!({ headlineLevel: 1 }, [])).toBe(true);
+    expect(def.pageBreakBefore!({ headlineLevel: 2 }, [{ text: 'body' }])).toBe(false);
+    expect(def.pageBreakBefore!({}, [])).toBe(false);
+  });
+
   it('keeps the HIPAA confidential-information notice in the footer of every page for HIPAA clients', () => {
     const kpca = SEED_CLIENTS.find((c) => c.id === 'kpca')!;
     expect(kpca.hipaa).toBe(true);

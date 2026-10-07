@@ -1452,7 +1452,7 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
   try {
     // The full deliverable (attached PDF reports already appended at the back).
     const pdf = await buildFullPdf(clientId, period, ai);
-    attachments.push({ name: deliverableFilename(client?.name ?? clientId, report.model.period.label, 'pdf'), contentType: 'application/pdf', bytes: pdf.bytes });
+    attachments.push({ name: pdf.filename, contentType: 'application/pdf', bytes: pdf.bytes });
   } catch {
     // Draft still works without the attachment.
   }

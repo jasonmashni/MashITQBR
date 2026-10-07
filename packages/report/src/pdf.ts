@@ -549,6 +549,11 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
             ],
             margin: [52, 24, 52, 0],
           },
+    // Headings keep with next: pdfmake reads headlineLevel only through this callback.
+    // A heading with nothing after it on its page moves to the next page. The
+    // callback must declare both parameters or pdfmake skips collecting the list.
+    pageBreakBefore: (node: { headlineLevel?: number }, followingNodesOnPage: unknown[]) =>
+      Boolean(node.headlineLevel) && followingNodesOnPage.length === 0,
     footer: (page: number, pages: number) => ({
       columns: [
         { text: `Prepared by ${brand.orgName}. ${m.client.hipaa ? 'Contains confidential client information (HIPAA).' : 'Confidential.'}`, color: GRAY, fontSize: 8 },
