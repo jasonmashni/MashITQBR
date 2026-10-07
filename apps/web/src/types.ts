@@ -97,7 +97,15 @@ export interface AccountHealth {
 export type Confidence = 'low' | 'medium' | 'high';
 
 /** What the dashboard should nudge the account manager to do for the current quarter. */
-export type Triage = 'not_started' | 'needs_scheduling' | 'meeting_soon' | 'meeting_passed' | 'package_not_sent' | 'in_progress' | 'done';
+export type Triage =
+  | 'not_started'
+  | 'needs_scheduling'
+  | 'meeting_soon'
+  | 'meeting_passed'
+  | 'package_not_sent'
+  | 'needs_finalizing'
+  | 'in_progress'
+  | 'done';
 
 /** The current quarter's state for one client (drives the triage band). */
 export interface CurrentQuarter {
@@ -106,6 +114,8 @@ export interface CurrentQuarter {
   meetingAt: string | null;
   packageSentAt: string | null;
   meetingSkipped: boolean;
+  /** Pre-read and final locks for the current quarter. */
+  locks?: { preread?: LockInfo; final?: LockInfo } | null;
 }
 
 /** One row of GET /api/overview. */
@@ -150,6 +160,8 @@ export interface PeriodInfo {
   hasSnapshot: boolean;
   /** QBR workflow status for that quarter, when a record exists. */
   status?: string;
+  /** Pre-read and final locks for that quarter, when any. */
+  locks?: { preread?: LockInfo; final?: LockInfo };
 }
 
 export interface FunctionScore {

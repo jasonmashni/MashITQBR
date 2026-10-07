@@ -29,6 +29,7 @@ import { RatingBadge, ratingWord } from '../ui.js';
 const TRIAGE: Array<{ key: Triage; label: string; color: string; hint: string }> = [
   { key: 'meeting_passed', label: 'Meeting passed, not closed', color: 'var(--qbr-act)', hint: 'The booked time has gone by. Capture the outcome or reschedule.' },
   { key: 'package_not_sent', label: 'Package not sent', color: 'var(--qbr-act)', hint: 'The review happened or was skipped, but the client has no report yet.' },
+  { key: 'needs_finalizing', label: 'Needs finalizing', color: 'var(--qbr-watch)', hint: 'The review is over but the final package is not stored. Open the quarter and press Finalize.' },
   { key: 'needs_scheduling', label: 'Needs scheduling', color: 'var(--qbr-watch)', hint: 'Data is in; nothing is on the calendar.' },
   { key: 'not_started', label: 'Not started', color: 'var(--qbr-watch)', hint: 'No data pulled for this quarter yet.' },
   { key: 'meeting_soon', label: 'Meeting this week', color: 'var(--qbr-brand, #004aad)', hint: 'Booked within the next seven days.' },

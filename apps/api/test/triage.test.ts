@@ -5,10 +5,15 @@ const NOW = Date.parse('2026-08-15T12:00:00.000Z');
 const DAY = 86_400_000;
 const at = (offsetDays: number) => new Date(NOW + offsetDays * DAY).toISOString();
 
-// Spec order: done, package_not_sent, meeting_passed, meeting_soon,
+const FINAL = { final: { at: at(-1), by: 'jason', version: 2 } };
+
+// Spec order: needs_finalizing, done, package_not_sent, meeting_passed, meeting_soon,
 // needs_scheduling, not_started, in_progress.
 const cases: Array<[string, Omit<TriageInput, 'now'>, Triage]> = [
-  ['completed QBR is done', { hasData: true, status: 'completed', meetingAt: at(-10) }, 'done'],
+  ['completed QBR is done once finalized', { hasData: true, status: 'completed', meetingAt: at(-10), locks: FINAL }, 'done'],
+  ['completed QBR eight days past its meeting needs finalizing', { hasData: true, status: 'completed', meetingAt: at(-8), locks: undefined }, 'needs_finalizing'],
+  ['completed QBR with no meeting needs finalizing', { hasData: true, status: 'completed', meetingSkipped: true }, 'needs_finalizing'],
+  ['completed QBR inside the seven-day grace is done', { hasData: true, status: 'completed', meetingAt: at(-2) }, 'done'],
   ['archived QBR is done even without data', { hasData: false, status: 'archived' }, 'done'],
   ['held meeting, nothing sent', { hasData: true, status: 'scheduled', meetingAt: at(-2) }, 'package_not_sent'],
   ['skipped meeting, nothing sent', { hasData: true, status: 'narrative_approved', meetingSkipped: true }, 'package_not_sent'],
@@ -27,7 +32,7 @@ describe('computeTriage', () => {
     expect(computeTriage({ ...input, now: NOW })).toBe(expected);
   });
 
-  it('covers all seven outcomes', () => {
-    expect(new Set(cases.map((c) => c[2])).size).toBe(7);
+  it('covers all eight outcomes', () => {
+    expect(new Set(cases.map((c) => c[2])).size).toBe(8);
   });
 });

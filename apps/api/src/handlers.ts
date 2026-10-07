@@ -2229,6 +2229,7 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
         meetingAt: currentQbr?.meeting?.scheduledAt ?? null,
         packageSentAt: currentQbr?.packageSentAt ?? null,
         meetingSkipped: !!currentQbr?.meetingSkipped,
+        locks: currentQbr?.locks ?? null,
       };
       const triage = computeTriage({
         hasData: currentState.hasData,
@@ -2236,6 +2237,7 @@ export async function getOverview(currentOverride?: string | null): Promise<ApiR
         meetingAt: currentState.meetingAt ?? undefined,
         packageSentAt: currentState.packageSentAt ?? undefined,
         meetingSkipped: currentState.meetingSkipped,
+        locks: currentQbr?.locks,
         now,
       });
       let lastCompletedPeriod: string | null = null;
@@ -2310,13 +2312,17 @@ export async function getPeriods(clientId: string, currentOverride?: string | nu
   const store = getDataStore();
   const current = resolveCurrent(currentOverride);
   const periods = await Promise.all(
-    lastPeriods(current, 8).map(async (period) => ({
-      period,
-      hasSnapshot: !!(await ds.getSnapshot(clientId, period)),
-      // Workflow state rides along so the UI can target the NEXT quarter once
-      // a QBR is completed instead of reopening the finished one.
-      status: (await store.getQbr(clientId, period).catch(() => undefined))?.status,
-    })),
+    lastPeriods(current, 8).map(async (period) => {
+      const qbr = await store.getQbr(clientId, period).catch(() => undefined);
+      return {
+        period,
+        hasSnapshot: !!(await ds.getSnapshot(clientId, period)),
+        // Workflow state and locks ride along so the UI lands on the open
+        // quarter, or on the newest final one read-only.
+        status: qbr?.status,
+        locks: qbr?.locks,
+      };
+    }),
   );
   return ok({ currentPeriod: current, periods });
 }
