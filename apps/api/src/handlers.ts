@@ -1422,7 +1422,50 @@ export async function putStatus(
   const saved = await patchQbr(clientId, period, patch);
   if (forward) audit('qbr.status', `qbr:${clientId}/${period}`, status);
   else await audit('qbr.status', `qbr:${clientId}/${period}`, `override ${current} -> ${status}: ${reason}`);
+  // Decisions captured: lock 2 freezes the quarter with the final package.
+  if (statusAtLeast(status, 'dispositioned') && !existing?.locks?.final) {
+    try {
+      return ok(await lockFinal(clientId, period));
+    } catch (e) {
+      // Nothing to freeze (no snapshot) or a render failure: the status change
+      // stands, the quarter stays open and the dashboard asks for Finalize.
+      await audit('qbr.lock', `qbr:${clientId}/${period}`, `final failed: ${e instanceof Error ? e.message : 'error'}`);
+    }
+  }
   return ok(saved);
+}
+
+/**
+ * Lock 2: build with the captured discussion and notes, store the next
+ * package version at stage `final`, set `locks.final` and move the status to
+ * at least `dispositioned`. A quarter that is already final is returned as is.
+ */
+async function lockFinal(clientId: string, period: string): Promise<QbrRecord> {
+  const existing = await getDataStore().getQbr(clientId, period);
+  if (existing?.locks?.final) return existing;
+  const { pkg } = await freezePackage(clientId, period, 'final');
+  const now = new Date().toISOString();
+  const saved = await patchQbr(clientId, period, {
+    status: advanceStatus(existing?.status, 'dispositioned'),
+    locks: { ...existing?.locks, final: { at: now, by: currentActor(), version: pkg.version } },
+  });
+  await audit('qbr.lock', `qbr:${clientId}/${period}`, `final v${pkg.version}`);
+  return saved;
+}
+
+/** Finalize: lock 2 on demand (no meeting outcome needed). Idempotent. */
+export async function finalizeQbr(clientId: string, period: string): Promise<ApiResult> {
+  const store = getDataStore();
+  const ds = storeDataSource(store);
+  if (!(await ds.getClient(clientId))) return err(404, 'Unknown client');
+  if (!(await ds.getSnapshot(clientId, period))) return err(404, `No metric snapshot for ${clientId} ${period}; there is nothing to finalize.`);
+  const existing = await store.getQbr(clientId, period);
+  if (existing?.locks?.final) return ok(existing);
+  try {
+    return ok(await lockFinal(clientId, period));
+  } catch (e) {
+    return mapBuildError(e);
+  }
 }
 
 /** Approve the narrative: advance-only, so a later-stage QBR keeps its status. */
@@ -1458,7 +1501,13 @@ export async function dispositionQbrSkipped(clientId: string, period: string, bo
     meetingSkipped: { at: new Date().toISOString(), ...(reason ? { reason } : {}) },
   });
   audit('qbr.disposition', `qbr:${clientId}/${period}`, `meeting skipped${reason ? ` — ${reason}` : ''}`);
-  return ok(saved);
+  // The skip is the quarter's disposition: lock 2 stores the final package.
+  try {
+    return ok(await lockFinal(clientId, period));
+  } catch (e) {
+    await audit('qbr.lock', `qbr:${clientId}/${period}`, `final failed: ${e instanceof Error ? e.message : 'error'}`);
+    return ok(saved);
+  }
 }
 
 /** The account manager confirms the report package went to the client. */

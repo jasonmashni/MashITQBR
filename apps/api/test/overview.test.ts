@@ -156,7 +156,9 @@ describe('overview + periods endpoints', () => {
     const res = await h.dispositionQbrSkipped('mp', '2026-Q1', { reason: 'Client declined — emailed report only' });
     expect(res.status).toBe(200);
     const rec = await store.getQbr('mp', '2026-Q1');
-    expect(rec?.status).toBe('completed');
+    // The skip is the quarter's disposition: lock 2 freezes it at dispositioned.
+    expect(rec?.status).toBe('dispositioned');
+    expect(rec?.locks?.final).toBeTruthy();
     expect(rec?.meetingSkipped?.reason).toBe('Client declined — emailed report only');
     expect(rec?.meeting?.heldAt).toBeUndefined();
 
@@ -165,7 +167,7 @@ describe('overview + periods endpoints', () => {
     const mp = (over.json as { clients: Array<{ clientId: string; status: string; health: { drivers: string[] } }> }).clients.find(
       (c) => c.clientId === 'mp',
     )!;
-    expect(mp.status).toBe('completed');
+    expect(mp.status).toBe('dispositioned');
     expect(mp.health.drivers.join(' ')).toMatch(/no qbr held/i);
 
     // Later stage changes must not backfill heldAt on a skipped quarter.

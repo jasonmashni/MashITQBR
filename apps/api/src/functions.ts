@@ -127,6 +127,9 @@ route('emailDraft', 'GET', 'api/clients/{clientId}/qbr/{period}/email.eml', (req
 route('emailQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/email', async (req) => h.emailQbr(req.params['clientId']!, req.params['period']!, (await body(req)) as never, headerGet(req)));
 route('createMeeting', 'POST', 'api/clients/{clientId}/qbr/{period}/meeting', async (req) => h.createMeeting(req.params['clientId']!, req.params['period']!, (await body(req)) as never, headerGet(req)));
 
+// Workstream B: frozen quarters
+route('finalizeQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/finalize', (req) => h.finalizeQbr(req.params['clientId']!, req.params['period']!));
+
 // Integrations
 route('listIntegrations', 'GET', 'api/integrations', () => h.listIntegrations());
 route('createIntegration', 'POST', 'api/integrations', async (req) => h.saveIntegration((await body(req)) as unknown as ConnectionInput));

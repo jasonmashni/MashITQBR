@@ -238,3 +238,51 @@ describe('lock 1: package sent', () => {
     }
   });
 });
+
+describe('lock 2: decisions captured or Finalize', () => {
+  const seedSnapshot = async (period: string) => {
+    const { SEED_SNAPSHOTS } = await import('@mashit/core');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    const seed = SEED_SNAPSHOTS.find((s) => s.clientId === 'anp' && s.metrics.length > 1)!;
+    await store.putSnapshot({ ...seed, period });
+  };
+
+  it('putStatus to dispositioned on a pre-read quarter stores final v2 and sets locks.final', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    await seedSnapshot('2023-Q3');
+    expect((await h.markPackageSent('anp', '2023-Q3')).status).toBe(200);
+    const res = await h.putStatus('anp', '2023-Q3', { status: 'dispositioned' });
+    expect(res.status).toBe(200);
+    const rec = await store.getQbr('anp', '2023-Q3');
+    expect(rec?.locks?.preread?.version).toBe(1);
+    expect(rec?.locks?.final?.version).toBe(2);
+    expect((res.json as QbrRecord).locks?.final?.version).toBe(2);
+    expect((await store.listPackages('anp', '2023-Q3')).map((p) => [p.version, p.stage])).toEqual([[1, 'preread'], [2, 'final']]);
+  });
+
+  it('finalizeQbr on a completed quarter with no locks stores final v1 and moves to dispositioned', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    await seedSnapshot('2023-Q4');
+    await h.putStatus('anp', '2023-Q4', { status: 'completed' });
+    const res = await h.finalizeQbr('anp', '2023-Q4');
+    expect(res.status).toBe(200);
+    const rec = res.json as QbrRecord;
+    expect(rec.locks?.final?.version).toBe(1);
+    expect(rec.locks?.preread).toBeUndefined();
+    expect(rec.status).toBe('dispositioned');
+    expect((await store.listPackages('anp', '2023-Q4')).map((p) => [p.version, p.stage])).toEqual([[1, 'final']]);
+
+    // A second Finalize is a no-op that returns the record.
+    const again = await h.finalizeQbr('anp', '2023-Q4');
+    expect(again.status).toBe(200);
+    expect(again.json).toEqual(rec);
+    expect(await store.listPackages('anp', '2023-Q4')).toHaveLength(1);
+  });
+
+  it('finalizeQbr with no snapshot answers 404', async () => {
+    const h = await import('../src/handlers.js');
+    expect((await h.finalizeQbr('anp', '2019-Q2')).status).toBe(404);
+  });
+});
