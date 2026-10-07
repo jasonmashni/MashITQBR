@@ -5,9 +5,79 @@ import {
   buildAllowedQuotes,
   buildNarrativeInput,
   draftOfflineNarrative,
+  limitIssues,
   verifyFigures,
   verifyNarrative,
 } from '@mashit/narrative';
+
+describe('draftOfflineNarrative v4', () => {
+  it('stays within every limit, answers the five questions in order, verifies and lints clean on every seed snapshot', () => {
+    for (const current of SEED_SNAPSHOTS) {
+      const client = SEED_CLIENTS.find((c) => c.id === current.clientId);
+      if (!client) continue;
+      const previous = findSeedSnapshot(client.id, previousPeriod(current.period).id);
+      const input = buildNarrativeInput({ client, current, previous });
+      const draft = draftOfflineNarrative(input);
+      const r = verifyNarrative(draft, buildAllowedNumbers(input), { allowedQuotes: buildAllowedQuotes(input) });
+      expect({ id: client.id, period: current.period, limits: limitIssues(draft), failures: r.failures, style: r.style }).toEqual({
+        id: client.id,
+        period: current.period,
+        limits: [],
+        failures: [],
+        style: [],
+      });
+      expect(draft.protection.map((p) => p.question)).toEqual(['get_in', 'know', 'recover', 'keep_up', 'run_well']);
+      expect(r.ok).toBe(true);
+    }
+  });
+
+  it('never prints a dash in any prose field', () => {
+    for (const current of SEED_SNAPSHOTS) {
+      const client = SEED_CLIENTS.find((c) => c.id === current.clientId)!;
+      const draft = draftOfflineNarrative(buildNarrativeInput({ client, current, previous: findSeedSnapshot(client.id, previousPeriod(current.period).id) }));
+      const { figures_referenced: _f, ...prose } = draft;
+      expect(JSON.stringify(prose)).not.toMatch(/[\u2014\u2013]/);
+    }
+  });
+
+  it('turns warranty and patch backlogs into decisions and plan items that need a yes', () => {
+    const client = SEED_CLIENTS[0]!;
+    const current: MetricSnapshot = {
+      clientId: client.id,
+      period: '2026-Q2',
+      capturedAt: '2026-06-30T00:00:00Z',
+      metrics: [
+        { key: 'assets.warranty_expired', label: 'Out of warranty', value: 10, unit: 'count', source: 'ninja', category: 'infrastructure', higherIsBetter: false },
+        { key: 'patch.compliance_pct', label: 'Patch compliance', value: 60, unit: '%', source: 'ninja', category: 'security', higherIsBetter: true },
+        { key: 'patch.pending', label: 'Pending patches', value: 455, unit: 'count', source: 'ninja', category: 'security', higherIsBetter: false },
+        { key: 'identity.mfa_coverage_pct', label: 'MFA coverage', value: 100, unit: '%', source: 'cipp', category: 'identity', higherIsBetter: true },
+      ],
+    };
+    const input = buildNarrativeInput({ client, current });
+    const draft = draftOfflineNarrative(input);
+    expect(draft.decisions.map((d) => d.ask).join(' ')).toMatch(/10 devices past warranty/);
+    expect(draft.decisions.map((d) => d.ask).join(' ')).toMatch(/maintenance window/);
+    const planned = [...draft.plan.now, ...draft.plan.next, ...draft.plan.later];
+    expect(planned.some((p) => p.decision === true)).toBe(true);
+    expect(planned.every((p) => p.owner)).toBe(true);
+    expect(draft.saw.join(' ')).toMatch(/455 updates/);
+    expect(limitIssues(draft)).toEqual([]);
+    expect(verifyNarrative(draft, buildAllowedNumbers(input)).ok).toBe(true);
+  });
+
+  it('uses attached report findings in what we saw', () => {
+    const client = SEED_CLIENTS[0]!;
+    const current = findSeedSnapshot('anp', '2026-Q1')!;
+    const input = buildNarrativeInput({
+      client,
+      current,
+      documents: [{ name: 'Synology Active Backup.pdf', source: 'upload', findings: [{ text: 'One lab PC (TGA2) has not backed up in 389 days', severity: 'act' }] }],
+    });
+    const draft = draftOfflineNarrative(input);
+    expect(draft.saw.join(' ')).toContain('One lab PC (TGA2) has not backed up in 389 days');
+    expect(limitIssues(draft)).toEqual([]);
+  });
+});
 
 describe('draftOfflineNarrative style', () => {
   it('produces no style hits on any seed snapshot', () => {
@@ -39,8 +109,8 @@ describe('draftOfflineNarrative', () => {
       expect(result.ok).toBe(true);
       // ...and so must every number in its prose.
       expect(verifyNarrative(draft, buildAllowedNumbers(input), { allowedQuotes: buildAllowedQuotes(input) }).ok).toBe(true);
-      expect(draft.headline).toContain('2026');
-      expect(draft.summary_paragraphs.length).toBeGreaterThan(0);
+      expect(draft.headline.length).toBeGreaterThan(0);
+      expect(draft.lede.length).toBeGreaterThan(0);
     });
   }
 
@@ -115,8 +185,8 @@ describe('draftOfflineNarrative', () => {
     };
     const input = buildNarrativeInput({ client, current });
     const draft = draftOfflineNarrative(input);
-    // The recommendation really does quote the subjects...
-    expect(draft.recommendations.join(' ')).toContain('Windows 11');
+    // The plan really does quote the subjects...
+    expect(draft.plan.now.map((p) => p.action).join(' ')).toContain('Windows 11');
     // ...and the deterministic draft still verifies.
     const r = verifyNarrative(draft, buildAllowedNumbers(input), { allowedQuotes: buildAllowedQuotes(input) });
     expect(r.failures).toEqual([]);
