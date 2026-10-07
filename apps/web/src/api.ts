@@ -20,6 +20,7 @@ import type {
   Overview,
   PackageStage,
   PeriodInfo,
+  SuggestedConversationsResponse,
   QbrMeta,
   QbrResponse,
   QbrStatus,
@@ -321,6 +322,8 @@ export const api = {
     send('POST', `/api/clients/${clientId}/qbr/${period}/agenda`, { exclude }).then(
       json<{ suggestions: Array<{ topic: string; rationale: string }>; source: 'ai' | 'offline'; note?: string }>,
     ),
+  suggestedConversations: (clientId: string, period: string) =>
+    send('GET', `/api/clients/${clientId}/qbr/${period}/conversations/suggested`).then(json<SuggestedConversationsResponse>),
 
   // In-portal notifications (bell)
   notifications: (limit = 30) =>

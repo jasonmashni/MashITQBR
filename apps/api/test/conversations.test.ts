@@ -81,6 +81,7 @@ describe('suggestedConversations', () => {
     const res = await suggestedConversations('halo-62', '2026-Q3', { store, secrets, http });
     expect(res.status).toBe(200);
     expect((res.json as { items: unknown[] }).items).toHaveLength(1);
+    expect((res.json as { hipaa?: boolean }).hipaa).toBe(true);
   });
 
   it('answers an empty list with a reason when the client has no Halo link', async () => {

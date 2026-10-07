@@ -9,6 +9,8 @@ import { getDataStore, getSecretStore } from './store/index.js';
 export interface SuggestedConversationsResponse {
   items: HaloConversation[];
   warnings: string[];
+  /** The client is HIPAA-covered; the Meeting tab adds these items off the report. */
+  hipaa?: boolean;
 }
 
 /**
@@ -28,7 +30,8 @@ export async function suggestedConversations(clientId: string, period: string, i
   const client = await store.getClient(clientId);
   if (!client) return { status: 404, json: { error: `Unknown client: ${clientId}` } };
 
-  const empty = (warning: string): ApiResult => ({ status: 200, json: { items: [], warnings: [warning] } satisfies SuggestedConversationsResponse });
+  const hipaa = client.hipaa === true ? { hipaa: true } : {};
+  const empty = (warning: string): ApiResult => ({ status: 200, json: { items: [], warnings: [warning], ...hipaa } satisfies SuggestedConversationsResponse });
   const haloRef = client.integrationRefs?.halo;
   if (!haloRef) return empty('This client is not linked to a Halo client.');
   const conn = await directHaloConn(store);
@@ -49,7 +52,7 @@ export async function suggestedConversations(clientId: string, period: string, i
       end: p.end,
       ...(client.primaryContact?.email ? { primaryContactEmail: client.primaryContact.email } : {}),
     });
-    return { status: 200, json: out satisfies SuggestedConversationsResponse };
+    return { status: 200, json: { ...out, ...hipaa } satisfies SuggestedConversationsResponse };
   } catch (e) {
     return { status: 502, json: { error: e instanceof Error ? e.message : 'Halo request failed' } };
   }
