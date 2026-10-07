@@ -49,6 +49,7 @@ import {
 } from './store/index.js';
 import { removeConnection, resolveSecret, saveConnection, type ConnectionInput } from './connections.js';
 import { currentActor } from './requestContext.js';
+import { audit } from './audit.js';
 import type { HeaderGet, Principal } from './auth.js';
 import { graphPost, graphTokenFrom, validEmails, type FetchLike } from './graph.js';
 import { directHaloConn, importHaloClients, listOrgs, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
@@ -98,20 +99,6 @@ const EMPTY_BODY = 'Request body is empty';
 export function mapBuildError(e: unknown): ApiResult {
   const message = e instanceof Error ? e.message : 'Report build failed';
   return err(/^(Unknown client|No metric snapshot)/.test(message) ? 404 : 500, message);
-}
-
-/** Fire-and-forget compliance audit entry — a storage hiccup never fails the mutation. */
-function audit(action: string, target: string, detail?: string): Promise<void> {
-  return getDataStore()
-    .appendAudit({
-      id: Math.random().toString(36).slice(2, 10),
-      at: new Date().toISOString(),
-      actor: currentActor(),
-      action,
-      target,
-      detail,
-    })
-    .catch(() => undefined);
 }
 
 /**

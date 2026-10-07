@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as h from './handlers.js';
+import * as budget from './budget.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
 import type { PushInput } from './actions.js';
@@ -90,6 +91,12 @@ const routes: Route[] = [
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/email\.eml$/, run: (m, _b, url, header) => h.getEmailDraft(m[1]!, m[2]!, url.searchParams.get('ai'), header) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/email$/, run: (m, b, _u, header) => h.emailQbr(m[1]!, m[2]!, b as never, header) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/meeting$/, run: (m, b, _u, header) => h.createMeeting(m[1]!, m[2]!, b as never, header) },
+  // Workstream D: budget planning
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/budget$/, run: (m) => budget.listBudgets(m[1]!) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/budget\/([^/]+)$/, run: (m) => budget.getBudget(m[1]!, m[2]!) },
+  { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/budget\/([^/]+)$/, run: (m, b) => budget.putBudget(m[1]!, m[2]!, b) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/budget\/([^/]+)\/outlook$/, run: (m) => budget.recomputeBudget(m[1]!, m[2]!) },
+  { method: 'POST', re: /^\/api\/clients\/([^/]+)\/budget\/([^/]+)\/publish$/, run: (m) => budget.publishBudget(m[1]!, m[2]!) },
   { method: 'GET', re: /^\/api\/integrations$/, run: () => h.listIntegrations() },
   { method: 'POST', re: /^\/api\/integrations$/, run: (_m, b) => h.saveIntegration(b as unknown as ConnectionInput) },
   { method: 'PUT', re: /^\/api\/integrations\/([^/]+)$/, run: (m, b) => h.saveIntegration({ ...(b as unknown as ConnectionInput), id: m[1]! }) },
