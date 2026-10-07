@@ -120,6 +120,12 @@ export function Dashboard() {
   );
   const groups = TRIAGE.map((t) => ({ ...t, clients: sorted.filter((r) => r.triage === t.key) })).filter((g) => g.clients.length > 0);
   const needsAction = rows.filter((r) => r.triage !== 'done' && r.triage !== 'in_progress').length;
+  // Quarters whose review is over but whose final package was never stored,
+  // oldest meeting first (no meeting time sorts first: it has waited longest).
+  const unfinalized = rows
+    .filter((r) => r.triage === 'needs_finalizing')
+    .sort((a, b) => (a.current.meetingAt ?? '').localeCompare(b.current.meetingAt ?? ''));
+  const oldestUnfinalized = unfinalized[0];
   const totalMrr = rows.reduce((sum, r) => sum + (r.mrr ?? 0), 0);
   const totalRoadmap = rows.reduce((sum, r) => sum + (r.roadmapValue ?? 0), 0);
 
@@ -149,6 +155,22 @@ export function Dashboard() {
               {needsAction === 0 ? 'Nothing waiting on you.' : `${needsAction} client${needsAction === 1 ? '' : 's'} need${needsAction === 1 ? 's' : ''} something from you.`}
             </Text>
           </Group>
+          {oldestUnfinalized && (
+            <Group gap="xs" mb="sm" wrap="wrap">
+              <Text size="sm" fw={500} c="watch.8">
+                {unfinalized.length === 1
+                  ? '1 quarter past its meeting is not finalized.'
+                  : `${unfinalized.length} quarters past their meeting are not finalized.`}
+              </Text>
+              <Anchor
+                component={Link}
+                to={`/clients/${oldestUnfinalized.clientId}?period=${oldestUnfinalized.currentPeriod}`}
+                size="sm"
+              >
+                Finalize {oldestUnfinalized.name} {oldestUnfinalized.currentPeriod}
+              </Anchor>
+            </Group>
+          )}
           <Group align="flex-start" gap="xl" wrap="wrap">
             {groups.map((g) => (
               <Box key={g.key} miw={160}>
