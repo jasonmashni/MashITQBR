@@ -85,7 +85,7 @@ describe('JsonDataStore', () => {
 
     const result = {
       output: { headline: 'H', summary_paragraphs: [], highlights: [], recommendations: [], figures_referenced: [] },
-      verification: { ok: true, checks: [], failures: [] },
+      verification: { ok: true, checks: [], failures: [], style: [] },
       attempts: 1,
     };
     await s.putNarrative({ clientId: 'c1', period: '2026-Q1', inputHash: 'abc123', result, updatedAt: 't' });

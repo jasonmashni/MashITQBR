@@ -61,7 +61,7 @@ export function draftOfflineNarrative(input: NarrativeInput): NarrativeOutput {
   if (expired !== null) highlights.push(`${cite('devices out of warranty', expired)} devices are out of warranty.`);
 
   // Lead with the consultative ticket-history talking points (recurring issues,
-  // SLA misses, change activity) — the specific beats the generic — then fill
+  // SLA misses, change activity); the specific beats the generic. Then fill
   // out with security-hygiene remediations from the scorecard.
   const insightRecs = (input.ticketInsights ?? []).map((i) => `${i.title}. ${i.detail}`);
   const recommendations = [...insightRecs, ...sc.remediations.map((r) => `${r.title}: ${r.evidence}`)].slice(0, 6);
@@ -88,7 +88,7 @@ export function draftOfflineNarrative(input: NarrativeInput): NarrativeOutput {
 
 /**
  * One deterministic executive sentence per metric category present in the
- * bundle — the offline stand-in for the AI's section_summaries.
+ * bundle: the offline stand-in for the AI's section_summaries.
  */
 function draftSectionSummaries(
   input: NarrativeInput,

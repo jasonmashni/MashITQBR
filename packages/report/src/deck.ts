@@ -158,7 +158,7 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     if (byline) {
       s.addText(byline, { x: 0.95, y: 4.75, w: 8, h: 0.4, fontFace: FONT, fontSize: 12, color: GRAY, valign: 'top' });
     }
-    s.addText(`Prepared by ${brand.orgName}. Confidential.`, {
+    s.addText(`Prepared by ${brand.orgName}. ${model.client.hipaa ? 'Contains confidential client information (HIPAA).' : 'Confidential.'}`, {
       x: CONTENT_X, y: 6.9, w: 8, h: 0.35, fontFace: FONT, fontSize: 10, color: GRAY, valign: 'top',
     });
     notes(

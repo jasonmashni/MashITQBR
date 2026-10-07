@@ -23,7 +23,7 @@ centerpiece (the gap across CloudRadial / ScalePad / Strategy Overview).
 | `packages/report` | One view-model → branded HTML, **designed pdfmake PDF**, rebuilt pptxgenjs deck |
 | `apps/api` | Azure Functions (v4) HTTP API + orchestration, data/secret/**document** stores (Table Storage / Key Vault / Blob), live sync + workflow pipeline, Outlook `.eml` drafts |
 | `apps/web` | React (Vite) + **Mantine v7** admin app (Dashboard, Clients, Integrations, QBR workspace, Settings), gated by Entra ID auth |
-| `infra` | Bicep: one Linux Consumption Function App (Node 22, Easy Auth) + Storage (tables, blobs) + Key Vault + Log Analytics |
+| `infra` | Bicep: one Flex Consumption (FC1) Function App (Node 24, Easy Auth) + Storage (tables, blobs, deployment container) + Key Vault + Log Analytics |
 
 ## Develop
 
@@ -255,7 +255,7 @@ ever downgrading a later stage.
 
 ## Deploy to Azure (one Function App)
 
-Deployed as a **single Linux Node 22 Azure Function App** that serves both the
+Deployed as a **single Flex Consumption (FC1) Azure Function App on Node 24** that serves both the
 API and the React UI at one URL (mirrors the Mash IT MCP gateway). Build the
 self-contained package and deploy the folder:
 
@@ -278,7 +278,7 @@ Compress-Archive -Path * -DestinationPath ..\deploy.zip -Force
 az functionapp deployment source config-zip -g QBRTool -n mashqbr --src ..\deploy.zip
 ```
 
-Portal one-time: create the Function App (Node 22 / Linux / Consumption),
+Portal one-time: create the Function App (Flex Consumption / Node 24),
 enable system-assigned **managed identity**, put `ANTHROPIC_API_KEY` in **Key
 Vault**, and add the app setting `ANTHROPIC_API_KEY=@Microsoft.KeyVault(SecretUri=…)`.
 For the portal-managed integrations, grant the identity **Key Vault Secrets
@@ -287,8 +287,8 @@ setting `KEY_VAULT_URL=https://<vault>.vault.azure.net/` — **without this the
 app falls back to a local secret file, which is dev-only**. App data uses the
 Function App's existing `AzureWebJobsStorage` (Table Storage) — no new resource.
 Turn on **Entra Easy Auth** to lock the app to Mash IT logins (it also powers
-the account menu and audit actor). Report, **PDF** (pdfmake — works on
-Consumption), PPTX deck, and Outlook email drafts all work out of the box. A
+the account menu and audit actor). Report, **PDF** (pdfmake, works on
+Flex Consumption), PPTX deck, and Outlook email drafts all work out of the box. A
 5-minute keep-warm timer softens cold starts.
 
 The API also checks for the Easy Auth principal itself: on App Service
@@ -304,8 +304,10 @@ refused and `GET /api/system` reports `secretStore: 'local-insecure'`.
 `infra/main.bicep` provisions this exact topology: Log Analytics + App
 Insights, a Storage account (TLS 1.2, HTTPS only, no public blob access, the
 `qbr-documents` container), Key Vault (RBAC, 90-day soft delete, purge
-protection), a Linux Consumption (Y1) plan, the Function App on Node 22 with a
-system identity scoped to **Key Vault Secrets Officer** on the vault,
+protection), a Flex Consumption (FC1) plan, the Function App on Node 24
+(`functionAppConfig` runtime `node` 24, deployed from the private `app-package`
+blob container) with a system identity scoped to **Key Vault Secrets Officer**
+on the vault and **Storage Blob Data Contributor** on the deployment container,
 `authsettingsV2` with the four booking paths excluded, and diagnostic
 settings for the app, blob, table and vault. Parameters: `namePrefix` (9
 characters at most), `env`, `location`, `aadClientId`, `aadTenantId`,
@@ -445,8 +447,8 @@ Function App (the old separate Static-Web-Apps deploy is gone).
 - Secrets live in Key Vault (referenced, never stored in the DB) and the app
   refuses to store them anywhere else in Azure. Easy Auth fronts every route
   but the booking page, and the API rejects requests without a principal as
-  a second layer. Consumption has no VNet, so Storage and Key Vault keep
-  public endpoints, protected by account keys, Entra RBAC and TLS 1.2, with
+  a second layer. The template does not configure VNet integration, so
+  Storage and Key Vault keep public endpoints, protected by account keys, Entra RBAC and TLS 1.2, with
   diagnostics to Log Analytics. See `infra/main.bicep`.
 
 ## Status

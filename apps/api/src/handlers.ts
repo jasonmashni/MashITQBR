@@ -1,3 +1,4 @@
+import { deliverableFilename } from './contentDisposition.js';
 import {
   advanceStatus,
   CLIENT_GOAL_STATUSES,
@@ -271,23 +272,28 @@ async function buildReportFor(clientId: string, period: string, ai: string | nul
 
 export async function getReportHtml(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
   try {
-    return { status: 200, html: renderQbrHtml(await buildReportFor(clientId, period, ai)) };
+    const report = await buildReportFor(clientId, period, ai);
+    return { status: 200, html: renderQbrHtml(report), filename: deliverableFilename(report.model.client.name, report.model.period.label, 'html') };
   } catch (e) {
     return mapBuildError(e);
   }
 }
 /** The full QBR PDF: the designed report with attached PDF reports appended. */
-async function buildFullPdf(clientId: string, period: string, ai: string | null): Promise<Buffer> {
+async function buildFullPdf(clientId: string, period: string, ai: string | null): Promise<{ bytes: Buffer; filename: string }> {
   const report = await buildReportFor(clientId, period, ai);
   const pdf = await renderPdf(report.model);
   // Vendor reports ride at the back of the deliverable (appendix lists them).
   const attachments = await loadPdfAttachments(getDataStore(), getDocStore(), clientId, period).catch(() => []);
-  return appendPdfAttachments(pdf, attachments);
+  return {
+    bytes: await appendPdfAttachments(pdf, attachments),
+    filename: deliverableFilename(report.model.client.name, report.model.period.label, 'pdf'),
+  };
 }
 
 export async function getReportPdf(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
   try {
-    return { status: 200, pdf: await buildFullPdf(clientId, period, ai) };
+    const full = await buildFullPdf(clientId, period, ai);
+    return { status: 200, pdf: full.bytes, filename: full.filename };
   } catch (e) {
     if (e instanceof Error && /^(Unknown client|No metric snapshot)/.test(e.message)) return mapBuildError(e);
     return err(501, e instanceof Error ? e.message : 'PDF rendering unavailable');
@@ -301,8 +307,11 @@ export async function getReportDeck(clientId: string, period: string, ai: string
     return mapBuildError(e);
   }
   try {
-    const safeName = report.model.client.name.replace(/[^\w .&()-]+/g, '').trim() || clientId;
-    return { status: 200, pptx: await renderDeck(report.model), filename: `${safeName} QBR ${period}.pptx` };
+    return {
+      status: 200,
+      pptx: await renderDeck(report.model),
+      filename: deliverableFilename(report.model.client.name, report.model.period.label, 'pptx'),
+    };
   } catch (e) {
     return err(501, e instanceof Error ? e.message : 'Deck rendering unavailable');
   }
@@ -1443,7 +1452,7 @@ export async function getEmailDraft(clientId: string, period: string, ai: string
   try {
     // The full deliverable (attached PDF reports already appended at the back).
     const pdf = await buildFullPdf(clientId, period, ai);
-    attachments.push({ name: `QBR-${client?.name?.replace(/[^a-zA-Z0-9 -]+/g, '') ?? clientId}-${period}.pdf`, contentType: 'application/pdf', bytes: pdf });
+    attachments.push({ name: pdf.filename, contentType: 'application/pdf', bytes: pdf.bytes });
   } catch {
     // Draft still works without the attachment.
   }

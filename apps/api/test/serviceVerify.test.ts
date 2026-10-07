@@ -62,7 +62,7 @@ describe('buildQbrReport narrative verification (verifyNarrative)', () => {
         figures_referenced: [{ label: 'patch', value: '89%' }],
       },
       // Cached before prose was checked: only figures_referenced was verified.
-      verification: { ok: true, checks: [], failures: [] },
+      verification: { ok: true, checks: [], failures: [], style: [] },
       attempts: 1,
     };
     let modelCalls = 0;

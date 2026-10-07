@@ -92,6 +92,53 @@ describe('designed PDF (pdfmake)', () => {
     expect((def as { pageSize?: string }).pageSize).toBe('LETTER');
   });
 
+  it('keeps the movers heading, caption and chart in one unbreakable block and prints the cover footer once', () => {
+    const mk = (key: string, current: number, previous: number, sentiment: 'positive' | 'negative') => ({
+      key,
+      label: key,
+      category: 'security' as const,
+      current,
+      previous,
+      deltaAbs: current - previous,
+      deltaPct: Math.round(((current - previous) / previous) * 1000) / 10,
+      direction: current > previous ? ('up' as const) : ('down' as const),
+      sentiment,
+    });
+    const withMovers = { ...model, trends: [mk('alerts.resolved', 12, 8, 'positive'), mk('patch.pending', 9, 5, 'negative')] };
+    const def = buildPdfDefinition(withMovers) as unknown as { content: unknown[] };
+    const json = JSON.stringify(def.content);
+    const movers = (def.content as Array<Record<string, unknown>>).find((n) => Array.isArray(n['stack']) && JSON.stringify(n['stack']).includes('What changed this quarter'));
+    expect(movers?.['unbreakable']).toBe(true);
+    expect(JSON.stringify(movers!['stack'])).toContain('"svg"');
+    const cover = (def.content as Array<Record<string, unknown>>).slice(0, 12);
+    expect(JSON.stringify(cover).match(/Prepared by Mash IT\. Confidential\./g) ?? []).toHaveLength(0);
+    expect(json).not.toMatch(/"fontSize":[0-7](\.|,|})/);
+  });
+
+  it('moves a heading to the next page when nothing follows it on its page', () => {
+    type BreakFn = (node: { headlineLevel?: number }, followingNodesOnPage: unknown[]) => boolean;
+    const def = buildPdfDefinition(model) as unknown as { pageBreakBefore?: BreakFn };
+    expect(typeof def.pageBreakBefore).toBe('function');
+    // pdfmake only collects the following nodes when the callback declares at least two parameters.
+    expect(def.pageBreakBefore!.length).toBeGreaterThanOrEqual(2);
+    expect(def.pageBreakBefore!({ headlineLevel: 1 }, [])).toBe(true);
+    expect(def.pageBreakBefore!({ headlineLevel: 2 }, [{ text: 'body' }])).toBe(false);
+    expect(def.pageBreakBefore!({}, [])).toBe(false);
+  });
+
+  it('keeps the HIPAA confidential-information notice in the footer of every page for HIPAA clients', () => {
+    const kpca = SEED_CLIENTS.find((c) => c.id === 'kpca')!;
+    expect(kpca.hipaa).toBe(true);
+    const hipaaModel = buildReportModel({ client: kpca, current: findSeedSnapshot('kpca', '2026-Q1')!, narrative });
+    type Footer = (page: number, pages: number) => unknown;
+    const footerText = (m: typeof model) => JSON.stringify((buildPdfDefinition(m) as unknown as { footer: Footer }).footer(1, 3));
+    expect(footerText(hipaaModel)).toContain('(HIPAA)');
+    expect(footerText(hipaaModel)).toContain('Prepared by Mash IT. Contains confidential client information (HIPAA).');
+    expect(anp.hipaa).toBe(false);
+    expect(footerText(model)).not.toContain('(HIPAA)');
+    expect(footerText(model)).toContain('Prepared by Mash IT. Confidential.');
+  });
+
   it('never shouts: no uppercased labels, no middle-dot strings, no em dashes in chrome', () => {
     const text = JSON.stringify(buildPdfDefinition(model));
     expect(text).not.toMatch(/[A-Z]{6,} [A-Z]{6,}/); // "QUARTERLY BUSINESS", "TICKETS HANDLED"
