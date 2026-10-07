@@ -15,8 +15,9 @@ const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.prese
 
 function toResponse(r: ApiResult): HttpResponseInit {
   const sec = SECURITY_HEADERS;
-  if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...sec }, body: r.html };
-  if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf', ...sec }, body: r.pdf };
+  const inlineName: Record<string, string> = r.filename ? { 'Content-Disposition': contentDisposition(r.filename, { inline: true }) } : {};
+  if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...inlineName, ...sec }, body: r.html };
+  if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf', ...inlineName, ...sec }, body: r.pdf };
   if (r.pptx !== undefined) {
     const cd = r.filename ? contentDisposition(r.filename) : 'attachment';
     return { status: r.status, headers: { 'Content-Type': PPTX, 'Content-Disposition': cd, ...sec }, body: r.pptx };
