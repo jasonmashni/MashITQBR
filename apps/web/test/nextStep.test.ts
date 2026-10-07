@@ -86,6 +86,11 @@ describe('deliverableGuard', () => {
     expect(deliverableGuard({ hasQbr: true, verificationOk: false, status: 'narrative_approved' }).reason).toMatch(/verification/);
     expect(deliverableGuard({ hasQbr: true, verificationOk: true, status: 'data_synced' }).reason).toBe('Approve the narrative first');
   });
+  it('a locked quarter with failed verification says to reopen it', () => {
+    const g = deliverableGuard({ hasQbr: true, verificationOk: false, status: 'scheduled', locked: true });
+    expect(g.ok).toBe(false);
+    expect(g.reason).toBe('Figures failed verification. Reopen the quarter to fix the narrative.');
+  });
   it('low confidence warns but does not lock', () => {
     const g = deliverableGuard({ hasQbr: true, verificationOk: true, status: 'scheduled', confidence: 'low' });
     expect(g.ok).toBe(true);

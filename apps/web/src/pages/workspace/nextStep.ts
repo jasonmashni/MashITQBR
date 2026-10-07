@@ -157,6 +157,8 @@ export interface GuardInput {
   verificationOk: boolean;
   status?: string;
   confidence?: Confidence;
+  /** The quarter is data-locked: the narrative can only change after a Reopen. */
+  locked?: boolean;
 }
 
 export interface Guard {
@@ -174,7 +176,12 @@ export interface Guard {
  */
 export function deliverableGuard(i: GuardInput): Guard {
   if (!i.hasQbr) return { ok: false, reason: 'Sync data first' };
-  if (!i.verificationOk) return { ok: false, reason: 'Figures failed verification. Edit or regenerate the narrative.' };
+  if (!i.verificationOk) {
+    return {
+      ok: false,
+      reason: i.locked ? 'Figures failed verification. Reopen the quarter to fix the narrative.' : 'Figures failed verification. Edit or regenerate the narrative.',
+    };
+  }
   if (!statusAtLeast(asStatus(i.status), 'narrative_approved')) return { ok: false, reason: 'Approve the narrative first' };
   if (i.confidence === 'low') return { ok: true, warning: 'Not enough security data for a score; the report says so.' };
   return { ok: true };

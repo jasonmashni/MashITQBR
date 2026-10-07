@@ -274,6 +274,7 @@ export function Workspace() {
     verificationOk: qbr?.verification ?? false,
     status: meta?.status,
     confidence: qbr?.model.scorecard.overall.confidence,
+    locked: Boolean(notice),
   });
 
   return (
