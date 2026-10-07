@@ -95,12 +95,6 @@ export async function storePackage(
   });
 }
 
-/** The package a locked quarter serves: final beats preread, then the highest version. */
-export async function latestPackage(store: DataStore, clientId: string, period: string): Promise<PackageRecord | undefined> {
-  const all = await store.listPackages(clientId, period);
-  return [...all].sort((a, b) => Number(b.stage === 'final') - Number(a.stage === 'final') || b.version - a.version)[0];
-}
-
 export async function loadPackageModel(docs: DocContentStore, record: PackageRecord): Promise<StoredPackageJson | undefined> {
   const bytes = await docs.get(record.files.model);
   if (!bytes) return undefined;
