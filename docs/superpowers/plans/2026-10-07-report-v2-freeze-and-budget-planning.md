@@ -692,6 +692,30 @@ it('passes a compliant v4 output', () => { expect(limitIssues(v4base)).toEqual([
 - [ ] **Step 4: Run** `npx vitest run packages/narrative && npm run typecheck` (expect compile errors in offline.ts and report model; fix offline in C3, report in C6-C8; for this commit keep the old fields present in the type as optional deprecated aliases so the build stays green: `summary_paragraphs?: string[]; highlights?: string[]; recommendations?: string[]`).
 - [ ] **Step 5: Commit** `feat(narrative): v4 output contract with word and count limits`.
 
+### Task C2: Protection questions in core
+
+**Files:**
+- Create: `packages/core/src/protection.ts`; export from `packages/core/src/index.ts`
+- Test: `packages/core/test/protection.test.ts`
+
+**Interfaces:**
+
+```ts
+export type ProtectionQuestionId = 'get_in' | 'know' | 'recover' | 'keep_up' | 'run_well';
+export interface ProtectionQuestionDef { id: ProtectionQuestionId; question: string; safeguards: readonly string[] }
+export const PROTECTION_QUESTIONS: readonly ProtectionQuestionDef[]; // order and membership from the spec table
+export interface ProtectionRow { id: ProtectionQuestionId; question: string; rating: Rating; functions: Array<{ function: NistFunction; score: number | null }>; safeguards: SafeguardResult[] }
+export function protectionRows(scorecard: MaturityScorecard): ProtectionRow[];
+```
+
+Rating is the worst `rating` among measured safeguards in the group (`red` < `amber` < `green`), `unknown` when none measured. `functions` lists the distinct NIST functions of the group's safeguards with that function's score from `scorecard.functions`.
+
+- [ ] **Step 1: Write the failing test** with the ANP seed scorecard: five rows in order; `keep_up` rating is `amber` or `red` when `asset_inventory` is amber; a scorecard with nothing measured yields five `unknown` rows.
+- [ ] **Step 2: Run to verify failure**
+- [ ] **Step 3: Implement**
+- [ ] **Step 4: Run** `npx vitest run packages/core`
+- [ ] **Step 5: Commit** `feat(core): five protection questions grouped from the scorecard`.
+
 ### Task C3: Offline drafter v4
 
 **Files:**
@@ -727,30 +751,6 @@ it('passes a compliant v4 output', () => { expect(limitIssues(v4base)).toEqual([
 - [ ] **Step 3: Implement** the schema addition (`findings` before `note`, max 5 items), the prompt paragraph: "findings: up to 5 short sentences (under 25 words, figures included) an account manager must not miss: failed or stale backups, devices not seen, unresolved incidents, expiring agreements. Never include a person's name or email address. When coveredEntity is true, findings describe systems, never people.", the post-check `findings.filter((f) => !/\S+@\S+\.\S+/.test(f.text))`, and the plumbing.
 - [ ] **Step 4: Run** `npx vitest run apps/api/test/docExtract.test.ts packages/narrative`
 - [ ] **Step 5: Commit** `feat(api,narrative): attached report findings feed the narrative and its allowed figures`.
-
-### Task C2: Protection questions in core
-
-**Files:**
-- Create: `packages/core/src/protection.ts`; export from `packages/core/src/index.ts`
-- Test: `packages/core/test/protection.test.ts`
-
-**Interfaces:**
-
-```ts
-export type ProtectionQuestionId = 'get_in' | 'know' | 'recover' | 'keep_up' | 'run_well';
-export interface ProtectionQuestionDef { id: ProtectionQuestionId; question: string; safeguards: readonly string[] }
-export const PROTECTION_QUESTIONS: readonly ProtectionQuestionDef[]; // order and membership from the spec table
-export interface ProtectionRow { id: ProtectionQuestionId; question: string; rating: Rating; functions: Array<{ function: NistFunction; score: number | null }>; safeguards: SafeguardResult[] }
-export function protectionRows(scorecard: MaturityScorecard): ProtectionRow[];
-```
-
-Rating is the worst `rating` among measured safeguards in the group (`red` < `amber` < `green`), `unknown` when none measured. `functions` lists the distinct NIST functions of the group's safeguards with that function's score from `scorecard.functions`.
-
-- [ ] **Step 1: Write the failing test** with the ANP seed scorecard: five rows in order; `keep_up` rating is `amber` or `red` when `asset_inventory` is amber; a scorecard with nothing measured yields five `unknown` rows.
-- [ ] **Step 2: Run to verify failure**
-- [ ] **Step 3: Implement**
-- [ ] **Step 4: Run** `npx vitest run packages/core`
-- [ ] **Step 5: Commit** `feat(core): five protection questions grouped from the scorecard`.
 
 ### Task C6: Since last quarter and conversation status
 
