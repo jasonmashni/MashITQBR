@@ -14,6 +14,7 @@ import {
   type ProtectionQuestionId,
   type TicketDigest,
 } from '@mashit/core';
+import { extractNumbers } from './numbers.js';
 
 /** A finding extracted from an attached vendor report. */
 export interface NarrativeDocumentFinding {
@@ -207,6 +208,10 @@ export function buildAllowedNumbers(input: NarrativeInput): number[] {
   for (const i of input.ticketInsights ?? []) {
     for (const n of i.figures ?? []) add(n);
   }
+
+  // Attached-report findings are sentences the extractor read from the
+  // document; the prose may quote their figures ("389 days").
+  for (const d of input.documents ?? []) for (const f of d.findings ?? []) for (const n of extractNumbers(f.text)) add(n);
 
   // Period years / quarter numbers appear in prose and shouldn't be flagged.
   for (const p of [input.period, input.previousPeriod]) {

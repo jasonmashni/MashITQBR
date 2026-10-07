@@ -798,9 +798,13 @@ export async function extractQbrDocument(
       period: record.period,
       knownKeys: [...knownKeys.entries()].map(([key, label]) => ({ key, label })),
       docCategory: record.category,
+      coveredEntity: client?.hipaa === true,
     });
-    audit('document.extract', `qbr:${clientId}/${record.period}`, `${record.name} → ${extraction.metrics.length} metric(s)`);
-    return ok({ extraction, source: pdfSourceSlug(extraction.vendor), document: record });
+    // Findings ride on the document record so every later report build reads them.
+    const document = { ...record, findings: extraction.findings ?? [] };
+    await store.putDocument(document);
+    audit('document.extract', `qbr:${clientId}/${record.period}`, `${record.name} → ${extraction.metrics.length} metric(s), ${document.findings.length} finding(s)`);
+    return ok({ extraction, source: pdfSourceSlug(extraction.vendor), document });
   } catch (e) {
     return err(502, `AI extraction failed: ${e instanceof Error ? e.message : 'error'}`);
   }

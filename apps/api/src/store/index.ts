@@ -97,7 +97,7 @@ export interface ReportInputs {
   discussion?: DiscussionItem[];
   notes?: string;
   narrativeEdits?: import('./types.js').NarrativeEdits;
-  documents?: Array<{ name: string; source: string }>;
+  documents?: Array<{ name: string; source: string; findings?: import('./types.js').DocumentFinding[] }>;
 }
 
 /** Load persisted branding/config + discussion + narrative edits for a report build. */
@@ -106,7 +106,11 @@ export async function loadReportInputs(store: DataStore, clientId: string, perio
   const org = await store.getReportConfig(ORG_SETTINGS_ID);
   const d = await store.getDiscussion(clientId, period);
   const narrative = await store.getNarrative(clientId, period);
-  const documents = (await store.listDocuments(clientId, period)).map((doc) => ({ name: doc.name, source: doc.source }));
+  const documents = (await store.listDocuments(clientId, period)).map((doc) => ({
+    name: doc.name,
+    source: doc.source,
+    ...(doc.findings?.length ? { findings: doc.findings } : {}),
+  }));
   return { config, orgBrand: org?.brand, discussion: d?.items, notes: d?.notes, narrativeEdits: narrative?.edits, documents };
 }
 

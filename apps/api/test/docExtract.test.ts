@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { createClaudeDocExtractor, pdfSourceSlug } from '../src/docExtract.js';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClaudeDocExtractor, pdfSourceSlug, type DocExtractModel } from '../src/docExtract.js';
 
 /** Fake Anthropic client — the extractor streams, so expose messages.stream().finalMessage(). */
 function fakeAnthropic(reply: unknown, opts: { rawText?: string; stopReason?: string } = {}) {
@@ -67,6 +70,106 @@ describe('AI document metric extraction', () => {
     // A truncated structured-output reply: valid JSON start, cut off mid-object.
     const { client } = fakeAnthropic(null, { rawText: '{"vendor":"Mash IT+","period_hint":"2026-Q1","metrics":[{"key":"doc.a","label":"A","valu', stopReason: 'max_tokens' });
     await expect(createClaudeDocExtractor(client)(input)).rejects.toThrow(/too large|cut off/i);
+  });
+});
+
+describe('document findings', () => {
+  it('the structured schema requires findings of {text, severity} before the note', async () => {
+    const { client, calls } = fakeAnthropic({ vendor: 'X', period_hint: '', metrics: [], findings: [], note: '' });
+    await createClaudeDocExtractor(client)(input);
+    const schema = (calls[0]!['output_config'] as { format: { schema: Record<string, unknown> } }).format.schema as {
+      required: string[];
+      properties: Record<string, { items?: { required: string[]; additionalProperties: boolean; properties: Record<string, { enum?: string[] }> } }>;
+    };
+    expect(schema.required).toContain('findings');
+    expect(schema.required.indexOf('findings')).toBeLessThan(schema.required.indexOf('note'));
+    const item = schema.properties['findings']!.items!;
+    expect(item.required).toEqual(['text', 'severity']);
+    expect(item.additionalProperties).toBe(false);
+    expect(item.properties['severity']!.enum).toEqual(['info', 'watch', 'act']);
+    const system = JSON.stringify(calls[0]!['system']);
+    expect(system).toContain('Never include a person');
+  });
+
+  it('keeps at most five findings, drops anything shaped like an email address and defaults a bad severity', async () => {
+    const { client } = fakeAnthropic({
+      vendor: 'Synology',
+      period_hint: '2026-Q2',
+      metrics: [],
+      findings: [
+        { text: 'One lab PC (TGA2) has not backed up in 389 days', severity: 'act' },
+        { text: 'Backups for someone@example.com failed twice', severity: 'watch' },
+        { text: 'One production task failed on June 11', severity: 'loud' },
+        { text: 'A', severity: 'info' },
+        { text: 'B', severity: 'info' },
+        { text: 'C', severity: 'info' },
+        { text: '   ', severity: 'info' },
+      ],
+      note: '',
+    });
+    const out = await createClaudeDocExtractor(client)(input);
+    expect(out.findings).toEqual([
+      { text: 'One lab PC (TGA2) has not backed up in 389 days', severity: 'act' },
+      { text: 'One production task failed on June 11', severity: 'info' },
+      { text: 'A', severity: 'info' },
+      { text: 'B', severity: 'info' },
+      { text: 'C', severity: 'info' },
+    ]);
+  });
+
+  it('tells the model when the client is a covered entity', async () => {
+    const { client, calls } = fakeAnthropic({ vendor: 'X', period_hint: '', metrics: [], findings: [], note: '' });
+    await createClaudeDocExtractor(client)({ ...input, coveredEntity: true });
+    const msg = (calls[0]!['messages'] as Array<{ content: Array<Record<string, unknown>> }>)[0]!;
+    const text = msg.content.find((b) => b['type'] === 'text') as { text: string };
+    expect(text.text).toContain('coveredEntity: true');
+  });
+});
+
+describe('extractQbrDocument stores findings', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'qbr-findings-'));
+    process.env['QBR_DATA_DIR'] = dir;
+    delete process.env['AzureWebJobsStorage'];
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env['QBR_DATA_DIR'];
+  });
+
+  it('passes coveredEntity for a HIPAA client and keeps the findings on the document for the report', async () => {
+    const h = await import('../src/handlers.js');
+    const { getDataStore, getDocStore, docPath, loadReportInputs } = await import('../src/store/index.js');
+    const store = getDataStore();
+    await store.upsertClient({ id: 'clinic', name: 'Bluegrass Clinic', hipaa: true });
+    const record = {
+      id: 'doc1',
+      clientId: 'clinic',
+      period: '2026-Q2',
+      name: 'Synology Active Backup.pdf',
+      source: 'upload',
+      contentType: 'application/pdf',
+      size: 10,
+      uploadedAt: '2026-07-01T00:00:00.000Z',
+      uploadedBy: 'test',
+    };
+    await store.putDocument(record);
+    await getDocStore().put(docPath('clinic', '2026-Q2', 'doc1', record.name), Buffer.from('%PDF-1.4 fake'), 'application/pdf');
+
+    let seen: Parameters<DocExtractModel>[0] | undefined;
+    const extractor: DocExtractModel = async (args) => {
+      seen = args;
+      return { vendor: 'Synology', periodHint: '2026-Q2', metrics: [], findings: [{ text: 'One lab PC has not backed up in 389 days', severity: 'act' }], note: '' };
+    };
+    const res = await h.extractQbrDocument('clinic', '2026-Q2', 'doc1', extractor);
+    expect(res.status).toBe(200);
+    expect(seen?.coveredEntity).toBe(true);
+    expect((await store.getDocument('clinic', '2026-Q2', 'doc1'))?.findings).toEqual([{ text: 'One lab PC has not backed up in 389 days', severity: 'act' }]);
+    const inputs = await loadReportInputs(store, 'clinic', '2026-Q2');
+    expect(inputs.documents).toEqual([
+      { name: 'Synology Active Backup.pdf', source: 'upload', findings: [{ text: 'One lab PC has not backed up in 389 days', severity: 'act' }] },
+    ]);
   });
 });
 

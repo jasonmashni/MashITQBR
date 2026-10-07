@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildAllowedQuotes, verifyFigures, verifyNarrative, type NarrativeInput, type NarrativeOutput } from '@mashit/narrative';
+import { SEED_CLIENTS, findSeedSnapshot } from '@mashit/core';
+import { buildAllowedNumbers, buildAllowedQuotes, buildNarrativeInput, verifyFigures, verifyNarrative, type NarrativeInput, type NarrativeOutput } from '@mashit/narrative';
 import { v4 } from './v4.js';
 
 describe('verifyFigures', () => {
@@ -165,5 +166,23 @@ describe('style lint', () => {
       'section_summaries: robust',
     ]);
     expect(verifyNarrative(base, allowed).style).toEqual([]);
+  });
+});
+
+describe('attached report findings', () => {
+  const client = SEED_CLIENTS.find((c) => c.id === 'anp')!;
+  const current = findSeedSnapshot('anp', '2026-Q1')!;
+  const saw = ['One lab PC (TGA2) has not backed up in 389 days.', 'b', 'c'];
+
+  it('makes the figures in a finding allowed for the narrative', () => {
+    const plain = buildNarrativeInput({ client, current });
+    expect(verifyNarrative(v4({ saw }), buildAllowedNumbers(plain)).ok).toBe(false);
+    const withFinding = buildNarrativeInput({
+      client,
+      current,
+      documents: [{ name: 'Synology.pdf', source: 'upload', findings: [{ text: 'One lab PC (TGA2) has not backed up in 389 days', severity: 'act' }] }],
+    });
+    expect(buildAllowedNumbers(withFinding)).toContain(389);
+    expect(verifyNarrative(v4({ saw }), buildAllowedNumbers(withFinding)).ok).toBe(true);
   });
 });

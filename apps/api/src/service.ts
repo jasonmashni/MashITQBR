@@ -130,8 +130,8 @@ export interface BuildQbrOptions {
   /** Captured review discussion + notes. */
   discussion?: DiscussionItem[];
   notes?: string;
-  /** Attached vendor reports / uploads (rendered as the appendix). */
-  documents?: Array<{ name: string; source: string }>;
+  /** Attached vendor reports / uploads (rendered as the appendix); findings feed the narrative. */
+  documents?: Array<{ name: string; source: string; findings?: Array<{ text: string; severity: 'info' | 'watch' | 'act' }> }>;
 }
 
 /**
