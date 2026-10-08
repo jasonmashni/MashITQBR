@@ -77,7 +77,7 @@ import { cleanFindings, createClaudeDocExtractor, pdfSourceSlug, type DocExtract
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 import { computeTriage } from './triage.js';
 import { dataLocked, isFinal, refuseIfLocked } from './locks.js';
-import { loadPackageFile, loadPackageModel, storePackage, type FrozenDocument, type StoredModel, type StoredPackageJson } from './packages.js';
+import { loadPackageFile, loadPackageModel, storePackage, type FrozenDocument, type FrozenInputs, type StoredModel, type StoredPackageJson } from './packages.js';
 
 export interface ApiResult {
   status: number;
@@ -300,12 +300,18 @@ export async function getQbr(clientId: string, period: string, ai: string | null
   }
 }
 
-async function buildReportFor(clientId: string, period: string, ai: string | null, override: Partial<BuildQbrOptions> = {}) {
+async function buildReportFor(
+  clientId: string,
+  period: string,
+  ai: string | null,
+  override: Partial<BuildQbrOptions> = {},
+  inputs?: Awaited<ReturnType<typeof loadReportInputs>>,
+) {
   const store = getDataStore();
   return buildQbrReport(storeDataSource(), clientId, period, {
     narrativeModel: aiModel(ai),
     narrativeCache: narrativeCacheFor(store, clientId, period),
-    ...(await loadReportInputs(store, clientId, period)),
+    ...(inputs ?? (await loadReportInputs(store, clientId, period))),
     ...override,
   });
 }
@@ -368,10 +374,10 @@ type Frozen =
  * Build the report once, render the PDF, deck and HTML from that single build
  * and store them as the next package version. Shared by lock 1 and lock 2.
  *
- * Lock 2 on a quarter with a pre-read lock reuses the narrative and document
- * list stored at lock 1: no model call, and live edits to goals, config or
- * documents do not reach the final package. Only the discussion, notes and
- * live ticket statuses refresh. `refuse` may stop the freeze before anything
+ * Lock 2 on a quarter with a pre-read lock reuses the narrative, document
+ * list and report inputs (config, org brand, goals, budget) stored at lock 1:
+ * no model call, and live edits to any of them do not reach the final
+ * package. Only the discussion, notes and live ticket statuses refresh. `refuse` may stop the freeze before anything
  * is stored (Send refuses an AI fallback or a failed figure check).
  */
 async function freezePackage(
@@ -396,13 +402,34 @@ async function freezePackage(
       ...(d.findings?.length ? { findings: d.findings } : {}),
     }));
   const documents = frozenDocs.map(({ id: _id, ...d }) => d);
+  const live = await loadReportInputs(store, clientId, period);
+  // The inputs this build uses: lock 1's when lock 2 has them, else live.
+  // A pre-read package stored before inputs were kept falls back to live ones.
+  const inputs: FrozenInputs = prior?.inputs ?? {
+    config: live.config,
+    orgBrand: live.orgBrand,
+    goals: (await storeDataSource(store).getClient(clientId))?.goals ?? [],
+    budget: live.budget,
+  };
+  const inputsWarning = prior && !prior.inputs ? 'Pre-read inputs were not stored; final package used current settings.' : undefined;
   // A pre-read package stored before narratives were kept falls back to a live build.
   const report = await buildReportFor(
     clientId,
     period,
     null,
-    prior?.narrative ? { narrativeModel: undefined, frozenNarrative: prior.narrative, documents } : { documents },
+    {
+      ...(prior?.narrative ? { narrativeModel: undefined, frozenNarrative: prior.narrative } : {}),
+      documents,
+      config: inputs.config,
+      orgBrand: inputs.orgBrand,
+      goals: inputs.goals,
+      budget: inputs.budget,
+      // A budget frozen at lock 1 is used as stored; a live load failure does not apply.
+      ...(prior?.inputs ? { budgetWarning: undefined } : {}),
+    },
+    live,
   );
+  if (inputsWarning) report.warnings.push(inputsWarning);
   const refused = refuse?.(report);
   if (refused) return { ok: false, report, refused };
   // After a reopen, the next package says when it was revised (footer, workstream C).
@@ -421,6 +448,7 @@ async function freezePackage(
       warnings,
       narrative: report.narrative,
       documents: frozenDocs,
+      inputs,
       pdf: pdf.bytes,
       pptx: await renderDeck(model),
       html: renderQbrHtml({ ...report, model }),
@@ -581,11 +609,17 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   const storedById = new Map(stored.map((i) => [i.id, i]));
   const hipaa = (await storeDataSource(store).getClient(clientId))?.hipaa === true;
   // HIPAA clients: an item that still reads as it arrived from Halo, a
-  // suggestion or the inbox stays off the report. The stored sourceTopic wins
-  // over the body so dropping it does not bypass the rule.
+  // suggestion or the inbox stays off the report. For an item already stored,
+  // its source, sourceRef and sourceTopic win over the body, so dropping them
+  // or changing the source to manual does not bypass the rule.
   const items: DiscussionItem[] = (raw as DiscussionItem[]).map((i) => {
-    const sourceTopic = storedById.get(i.id)?.sourceTopic ?? i.sourceTopic;
-    const item = sourceTopic !== undefined ? { ...i, sourceTopic } : i;
+    const prior = storedById.get(i.id);
+    const { source: _s, sourceRef: _r, ...rest } = i;
+    const origin = prior
+      ? { ...rest, ...(prior.source !== undefined ? { source: prior.source } : {}), ...(prior.sourceRef !== undefined ? { sourceRef: prior.sourceRef } : {}) }
+      : i;
+    const sourceTopic = prior?.sourceTopic ?? i.sourceTopic;
+    const item = sourceTopic !== undefined ? { ...origin, sourceTopic } : origin;
     return hipaaTopicUnrewritten(item, hipaa) && item.includeInReport !== false ? { ...item, includeInReport: false } : item;
   });
   // knownIds = the ids the client loaded. A stored item in neither the body

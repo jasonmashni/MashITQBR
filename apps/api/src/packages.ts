@@ -1,4 +1,6 @@
+import type { Brand, ClientGoal, ReportConfig } from '@mashit/core';
 import type { NarrativeResult } from '@mashit/narrative';
+import type { ReportBudget } from './budget.js';
 import type { ReportModel } from '@mashit/report';
 import type { DataStore, DocContentStore, PackageRecord, PackageStage } from './store/index.js';
 
@@ -19,6 +21,17 @@ export interface FrozenDocument {
   findings?: Array<{ text: string; severity: 'info' | 'watch' | 'act' }>;
 }
 
+/**
+ * The report inputs a lock 1 build used. Lock 2 builds from these so the
+ * final package's pages match the pre-read the client already has.
+ */
+export interface FrozenInputs {
+  config?: ReportConfig;
+  orgBrand?: Brand;
+  goals: ClientGoal[];
+  budget?: ReportBudget;
+}
+
 /** What the package JSON holds besides the files. */
 export interface StoredPackageJson {
   model: StoredModel;
@@ -28,6 +41,8 @@ export interface StoredPackageJson {
   narrative?: NarrativeResult;
   /** The documents the build used, for the model and the appended PDFs. */
   documents?: FrozenDocument[];
+  /** The config, org brand, goals and budget the build used (lock 2 reuses them). */
+  inputs?: FrozenInputs;
 }
 
 export interface PackageArtifacts {
@@ -36,6 +51,7 @@ export interface PackageArtifacts {
   warnings: string[];
   narrative?: NarrativeResult;
   documents?: FrozenDocument[];
+  inputs?: FrozenInputs;
   pdf: Buffer;
   pptx: Buffer;
   html: string;
@@ -76,6 +92,7 @@ export async function storePackage(
     warnings: artifacts.warnings,
     ...(artifacts.narrative ? { narrative: artifacts.narrative } : {}),
     ...(artifacts.documents ? { documents: artifacts.documents } : {}),
+    ...(artifacts.inputs ? { inputs: artifacts.inputs } : {}),
   };
   const json = JSON.stringify(stored);
   await docs.put(files.model, Buffer.from(json, 'utf8'), CONTENT_TYPE.model);

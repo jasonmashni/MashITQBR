@@ -58,6 +58,17 @@ describe('HIPAA clients: source topics stay off the report until rewritten', () 
     expect(itemsOf(res)[0]).toMatchObject({ includeInReport: false, sourceTopic: 'Lab results for J Doe' });
   });
 
+  it('uses the stored source, so changing it to manual in the body does not bypass the rule', async () => {
+    const h = await import('../src/handlers.js');
+    const { getDataStore } = await import('../src/store/index.js');
+    const stored = { ...sourced('email', 'Fax for J Roe', 'Fax for J Roe'), sourceRef: 'msg-1' };
+    await getDataStore().putDiscussion({ clientId: 'mp', period: '2026-Q4', items: [stored] });
+    const res = await h.putDiscussion('mp', '2026-Q4', {
+      items: [{ id: stored.id, topic: 'Fax for J Roe', source: 'manual', sourceRef: 'forged', includeInReport: true }],
+    });
+    expect(itemsOf(res)[0]).toMatchObject({ includeInReport: false, source: 'email', sourceRef: 'msg-1', sourceTopic: 'Fax for J Roe' });
+  });
+
   it('leaves non-HIPAA clients and hand-typed items alone', async () => {
     const h = await import('../src/handlers.js');
     const res = await h.putDiscussion('anp', '2026-Q1', { items: [sourced('halo', 'Printer jam', 'Printer jam')] });

@@ -89,6 +89,100 @@ describe('lock 2 reuses the lock 1 narrative and documents', () => {
   });
 });
 
+describe('lock 2 reuses the lock 1 report inputs', () => {
+  const plan = (expected: number) => ({
+    clientId: 'anp',
+    fiscalLabel: 2023,
+    status: 'published' as const,
+    answers: {},
+    assumptions: [],
+    movers: [],
+    caveats: [],
+    lines: [],
+    totals: { low: expected, expected, high: expected },
+    createdAt: 'x',
+    updatedAt: 'x',
+    updatedBy: 'jason',
+    publishedPeriod: '2022-Q3',
+    published: {
+      at: 'x',
+      period: '2022-Q3',
+      lines: [{ category: 'managed_services' as const, low: expected, expected, high: expected, basis: [{ source: 'halo' as const, note: 'MRR' }] }],
+      totals: { low: expected, expected, high: expected },
+      assumptions: ['Two hires.'],
+      movers: [],
+      caveats: [],
+    },
+  });
+
+  it('Finalize after config, brand, goals and budget changes keeps the v1 pages', async () => {
+    const h = await import('../src/handlers.js');
+    const { getDataStore, getDocStore } = await import('../src/store/index.js');
+    const { loadPackageModel } = await import('../src/packages.js');
+    const store = getDataStore();
+    delete process.env['ANTHROPIC_API_KEY'];
+    await seedSnapshot('2022-Q3');
+    await store.putBudgetPlan(plan(50000));
+    expect((await h.putClientGoals('anp', { goals: [{ title: 'Grow the plant' }] })).status).toBe(200);
+    expect((await h.putConfig('anp', { brand: { name: 'Before Brand' }, hiddenSections: [] })).status).toBe(200);
+
+    expect((await h.markPackageSent('anp', '2022-Q3')).status).toBe(200);
+    const [v1] = await store.listPackages('anp', '2022-Q3');
+    const j1 = (await loadPackageModel(getDocStore(), v1!))!;
+    const m1 = j1.model;
+    const cited = m1.sections[0]!.rows[0]!.metric.key;
+    expect(m1.goals.map((g) => g.title)).toEqual(['Grow the plant']);
+    expect(m1.investment?.outlook?.totals.expected).toBe(50000);
+
+    // Live inputs change after the pre-read went out.
+    expect((await h.putClientGoals('anp', { goals: [{ title: 'Sell the plant' }] })).status).toBe(200);
+    const hide = m1.sections.at(-1)!.category;
+    expect(
+      (await h.putConfig('anp', { brand: { name: 'After Brand' }, hiddenSections: [hide], excludedMetrics: [cited] })).status,
+    ).toBe(200);
+    await store.putBudgetPlan(plan(99000));
+
+    const fin = await h.finalizeQbr('anp', '2022-Q3');
+    expect(fin.status).toBe(200);
+    const [, v2] = await store.listPackages('anp', '2022-Q3');
+    const j2 = (await loadPackageModel(getDocStore(), v2!))!;
+    const m2 = j2.model;
+    expect(m2.goals).toEqual(m1.goals);
+    expect(m2.sections).toEqual(m1.sections);
+    expect(m2.sections.flatMap((s) => s.rows.map((r) => r.metric.key))).toContain(cited);
+    expect(m2.brand).toEqual(m1.brand);
+    expect(m2.customSections).toEqual(m1.customSections);
+    expect(m2.investment).toEqual(m1.investment);
+    expect(m2.investment?.outlook?.totals.expected).toBe(50000);
+    expect(j2.verification).toBe(j1.verification);
+    expect(j2.narrative?.verification).toEqual(j1.narrative?.verification);
+    expect(j2.warnings).not.toContain('Pre-read inputs were not stored; final package used current settings.');
+  });
+
+  it('a pre-read package without stored inputs falls back to live inputs with a warning', async () => {
+    const h = await import('../src/handlers.js');
+    const { getDataStore, getDocStore } = await import('../src/store/index.js');
+    const { loadPackageModel } = await import('../src/packages.js');
+    const store = getDataStore();
+    delete process.env['ANTHROPIC_API_KEY'];
+    await seedSnapshot('2022-Q2');
+    expect((await h.markPackageSent('anp', '2022-Q2')).status).toBe(200);
+    // Rewrite the stored JSON the way a package from before this change looked.
+    const [v1] = await store.listPackages('anp', '2022-Q2');
+    const j1 = (await loadPackageModel(getDocStore(), v1!))!;
+    const { inputs: _inputs, ...legacy } = j1 as typeof j1 & { inputs?: unknown };
+    expect(_inputs).toBeDefined();
+    await getDocStore().put(v1!.files.model, Buffer.from(JSON.stringify(legacy), 'utf8'), 'application/json');
+    expect((await h.putConfig('anp', { brand: { name: 'Live Brand' } })).status).toBe(200);
+
+    expect((await h.finalizeQbr('anp', '2022-Q2')).status).toBe(200);
+    const [, v2] = await store.listPackages('anp', '2022-Q2');
+    const j2 = (await loadPackageModel(getDocStore(), v2!))!;
+    expect(j2.model.brand.name).toBe('Live Brand');
+    expect(j2.warnings).toContain('Pre-read inputs were not stored; final package used current settings.');
+  });
+});
+
 describe('an attachment failure at lock time is reported', () => {
   it('Send stores the package, and the package and the response carry the warning', async () => {
     const h = await import('../src/handlers.js');

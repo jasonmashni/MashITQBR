@@ -222,9 +222,11 @@ export function OverviewTab({
         <Group justify="space-between" align="flex-start">
           <Title order={4}>Page one, {model.period.label}</Title>
           <Tooltip label={lockedReason} disabled={!lockedReason} multiline w={300}>
-            <Button size="xs" variant="light" leftSection={<IconPencil size={14} />} disabled={Boolean(lockedReason)} onClick={() => setEditing((e) => !e)}>
-              {editing && !lockedReason ? 'Close the editor' : 'Edit the narrative'}
-            </Button>
+            <span style={{ display: 'inline-block' }}>
+              <Button size="xs" variant="light" leftSection={<IconPencil size={14} />} disabled={Boolean(lockedReason)} onClick={() => setEditing((e) => !e)}>
+                {editing && !lockedReason ? 'Close the editor' : 'Edit the narrative'}
+              </Button>
+            </span>
           </Tooltip>
         </Group>
         <PageOnePreview model={model} />
