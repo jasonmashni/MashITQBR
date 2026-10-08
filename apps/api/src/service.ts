@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { previousPeriod, type Brand, type DiscussionItem, type MetricValue, type ReportConfig } from '@mashit/core';
+import { previousPeriod, type Brand, type ClientGoal, type DiscussionItem, type MetricValue, type ReportConfig } from '@mashit/core';
 import {
   buildAllowedNumbers,
   buildAllowedQuotes,
@@ -159,6 +159,11 @@ export interface BuildQbrOptions {
   budget?: import('./budget.js').ReportBudget;
   /** A budget plan load failure, surfaced as a build warning. */
   budgetWarning?: string;
+  /**
+   * Client goals to use instead of the stored ones. Lock 2 passes the goals
+   * frozen at lock 1; the client name and HIPAA flag stay live.
+   */
+  goals?: ClientGoal[];
 }
 
 /**
@@ -215,8 +220,9 @@ export async function buildQbrReport(
   periodId: string,
   opts: BuildQbrOptions = {},
 ): Promise<QbrReport> {
-  const client = await ds.getClient(clientId);
-  if (!client) throw new Error(`Unknown client: ${clientId}`);
+  const liveClient = await ds.getClient(clientId);
+  if (!liveClient) throw new Error(`Unknown client: ${clientId}`);
+  const client = opts.goals ? { ...liveClient, goals: opts.goals } : liveClient;
   const currentRaw = await ds.getSnapshot(clientId, periodId);
   if (!currentRaw) throw new Error(`No metric snapshot for ${clientId} ${periodId}`);
   const previousRaw = await ds.getSnapshot(clientId, previousPeriod(periodId).id);
