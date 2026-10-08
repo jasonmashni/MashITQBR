@@ -456,41 +456,49 @@ export function ReportsTab({
                       <Group gap={2} wrap="nowrap" justify="flex-end">
                         {aiEnabled && isPdf(d) && (
                           <Tooltip label={rowLock ?? 'AI match: read the PDF and suggest name / quarter / category'} multiline w={rowLock ? 300 : undefined}>
-                            <ActionIcon
-                              variant="subtle"
-                              color="good"
-                              aria-label={`AI match ${d.name}`}
-                              loading={ai[aiKey(d)]?.loading}
-                              disabled={Boolean(rowLock)}
-                              onClick={() => analyze(d)}
-                            >
-                              <IconSparkles size={15} />
-                            </ActionIcon>
+                            <span style={{ display: 'inline-block' }}>
+                              <ActionIcon
+                                variant="subtle"
+                                color="good"
+                                aria-label={`AI match ${d.name}`}
+                                loading={ai[aiKey(d)]?.loading}
+                                disabled={Boolean(rowLock)}
+                                onClick={() => analyze(d)}
+                              >
+                                <IconSparkles size={15} />
+                              </ActionIcon>
+                            </span>
                           </Tooltip>
                         )}
                         {aiEnabled && isPdf(d) && (
                           <Tooltip label={rowLock ?? `Extract metrics: read the numbers in this PDF into ${d.period}'s data`} multiline w={rowLock ? 300 : undefined}>
-                            <ActionIcon
-                              variant="subtle"
-                              color="navy"
-                              aria-label={`Extract metrics from ${d.name}`}
-                              loading={extracting === aiKey(d)}
-                              disabled={Boolean(rowLock)}
-                              onClick={() => extract(d)}
-                            >
-                              <IconTableImport size={15} />
-                            </ActionIcon>
+                            <span style={{ display: 'inline-block' }}>
+                              <ActionIcon
+                                variant="subtle"
+                                color="navy"
+                                aria-label={`Extract metrics from ${d.name}`}
+                                loading={extracting === aiKey(d)}
+                                disabled={Boolean(rowLock)}
+                                onClick={() => extract(d)}
+                              >
+                                <IconTableImport size={15} />
+                              </ActionIcon>
+                            </span>
                           </Tooltip>
                         )}
                         <Tooltip label={rowLock ?? 'Rename'} multiline w={rowLock ? 300 : undefined}>
-                          <ActionIcon variant="subtle" aria-label={`Rename ${d.name}`} disabled={Boolean(rowLock)} onClick={() => { setRenaming(d); setNewName(d.name); }}>
-                            <IconPencil size={15} />
-                          </ActionIcon>
+                          <span style={{ display: 'inline-block' }}>
+                            <ActionIcon variant="subtle" aria-label={`Rename ${d.name}`} disabled={Boolean(rowLock)} onClick={() => { setRenaming(d); setNewName(d.name); }}>
+                              <IconPencil size={15} />
+                            </ActionIcon>
+                          </span>
                         </Tooltip>
                         <Tooltip label={rowLock ?? 'Delete'} multiline w={rowLock ? 300 : undefined}>
-                          <ActionIcon color="act" variant="subtle" aria-label={`Remove ${d.name}`} disabled={Boolean(rowLock)} onClick={() => remove(d)}>
-                            <IconTrash size={15} />
-                          </ActionIcon>
+                          <span style={{ display: 'inline-block' }}>
+                            <ActionIcon color="act" variant="subtle" aria-label={`Remove ${d.name}`} disabled={Boolean(rowLock)} onClick={() => remove(d)}>
+                              <IconTrash size={15} />
+                            </ActionIcon>
+                          </span>
                         </Tooltip>
                       </Group>
                     </Table.Td>
@@ -519,7 +527,9 @@ export function ReportsTab({
                               </div>
                               <Group gap="xs" wrap="nowrap">
                                 <Tooltip label={rowLock} disabled={!rowLock} multiline w={300}>
-                                  <Button size="compact-sm" color="good" disabled={Boolean(rowLock)} onClick={() => acceptMatch(d, s)}>Match</Button>
+                                  <span style={{ display: 'inline-block' }}>
+                                    <Button size="compact-sm" color="good" disabled={Boolean(rowLock)} onClick={() => acceptMatch(d, s)}>Match</Button>
+                                  </span>
                                 </Tooltip>
                                 <Button size="compact-sm" variant="subtle" color="slate" onClick={() => dismissMatch(d)}>Dismiss</Button>
                               </Group>

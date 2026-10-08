@@ -428,14 +428,18 @@ export function NarrativeEditor({
         )}
         <Group>
           <Tooltip label={lockedReason} disabled={!lockedReason} multiline w={300}>
-            <Button loading={busy === 'save'} onClick={save} disabled={!dirty || Boolean(lockedReason)}>
-              Save narrative
-            </Button>
+            <span style={{ display: 'inline-block' }}>
+              <Button loading={busy === 'save'} onClick={save} disabled={!dirty || Boolean(lockedReason)}>
+                Save narrative
+              </Button>
+            </span>
           </Tooltip>
           <Tooltip label={lockedReason} disabled={!lockedReason} multiline w={300}>
-            <Button variant="default" loading={busy === 'regen'} onClick={() => setConfirmRegen(true)} disabled={Boolean(lockedReason)}>
-              Regenerate
-            </Button>
+            <span style={{ display: 'inline-block' }}>
+              <Button variant="default" loading={busy === 'regen'} onClick={() => setConfirmRegen(true)} disabled={Boolean(lockedReason)}>
+                Regenerate
+              </Button>
+            </span>
           </Tooltip>
           <Tooltip label={approveHint}>
             {/* data-disabled (not disabled) so the tooltip still explains why. */}
