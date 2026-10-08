@@ -56,7 +56,7 @@ describe('overview + periods endpoints', () => {
     expect(body.quarterEndsInDays).toBeGreaterThanOrEqual(0);
     const anp = body.clients.find((c) => c.clientId === 'anp')!;
     expect(anp.currentPeriod).toBe('2026-Q3');
-    expect(anp.current).toEqual({ hasData: false, status: 'draft', meetingAt: null, packageSentAt: null, meetingSkipped: false });
+    expect(anp.current).toEqual({ hasData: false, status: 'draft', meetingAt: null, packageSentAt: null, meetingSkipped: false, locks: null });
     expect(anp.triage).toBe('not_started');
     // Existing fields keep rendering: the newest quarter with data is still reported.
     expect(anp.period).toBe('2026-Q1');
@@ -100,6 +100,19 @@ describe('overview + periods endpoints', () => {
     expect(by['2026-Q1']).toBe(true); // seed
     expect(by['2025-Q4']).toBe(true); // seed (previous quarter)
     expect(by['2025-Q1']).toBe(false);
+  });
+
+  it('period and overview rows carry the quarter locks', async () => {
+    const h = await import('../src/handlers.js');
+    const store = (await import('../src/store/index.js')).getDataStore();
+    const locks = { final: { at: '2026-01-20T00:00:00Z', by: 'jason', version: 1 } };
+    const existing = await store.getQbr('kpca', '2025-Q4');
+    await store.upsertQbr({ status: 'dispositioned', ...existing, clientId: 'kpca', period: '2025-Q4', locks, updatedAt: new Date().toISOString() });
+    const periods = (await h.getPeriods('kpca', '2026-Q1')).json as { periods: Array<{ period: string; locks?: unknown }> };
+    expect(periods.periods.find((p) => p.period === '2025-Q4')?.locks).toEqual(locks);
+    expect(periods.periods.find((p) => p.period === '2024-Q1')?.locks).toBeUndefined();
+    const over = (await h.getOverview('2025-Q4')).json as { clients: Array<{ clientId: string; current: { locks: unknown } }> };
+    expect(over.clients.find((c) => c.clientId === 'kpca')?.current.locks).toEqual(locks);
   });
 
   it('ignores a malformed ?current override', async () => {
@@ -156,7 +169,9 @@ describe('overview + periods endpoints', () => {
     const res = await h.dispositionQbrSkipped('mp', '2026-Q1', { reason: 'Client declined — emailed report only' });
     expect(res.status).toBe(200);
     const rec = await store.getQbr('mp', '2026-Q1');
-    expect(rec?.status).toBe('completed');
+    // The skip is the quarter's disposition: lock 2 freezes it at dispositioned.
+    expect(rec?.status).toBe('dispositioned');
+    expect(rec?.locks?.final).toBeTruthy();
     expect(rec?.meetingSkipped?.reason).toBe('Client declined — emailed report only');
     expect(rec?.meeting?.heldAt).toBeUndefined();
 
@@ -165,7 +180,7 @@ describe('overview + periods endpoints', () => {
     const mp = (over.json as { clients: Array<{ clientId: string; status: string; health: { drivers: string[] } }> }).clients.find(
       (c) => c.clientId === 'mp',
     )!;
-    expect(mp.status).toBe('completed');
+    expect(mp.status).toBe('dispositioned');
     expect(mp.health.drivers.join(' ')).toMatch(/no qbr held/i);
 
     // Later stage changes must not backfill heldAt on a skipped quarter.

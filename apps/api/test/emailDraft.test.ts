@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildEmailDraft, qbrEmailBody } from '../src/emailDraft.js';
+import { buildEmailDraft, qbrEmailBody, qbrEmailSubject } from '../src/emailDraft.js';
 
 let dir: string;
 beforeAll(() => {
@@ -80,6 +80,21 @@ describe('buildEmailDraft', () => {
     expect(eml.match(/Content-Disposition: attachment/g)?.length).toBe(3);
     expect(eml).toContain('filename="Huntress quarterly.pdf"');
     expect(eml).toContain('filename="CheckPoint report.pdf"');
+  });
+});
+
+describe('subjects and body carry no em or en dash', () => {
+  it('qbrEmailSubject is plain', () => {
+    expect(qbrEmailSubject('Mash IT', 'ANP Enertech', 'Q1 2026')).toBe('Mash IT QBR: ANP Enertech, Q1 2026');
+  });
+
+  it('the draft subject and body are plain', async () => {
+    const h = await import('../src/handlers.js');
+    const eml = (await h.getEmailDraft('anp', '2026-Q1', '0')).file!.bytes.toString('utf8');
+    const subject = eml.match(/^Subject: (.*)$/m)?.[1] ?? '';
+    expect(subject).toMatch(/^[\x20-\x7e]+\r?$/); // ASCII, so not RFC 2047 encoded and no dash characters
+    expect(subject).toContain('QBR:');
+    expect(qbrEmailBody({ periodLabel: 'Q1 2026', orgName: 'Mash IT', bookingUrl: 'https://x/book/abc' })).not.toMatch(/[–—]/);
   });
 });
 

@@ -2,10 +2,14 @@ import {
   computeScorecard,
   computeTicketInsights,
   computeTrends,
+  fiscalYearOf,
   indexTrends,
+  isPlanningPeriod,
   parsePeriod,
+  protectionRows,
   ticketInsightRecommendations,
   type Brand,
+  type BudgetOutlook,
   type Client,
   type ClientGoal,
   type CustomSection,
@@ -15,10 +19,12 @@ import {
   type MetricSnapshot,
   type MetricTrend,
   type MetricValue,
+  type ProtectionRow,
   type ReportConfig,
 } from '@mashit/core';
-import type { NarrativeOutput } from '@mashit/narrative';
+import type { NarrativeDecision, NarrativeOutput, PlanItem } from '@mashit/narrative';
 import { resolveBrand, type BrandTokens } from './brand.js';
+import { formatCurrency } from './format.js';
 
 export interface ReportSectionRow {
   metric: MetricValue;
@@ -33,6 +39,156 @@ export interface ReportSection {
   rows: ReportSectionRow[];
 }
 
+/** Where a discussion item stands, for the page three chip. */
+export type ConversationStatus = 'on_plan' | 'in_progress' | 'waiting' | 'done' | 'closed';
+
+/** One "Since last quarter" row on page one. */
+export interface SinceLastRow {
+  topic: string;
+  status: 'done' | 'in_progress' | 'waiting' | 'closed';
+  detail?: string;
+}
+
+/** A protection question with its scorecard status and the narrative's prose. */
+export type ReportProtectionRow = ProtectionRow & { inPlace?: string; thisQuarter?: string };
+
+const CLOSED_STATUS = /closed|resolved|complete/i;
+
+/**
+ * Where a discussion item stands: a ticket pushed to Halo and still open is
+ * in progress; no action is closed; a planned item nobody answered is
+ * waiting; a discussed item (or pushed ticket) whose external status is
+ * closed, resolved or complete is done; anything else is on plan.
+ */
+export function conversationStatus(item: DiscussionItem): ConversationStatus {
+  const external = item.externalRef?.status?.trim();
+  const externalClosed = !!external && CLOSED_STATUS.test(external);
+  if (item.disposition === 'no_action') return 'closed';
+  if (externalClosed && (item.status === 'discussed' || item.disposition === 'create_ticket')) return 'done';
+  if (item.disposition === 'create_ticket' && external && !externalClosed) return 'in_progress';
+  if (item.status === 'planned' && !item.response?.trim()) return 'waiting';
+  return 'on_plan';
+}
+
+/** Apply live Halo ticket statuses (externalRef id -> status) to discussion items. */
+function withLiveStatus(items: DiscussionItem[], statuses: Record<string, string> | undefined): DiscussionItem[] {
+  if (!statuses) return items;
+  return items.map((d) =>
+    d.externalRef?.system === 'halo' && statuses[d.externalRef.id] ? { ...d, externalRef: { ...d.externalRef, status: statuses[d.externalRef.id] } } : d,
+  );
+}
+
+/** Reportable items in agenda order. */
+function reportable(items: DiscussionItem[]): DiscussionItem[] {
+  return items.filter((d) => d.includeInReport !== false).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+}
+
+const SINCE_LAST_MAX = 5;
+
+/** Page four: what the client invested this quarter and what is coming. */
+export interface InvestmentModel {
+  /** This quarter (finance.quarter_invoiced; 0 when no invoices were read). */
+  invoiced: number;
+  recurring: number;
+  variable: number;
+  previousInvoiced?: number;
+  /** Invoice lines by category, largest first; recurring when the category is on the recurring agreement. */
+  breakdown: Array<{ label: string; amount: number; recurring: boolean }>;
+  /** `elapsedPct` is the share of the fiscal year invoiced so far (the meter's tick). */
+  planVsActual?: { fiscalYearLabel: string; planned: number; spent: number; pct: number; note: string; elapsedPct?: number };
+  /** Deterministic sentences: warranty refresh, paid-seat use, renewals. */
+  comingUp: string[];
+  /** The twelve-month outlook, planning quarter only. */
+  outlook?: BudgetOutlook;
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
+
+/**
+ * The investment page from the spend metrics plus an optional published
+ * budget: recurring is the sum of invoice lines whose category also appears
+ * in the recurring breakdown (finance.recurring.*); everything else is
+ * variable. Undefined when there is nothing to show.
+ */
+/** The month each quarter's review is held (the month after the quarter ends). */
+const REVIEW_MONTH: Record<1 | 2 | 3 | 4, string> = { 1: 'April', 2: 'July', 3: 'October', 4: 'January' };
+
+/**
+ * "At the Q3 review in October we will plan the 2027 budget together." when
+ * the next quarter is the client's planning quarter; undefined otherwise.
+ */
+function planningNotice(periodId: string, startMonth: number): string | undefined {
+  let p;
+  try {
+    p = parsePeriod(periodId);
+  } catch {
+    return undefined;
+  }
+  const next = p.quarter === 4 ? `${p.year + 1}-Q1` : `${p.year}-Q${p.quarter + 1}`;
+  if (!isPlanningPeriod(next, startMonth)) return undefined;
+  const nextQuarter = parsePeriod(next).quarter;
+  const fy = fiscalYearOf(next, startMonth).label + 1;
+  return `At the Q${nextQuarter} review in ${REVIEW_MONTH[nextQuarter]} we will plan the ${startMonth === 1 ? fy : `FY${fy}`} budget together.`;
+}
+
+function buildInvestment(
+  client: Client,
+  current: MetricSnapshot,
+  previous: MetricSnapshot | undefined,
+  budget: { planVsActual?: InvestmentModel['planVsActual']; outlook?: BudgetOutlook; unitCost?: number } | undefined,
+): InvestmentModel | undefined {
+  const num = (s: MetricSnapshot | undefined, key: string): number | undefined => {
+    const v = s?.metrics.find((m) => m.key === key)?.value;
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  };
+  const invoiced = num(current, 'finance.quarter_invoiced');
+  if (invoiced === undefined && !budget?.outlook && !budget?.planVsActual) return undefined;
+
+  const norm = (label: string) => label.replace(/\s*\(monthly\)\s*$/i, '').trim().toLowerCase();
+  const recurringLabels = new Set(
+    current.metrics.filter((m) => m.key.startsWith('finance.recurring.')).map((m) => norm(m.label)),
+  );
+  const breakdown = current.metrics
+    .filter((m) => m.key.startsWith('finance.invoiced.') && typeof m.value === 'number' && m.value > 0)
+    .map((m) => ({ label: m.label, amount: m.value as number, recurring: recurringLabels.has(norm(m.label)) }))
+    .sort((a, b) => b.amount - a.amount);
+  const recurring = Math.round(breakdown.filter((b) => b.recurring).reduce((sum, b) => sum + b.amount, 0) * 100) / 100;
+  const total = invoiced ?? 0;
+
+  const comingUp: string[] = [];
+  const expired = num(current, 'assets.warranty_expired');
+  if (expired !== undefined && expired > 0) {
+    const devices = `${expired} ${plural(expired, 'device')} past warranty`;
+    comingUp.push(
+      budget?.unitCost
+        ? `Hardware: ${devices}. At your planning cost of ${formatCurrency(budget.unitCost)} per device that is about ${formatCurrency(expired * budget.unitCost)}.`
+        : `Hardware: ${devices}. We will price the replacements with you.`,
+    );
+  }
+  const seats = num(current, 'licenses.total');
+  const assigned = num(current, 'licenses.assigned');
+  if (seats !== undefined && assigned !== undefined && seats > 0) {
+    comingUp.push(`Licensing: ${assigned} of ${seats} paid Microsoft 365 seats in use.`);
+  }
+  const renewing = num(current, 'finance.contracts_expiring');
+  if (renewing !== undefined && renewing > 0) {
+    comingUp.push(`Agreements: ${renewing} ${plural(renewing, 'agreement')} ${renewing === 1 ? 'renews' : 'renew'} within 90 days.`);
+  }
+  const notice = planningNotice(current.period, client.fiscalYearStartMonth ?? 1);
+  if (notice) comingUp.push(notice);
+
+  return {
+    invoiced: total,
+    recurring,
+    variable: Math.round((total - recurring) * 100) / 100,
+    ...(num(previous, 'finance.quarter_invoiced') !== undefined ? { previousInvoiced: num(previous, 'finance.quarter_invoiced') } : {}),
+    breakdown,
+    ...(budget?.planVsActual ? { planVsActual: budget.planVsActual } : {}),
+    comingUp,
+    ...(budget?.outlook ? { outlook: budget.outlook } : {}),
+  };
+}
+
 export interface ReportModel {
   client: { name: string; primaryContact?: string; industry?: string; hipaa?: boolean; complianceStandard?: string };
   period: { id: string; label: string };
@@ -42,7 +198,16 @@ export interface ReportModel {
   heldBy?: string;
   /** Resolved branding (Mash IT defaults merged with any per-client override). */
   brand: BrandTokens;
-  executive: { headline?: string; paragraphs: string[]; highlights: string[] };
+  /**
+   * Page one. `lede`, `did` and `saw` come from the v4 narrative; a v3
+   * narrative falls back to its paragraphs and highlights. `paragraphs` and
+   * `highlights` stay for older consumers.
+   */
+  executive: { headline?: string; paragraphs: string[]; highlights: string[]; lede?: string; did: string[]; saw: string[] };
+  /** What the client must decide (page one, third column). */
+  decisions: NarrativeDecision[];
+  /** The next 90 days (page three); falls back to the recommendations in Now. */
+  plan: { now: PlanItem[]; next: PlanItem[]; later: PlanItem[] };
   scorecard: MaturityScorecard;
   trends: MetricTrend[];
   /** Strategic client goals + how IT aligns to them (qualitative; opens the report). */
@@ -52,6 +217,14 @@ export interface ReportModel {
   customSections: CustomSection[];
   /** Captured discussion points / client responses from the review. */
   discussion: DiscussionItem[];
+  /** What happened to last quarter's discussion items (page one); empty hides the block. */
+  sinceLastQuarter: SinceLastRow[];
+  /** The five protection questions (page two), in order. */
+  protection: ReportProtectionRow[];
+  /** Set when a reopened quarter was locked again: the footer says "Revised on". */
+  revisedAt?: string;
+  /** Page four (and 4b in the planning quarter); undefined hides it. */
+  investment?: InvestmentModel;
   /** General meeting notes. */
   notes?: string;
   recommendations: string[];
@@ -93,6 +266,14 @@ export function buildReportModel(args: {
   documents?: Array<{ name: string; source: string }>;
   /** Labels of metrics reviewed out (their caveats stay off the report). */
   excludedLabels?: string[];
+  /** The previous quarter's discussion, for "Since last quarter". */
+  previousDiscussion?: DiscussionItem[];
+  /** Live Halo ticket statuses by externalRef id; they refine the stored status. */
+  ticketStatuses?: Record<string, string>;
+  /** When a reopened quarter was locked again. */
+  revisedAt?: string;
+  /** Published budget plan data; absent until a plan exists (workstream D). */
+  budget?: { planVsActual?: InvestmentModel['planVsActual']; outlook?: BudgetOutlook; unitCost?: number };
 }): ReportModel {
   const { client, current, previous, narrative, config } = args;
   const period = parsePeriod(current.period);
@@ -141,9 +322,20 @@ export function buildReportModel(args: {
     brand: resolveBrand(config?.brand, args.orgBrand),
     executive: {
       headline: narrative?.headline,
-      paragraphs: narrative?.summary_paragraphs ?? [],
-      highlights: narrative?.highlights ?? [],
+      paragraphs: narrative?.summary_paragraphs ?? (narrative?.lede ? [narrative.lede] : []),
+      highlights: narrative?.highlights ?? [...(narrative?.did ?? []), ...(narrative?.saw ?? [])],
+      lede: narrative?.lede || (narrative?.summary_paragraphs?.length ? narrative.summary_paragraphs.join(' ') : undefined),
+      did: narrative?.did?.length ? narrative.did : (narrative?.highlights ?? []),
+      saw: narrative?.saw ?? [],
     },
+    decisions: narrative?.decisions ?? [],
+    plan: (() => {
+      const plan = narrative?.plan;
+      // A v4 plan is shown as written, even when the author cleared it.
+      if (plan) return { now: plan.now ?? [], next: plan.next ?? [], later: plan.later ?? [] };
+      // A narrative with no plan (v3): the recommendations (or their fallbacks) become the Now column.
+      return { now: recommendations.slice(0, 3).map((action) => ({ action, owner: 'Mash IT' })), next: [], later: [] };
+    })(),
     scorecard,
     trends,
     // Only goals with a real title; ordered planned/on-track before at-risk/achieved
@@ -152,9 +344,26 @@ export function buildReportModel(args: {
     sections,
     customSections: config?.customSections ?? [],
     // Only items marked for the report, in agenda order.
-    discussion: (args.discussion ?? [])
-      .filter((d) => d.includeInReport !== false)
-      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)),
+    discussion: reportable(withLiveStatus(args.discussion ?? [], args.ticketStatuses)),
+    sinceLastQuarter:
+      config?.showSinceLastQuarter === false
+        ? []
+        : reportable(withLiveStatus(args.previousDiscussion ?? [], args.ticketStatuses))
+            .slice(0, SINCE_LAST_MAX)
+            .map((d) => {
+              const status = conversationStatus(d);
+              const detail = d.response?.trim() || (d.externalRef?.system === 'halo' ? `Ticket ${d.externalRef.id}` : undefined);
+              return { topic: d.topic, status: status === 'on_plan' ? 'in_progress' : status, ...(detail ? { detail } : {}) };
+            }),
+    protection: protectionRows(scorecard).map((row) => {
+      const prose = narrative?.protection?.find((p) => p.question === row.id);
+      return prose ? { ...row, inPlace: prose.inPlace, thisQuarter: prose.thisQuarter } : row;
+    }),
+    ...(args.revisedAt ? { revisedAt: args.revisedAt } : {}),
+    ...(() => {
+      const investment = hidden.has('spend') ? undefined : buildInvestment(args.client, current, previous, args.budget);
+      return investment ? { investment } : {};
+    })(),
     notes: args.notes,
     recommendations,
     documents: args.documents ?? [],

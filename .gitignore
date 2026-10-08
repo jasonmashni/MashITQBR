@@ -49,3 +49,7 @@ local.settings.json
 playwright-report/
 test-results/
 .cache/
+
+# Brainstorm notes and agent worktrees
+.superpowers/
+.claude/worktrees/

@@ -26,9 +26,25 @@ export interface DocExtraction {
   /** Quarter the document's content covers (YYYY-QN), '' when unclear. */
   periodHint: string;
   metrics: ExtractedMetric[];
+  /**
+   * At most five short sentences an account manager must not miss (stale
+   * backups, devices not seen, unresolved incidents, expiring agreements).
+   * Anything shaped like an email address is dropped after extraction.
+   */
+  findings: ExtractedFinding[];
   /** One-sentence note for the reviewer (what the doc is, any caveats). */
   note: string;
 }
+
+export interface ExtractedFinding {
+  text: string;
+  severity: 'info' | 'watch' | 'act';
+}
+
+const FINDING_SEVERITIES = ['info', 'watch', 'act'] as const;
+const MAX_FINDINGS = 5;
+const MAX_FINDING_WORDS = 25;
+const EMAIL_SHAPED = /\S+@\S+\.\S+/;
 
 export type DocExtractModel = (input: {
   pdfBase64: string;
@@ -38,14 +54,17 @@ export type DocExtractModel = (input: {
   knownKeys: Array<{ key: string; label: string }>;
   /** The Reports-tab bucket the user filed the doc under (Security, Backup…). */
   docCategory?: string;
+  /** True for a HIPAA covered entity: findings describe systems, never people. */
+  coveredEntity?: boolean;
 }) => Promise<DocExtraction>;
 
 const EXTRACT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  // metrics BEFORE note so the payload is generated first — if the response is
-  // ever truncated, the data survives rather than being lost to a long note.
-  required: ['vendor', 'period_hint', 'metrics', 'note'],
+  // metrics and findings BEFORE note so the payload is generated first: if the
+  // response is ever truncated, the data survives rather than being lost to a
+  // long note.
+  required: ['vendor', 'period_hint', 'metrics', 'findings', 'note'],
   properties: {
     vendor: { type: 'string' },
     period_hint: { type: 'string' },
@@ -62,6 +81,18 @@ const EXTRACT_SCHEMA = {
           unit: { type: 'string' },
           category: { type: 'string', enum: [...METRIC_CATEGORIES] },
           direction: { type: 'string', enum: ['higher_is_better', 'lower_is_better', 'neutral'] },
+        },
+      },
+    },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['text', 'severity'],
+        properties: {
+          text: { type: 'string' },
+          severity: { type: 'string', enum: [...FINDING_SEVERITIES] },
         },
       },
     },
@@ -86,13 +117,15 @@ Values:
 - direction: whether a bigger number is good (backup coverage), bad (malware found), or neutral (emails scanned).
 - category picks the report section each metric lands in: backup tools (Synology, Dropsuite, Veeam) → backup; email/EDR/SIEM/vulnerability → security; MFA/accounts → identity; tickets/SLA → operations; devices/network/hardware → infrastructure; invoices/costs → spend.
 
+findings: up to 5 short sentences (under 25 words, figures included) an account manager must not miss: failed or stale backups, devices not seen, unresolved incidents, expiring agreements. Never include a person's name or email address. When coveredEntity is true, findings describe systems, never people. severity is act when it needs action this quarter, watch when it needs watching, info otherwise. Return an empty list when nothing stands out.
+
 period_hint: the quarter the document's CONTENT covers, formatted YYYY-QN (e.g. 2026-Q2), or "" if the document doesn't say.
 note: ONE short sentence (max ~20 words) describing the document and any caveat the reviewer should know. Keep it terse.
 Return only the structured object.`;
 
 /** Build the default Claude-backed extractor (native PDF input, structured output). */
 export function createClaudeDocExtractor(client: Anthropic = new Anthropic(), modelId: string = DOC_MATCH_MODEL_ID): DocExtractModel {
-  return async ({ pdfBase64, clientName, period, knownKeys, docCategory }) => {
+  return async ({ pdfBase64, clientName, period, knownKeys, docCategory, coveredEntity }) => {
     const params = {
       model: modelId,
       // Headroom for a rich multi-vendor QBR (many metrics). Structured output
@@ -111,6 +144,7 @@ export function createClaudeDocExtractor(client: Anthropic = new Anthropic(), mo
                 `Client: ${clientName}`,
                 `Filed under quarter: ${period}`,
                 ...(docCategory ? [`Filed category: ${docCategory}`] : []),
+                `coveredEntity: ${coveredEntity === true}`,
                 `Known metric keys (reuse when the measure matches):`,
                 ...knownKeys.slice(0, 120).map((k) => `- ${k.key} (${k.label})`),
               ].join('\n'),
@@ -162,9 +196,28 @@ export function createClaudeDocExtractor(client: Anthropic = new Anthropic(), mo
       vendor: String(parsed['vendor'] ?? '').trim(),
       periodHint: /^20\d{2}-Q[1-4]$/.test(rawHint) ? rawHint : '',
       metrics,
+      findings: cleanFindings(parsed['findings']),
       note: String(parsed['note'] ?? ''),
     };
   };
+}
+
+/**
+ * Findings as stored: trimmed, a known severity (else info), nothing shaped
+ * like an email address (a name or address must never reach the report),
+ * nothing over 25 words, at most five.
+ */
+export function cleanFindings(raw: unknown): ExtractedFinding[] {
+  const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+  const out: ExtractedFinding[] = [];
+  for (const r of rows) {
+    const text = typeof r?.['text'] === 'string' ? r['text'].trim() : '';
+    // Dropped, never cut: a finding over 25 words or shaped like an address does not get stored.
+    if (!text || EMAIL_SHAPED.test(text) || text.split(/\s+/).length > MAX_FINDING_WORDS) continue;
+    const severity = (FINDING_SEVERITIES as readonly unknown[]).includes(r['severity']) ? (r['severity'] as ExtractedFinding['severity']) : 'info';
+    out.push({ text, severity });
+  }
+  return out.slice(0, MAX_FINDINGS);
 }
 
 /** Snapshot source slug for metrics imported from a document. */

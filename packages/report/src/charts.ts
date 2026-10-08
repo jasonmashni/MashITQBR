@@ -197,3 +197,55 @@ export function selectKpiTiles(m: ReportModel): KpiTile[] {
   }
   return tiles;
 }
+
+/**
+ * "Where it went": one horizontal bar per invoice category, largest first.
+ * Recurring lines are solid brand; project and support work is a lighter
+ * tint so the split reads without a legend. Returns '' with no lines.
+ */
+export function investmentBarsSvg(
+  breakdown: Array<{ label: string; amount: number; recurring: boolean }>,
+  width = 508,
+  colors: { recurring: string; variable: string } = { recurring: '#004aad', variable: '#8fb3e6' },
+): string {
+  const rows = breakdown.filter((b) => b.amount > 0).slice(0, 8);
+  if (!rows.length) return '';
+  const rowH = 24;
+  const labelW = 190;
+  const valueW = 72;
+  const barMax = width - labelW - valueW - 8;
+  const max = Math.max(...rows.map((r) => r.amount));
+  const height = rows.length * rowH + 4;
+  const body = rows
+    .map((r, i) => {
+      const y = i * rowH + 4;
+      const w = Math.max(3, (r.amount / max) * barMax);
+      const value = r.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+      return `<text x="0" y="${y + 12}" font-family="Helvetica, Arial" font-size="10" fill="${INK}">${esc(truncate(r.label, 34))}</text>
+<rect x="${labelW}" y="${y + 2}" width="${w.toFixed(1)}" height="13" rx="2" fill="${r.recurring ? colors.recurring : colors.variable}"/>
+<text x="${width}" y="${y + 12}" text-anchor="end" font-family="Helvetica, Arial" font-size="10" font-weight="bold" fill="${INK}">${esc(value)}</text>`;
+    })
+    .join('\n');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${body}</svg>`;
+}
+
+/**
+ * Plan versus actual: a track filled to `pct` of the plan, with a tick at the
+ * share of the fiscal year elapsed when given. Clamped to 0..100 for the
+ * bar; the caller prints the real figures beside it.
+ */
+export function planMeterSvg(pct: number, width = 508, opts: { elapsedPct?: number; color?: string } = {}): string {
+  const h = 22;
+  const track = 12;
+  const fill = Math.max(0, Math.min(100, pct));
+  const color = opts.color ?? (pct > 110 ? BAD : GOOD);
+  const tick =
+    opts.elapsedPct === undefined
+      ? ''
+      : `<rect x="${((Math.max(0, Math.min(100, opts.elapsedPct)) / 100) * width - 1).toFixed(1)}" y="0" width="2" height="${h}" fill="${INK}"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}">
+<rect x="0" y="${(h - track) / 2}" width="${width}" height="${track}" rx="6" fill="${SEMANTIC.unknownBg}"/>
+${fill > 0 ? `<rect x="0" y="${(h - track) / 2}" width="${((fill / 100) * width).toFixed(1)}" height="${track}" rx="6" fill="${color}"/>` : ''}
+${tick}
+</svg>`;
+}

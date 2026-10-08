@@ -1,4 +1,4 @@
-import { SEED_CLIENTS, SEED_SNAPSHOTS, findSeedSnapshot, type DiscussionItem, type ReportConfig } from '@mashit/core';
+import { SEED_CLIENTS, SEED_SNAPSHOTS, findSeedSnapshot, previousPeriod, type DiscussionItem, type ReportConfig } from '@mashit/core';
 import type { QbrDataSource } from '../dataSource.js';
 import type { NarrativeCache } from '../service.js';
 import { JsonDataStore } from './jsonStore.js';
@@ -97,17 +97,62 @@ export interface ReportInputs {
   discussion?: DiscussionItem[];
   notes?: string;
   narrativeEdits?: import('./types.js').NarrativeEdits;
-  documents?: Array<{ name: string; source: string }>;
+  /** The previous quarter's discussion, for "Since last quarter". */
+  previousDiscussion?: DiscussionItem[];
+  /** Live Halo ticket status lookup, present only when an item was pushed to Halo and a direct connection exists. */
+  lookupTicketStatus?: (id: string) => Promise<string | undefined>;
+  documents?: Array<{ name: string; source: string; findings?: import('./types.js').DocumentFinding[] }>;
+  /** Published budget plan data for the investment page (never the internal context). */
+  budget?: import('../budget.js').ReportBudget;
+  /** Set when the budget plan could not be loaded (the report says so). */
+  budgetWarning?: string;
 }
+
+export const BUDGET_LOAD_WARNING = 'Budget plan could not be loaded; plan versus actual omitted.';
 
 /** Load persisted branding/config + discussion + narrative edits for a report build. */
 export async function loadReportInputs(store: DataStore, clientId: string, period: string): Promise<ReportInputs> {
   const config = await store.getReportConfig(clientId);
   const org = await store.getReportConfig(ORG_SETTINGS_ID);
-  const d = await store.getDiscussion(clientId, period);
+  // Items stored before putDiscussion validated shapes may lack a topic; the
+  // report skips them rather than failing the build (and the lock).
+  const withTopic = (items: DiscussionItem[] | undefined) => items?.filter((i) => typeof i?.topic === 'string' && i.topic.trim().length > 0);
+  const dRaw = await store.getDiscussion(clientId, period);
+  const d = dRaw ? { ...dRaw, items: withTopic(dRaw.items) ?? [] } : undefined;
   const narrative = await store.getNarrative(clientId, period);
-  const documents = (await store.listDocuments(clientId, period)).map((doc) => ({ name: doc.name, source: doc.source }));
-  return { config, orgBrand: org?.brand, discussion: d?.items, notes: d?.notes, narrativeEdits: narrative?.edits, documents };
+  const prevRaw = await store.getDiscussion(clientId, previousPeriod(period).id).catch(() => undefined);
+  const previous = prevRaw ? { ...prevRaw, items: withTopic(prevRaw.items) ?? [] } : undefined;
+  const pushed = [...(previous?.items ?? []), ...(d?.items ?? [])].some((i) => i.externalRef?.system === 'halo');
+  // Lazy import: the Halo transport is only loaded when there is a ticket to ask about.
+  const lookupTicketStatus = pushed
+    ? await import('../service.js').then((m) => m.haloTicketStatusLookup(store, getSecretStore())).catch(() => undefined)
+    : undefined;
+  const documents = (await store.listDocuments(clientId, period)).map((doc) => ({
+    name: doc.name,
+    source: doc.source,
+    ...(doc.findings?.length ? { findings: doc.findings } : {}),
+  }));
+  // Lazy import keeps the budget module (which imports this one) out of the load cycle.
+  let budgetWarning: string | undefined;
+  const budget = await import('../budget.js')
+    .then((m) => m.budgetForPeriod(store, clientId, period))
+    .catch((e: unknown) => {
+      console.warn(`Budget plan load failed for ${clientId} ${period}: ${e instanceof Error ? e.message : String(e)}`);
+      budgetWarning = BUDGET_LOAD_WARNING;
+      return undefined;
+    });
+  return {
+    config,
+    orgBrand: org?.brand,
+    discussion: d?.items,
+    notes: d?.notes,
+    narrativeEdits: narrative?.edits,
+    documents,
+    ...(previous?.items?.length ? { previousDiscussion: previous.items } : {}),
+    ...(lookupTicketStatus ? { lookupTicketStatus } : {}),
+    ...(budget ? { budget } : {}),
+    ...(budgetWarning ? { budgetWarning } : {}),
+  };
 }
 
 /**

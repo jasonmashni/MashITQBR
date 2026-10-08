@@ -29,6 +29,14 @@ const NUMBER_RE =
   /(-?\$?\s?\d[\d,]*(?:\.\d+)?)\s*(?:(thousand|million|billion|trillion|mm|bn|[kmbt])\b)?\s*(%)?/gi;
 
 /**
+ * A capitalized month name followed by a day (and optional year) or by a
+ * year. Used only on decision deadlines (stripDeadline): in ordinary prose
+ * "In September 87 alerts were closed" must keep its 87.
+ */
+const MONTH_DATE =
+  /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(?:\d{1,2}(?:st|nd|rd|th)?(?:,?\s+(?:19|20)\d{2})?|(?:19|20)\d{2})\b/g;
+
+/**
  * Remove tokens that contain digits but are not figures, so the guardrail does
  * not flag (or accept) them as quantitative claims. Applied in order: ISO
  * dates, period labels (years 19xx/20xx only, so "Q3 2600 events" keeps 2600),
@@ -98,4 +106,12 @@ export function stripAllowedQuotes(text: string, allowedQuotes: Iterable<string>
   const known = new Set([...allowedQuotes].map((q) => q.trim().toLowerCase()).filter(Boolean));
   if (!known.size) return text;
   return text.replace(/“([^”]*)”/g, (m, inner: string) => (known.has(inner.trim().toLowerCase()) ? ' ' : m));
+}
+
+/**
+ * A decision deadline with its calendar dates removed ("Nov 15", "November
+ * 15th, 2026"), so the guardrail checks only the figures left in it.
+ */
+export function stripDeadline(text: string): string {
+  return text.replace(MONTH_DATE, ' ');
 }

@@ -1,6 +1,24 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { seedDataSource } from '../src/dataSource.js';
-import { _resetAiFailureCooldown, buildQbrReport, renderQbrHtml } from '../src/service.js';
+import { _resetAiFailureCooldown, buildQbrReport, narrativeEditsFromBody, renderQbrHtml } from '../src/service.js';
+import { v4Narrative } from './narrativeFixture.js';
+
+// Locked-quarter reads must never reach the narrative model: the handlers'
+// Claude factory is swapped for a spy so any call is visible.
+const narrativeSpy = vi.hoisted(() => ({ calls: 0 }));
+vi.mock('@mashit/narrative', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@mashit/narrative')>();
+  return {
+    ...actual,
+    createClaudeNarrativeModel: () => async () => {
+      narrativeSpy.calls++;
+      throw new Error('narrative model must not be called for a locked quarter');
+    },
+  };
+});
 
 describe('buildQbrReport (offline narrative, seed data)', () => {
   it('builds a verified report for ANP Q1 2026 with QoQ trends', async () => {
@@ -29,13 +47,11 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
       narrativeModel: async () => {
         called = true;
-        return {
+        return v4Narrative({
           headline: 'Custom headline',
-          summary_paragraphs: ['Patch compliance held at 89%.'],
-          highlights: [],
-          recommendations: [],
+          lede: 'Patch compliance held at 89%.',
           figures_referenced: [{ label: 'patch', value: '89%' }],
-        };
+        });
       },
     });
     expect(called).toBe(true);
@@ -82,13 +98,11 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     let calls = 0;
     const model = async () => {
       calls++;
-      return {
+      return v4Narrative({
         headline: 'Cached headline',
-        summary_paragraphs: ['Patch compliance held at 89%.'],
-        highlights: [],
-        recommendations: [],
+        lede: 'Patch compliance held at 89%.',
         figures_referenced: [{ label: 'patch', value: '89%' }],
-      };
+      });
     };
     const backing = new Map<string, never>();
     const cache = {
@@ -115,13 +129,7 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     };
     const model = async () => {
       calls++;
-      return {
-        headline: 'Made up',
-        summary_paragraphs: [],
-        highlights: [],
-        recommendations: [],
-        figures_referenced: [{ label: 'phantom', value: '123456' }],
-      };
+      return v4Narrative({ headline: 'Made up', figures_referenced: [{ label: 'phantom', value: '123456' }] });
     };
     const first = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', { narrativeModel: model, narrativeCache: cache });
     expect(first.narrative.verification.ok).toBe(false);
@@ -149,13 +157,7 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
 
   it('survives a broken cache (falls back to the model)', async () => {
     const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
-      narrativeModel: async () => ({
-        headline: 'Resilient',
-        summary_paragraphs: [],
-        highlights: [],
-        recommendations: [],
-        figures_referenced: [],
-      }),
+      narrativeModel: async () => v4Narrative({ headline: 'Resilient' }),
       narrativeCache: {
         get: async () => {
           throw new Error('table offline');
@@ -181,6 +183,81 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
     expect(report.model.executive.paragraphs.length).toBeGreaterThan(0); // offline draft retained
   });
 
+  it('derives the v3 fields from a v4 narrative for the report model', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () =>
+        v4Narrative({
+          lede: 'A calm quarter with one decision.',
+          did: ['Handled requests.', 'Patched devices.', 'Watched threats.'],
+          saw: ['Demand held.', 'Nothing spread.', 'Backups ran.'],
+          plan: {
+            now: [{ action: 'Fix the lab PC backup', owner: 'Mash IT' }],
+            next: [{ action: 'Quote the refresh', owner: 'Mash IT', decision: true }],
+            later: [{ action: 'Plan the budget', owner: 'ANP and Mash IT' }],
+          },
+        }),
+    });
+    expect(report.model.executive.paragraphs).toEqual(['A calm quarter with one decision.']);
+    expect(report.model.executive.highlights).toEqual(['Handled requests.', 'Patched devices.', 'Watched threats.', 'Demand held.', 'Nothing spread.', 'Backups ran.']);
+    expect(report.model.recommendations).toEqual(['Fix the lab PC backup (Mash IT)', 'Quote the refresh (Mash IT)', 'Plan the budget (ANP and Mash IT)']);
+    expect(report.narrative.verification.ok).toBe(true);
+    // Derived fields are not double-checked as separate prose.
+    expect(report.narrative.verification.checks.some((c) => c.label.startsWith('summary_paragraphs'))).toBe(false);
+  });
+
+  it('author edits to every v4 prose field win over the model', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => v4Narrative(),
+      narrativeEdits: {
+        lede: 'Edited lede.',
+        did: ['Edited one.', 'Edited two.', 'Edited three.'],
+        decisions: [{ ask: 'Edited ask' }],
+        plan: { now: [{ action: 'Edited action', owner: 'Mash IT' }], next: [], later: [] },
+      },
+    });
+    expect(report.narrative.output.did).toEqual(['Edited one.', 'Edited two.', 'Edited three.']);
+    expect(report.narrative.output.saw).toEqual(v4Narrative().saw); // untouched field keeps the model's text
+    expect(report.narrative.output.decisions).toEqual([{ ask: 'Edited ask' }]);
+    expect(report.model.executive.paragraphs).toEqual(['Edited lede.']);
+    expect(report.model.executive.highlights.slice(0, 3)).toEqual(['Edited one.', 'Edited two.', 'Edited three.']);
+    expect(report.model.recommendations).toEqual(['Edited action (Mash IT)']);
+  });
+
+  it('clearing decisions and the plan empties them on the model', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () =>
+        v4Narrative({ decisions: [{ ask: 'Approve it' }], plan: { now: [{ action: 'Do it', owner: 'Mash IT' }], next: [], later: [] } }),
+      narrativeEdits: { decisions: [], plan: { now: [], next: [], later: [] } },
+    });
+    expect(report.model.decisions).toEqual([]);
+    expect(report.model.plan).toEqual({ now: [], next: [], later: [] });
+  });
+
+  it('a pre-v4 edit maps its first paragraph to the lede and its highlights to what we did', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => v4Narrative(),
+      narrativeEdits: { summary_paragraphs: ['Old first paragraph.', 'Old second paragraph.'], highlights: ['One.', 'Two.', 'Three.'] },
+    });
+    expect(report.narrative.output.lede).toBe('Old first paragraph.');
+    expect(report.narrative.output.did).toEqual(['One.', 'Two.', 'Three.']);
+    expect(report.model.executive.lede).toBe('Old first paragraph.');
+    // A v4 edit for the same field wins over the v3 one.
+    const both = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => v4Narrative(),
+      narrativeEdits: { lede: 'New lede.', summary_paragraphs: ['Old.'] },
+    });
+    expect(both.narrative.output.lede).toBe('New lede.');
+  });
+
+  it('a limit breach in an edit is a verification failure with a warning', async () => {
+    const report = await buildQbrReport(seedDataSource, 'mp', '2026-Q1', {
+      narrativeModel: async () => v4Narrative(),
+      narrativeEdits: { did: ['Only one bullet.'] },
+    });
+    expect(report.narrative.verification.ok).toBe(false);
+    expect(report.warnings.join(' ')).toContain('did: 1 item (3 to 4)');
+  });
+
   it('excludedMetrics vanish from sections, trends, and the AI input', async () => {
     const base = await buildQbrReport(seedDataSource, 'anp', '2026-Q1');
     const someKey = base.model.sections[0]!.rows[0]!.metric.key;
@@ -190,7 +267,7 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
       config: { clientId: 'anp', excludedMetrics: [someKey] },
       narrativeModel: async (messages) => {
         modelSawExcluded = messages.some((m) => m.content.includes(someKey));
-        return { headline: 'X', summary_paragraphs: [], highlights: [], recommendations: [], figures_referenced: [] };
+        return v4Narrative({ headline: 'X' });
       },
     });
     const keys = report.model.sections.flatMap((s) => s.rows.map((r) => r.metric.key));
@@ -221,6 +298,75 @@ describe('buildQbrReport (offline narrative, seed data)', () => {
   });
 });
 
+describe('since last quarter in the service', () => {
+  const previousDiscussion = [
+    { id: 'p1', topic: 'Clock-in tablet', disposition: 'create_ticket' as const, status: 'discussed' as const, externalRef: { system: 'halo' as const, id: '41882', status: 'Open' } },
+    { id: 'p2', topic: 'Studio 5000 access', status: 'planned' as const },
+  ];
+
+  it('looks up live Halo statuses for pushed items and passes revisedAt', async () => {
+    const asked: string[] = [];
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      previousDiscussion,
+      lookupTicketStatus: async (id) => {
+        asked.push(id);
+        return 'Closed';
+      },
+      revisedAt: '2026-10-09',
+    });
+    expect(asked).toEqual(['41882']);
+    expect(report.model.sinceLastQuarter.map((r) => [r.topic, r.status])).toEqual([
+      ['Clock-in tablet', 'done'],
+      ['Studio 5000 access', 'waiting'],
+    ]);
+    expect(report.model.revisedAt).toBe('2026-10-09');
+  });
+
+  it('falls back to the stored status when the lookup fails', async () => {
+    const report = await buildQbrReport(seedDataSource, 'anp', '2026-Q1', {
+      previousDiscussion,
+      lookupTicketStatus: async () => {
+        throw new Error('Halo down');
+      },
+    });
+    expect(report.model.sinceLastQuarter[0]!.status).toBe('in_progress');
+  });
+});
+
+describe('narrativeEditsFromBody', () => {
+  it('keeps every prose field and drops blanks', () => {
+    const edits = narrativeEditsFromBody({
+      headline: '  New headline ',
+      lede: '',
+      did: ['One', ' ', 'Two'],
+      saw: 'not an array',
+      decisions: [{ ask: 'Approve', why: ' ', by: 'Nov 15' }, { ask: '' }],
+      plan: { now: [{ action: 'Do it', owner: 'Mash IT', decision: true }, { action: '', owner: 'x' }], next: [], later: [] },
+      protection: [{ question: 'get_in', inPlace: 'MFA', thisQuarter: 'Fine' }, { question: 'nope', inPlace: 'x', thisQuarter: 'y' }],
+      recommendations: ['Legacy'],
+    });
+    expect(edits).toEqual({
+      headline: 'New headline',
+      did: ['One', 'Two'],
+      decisions: [{ ask: 'Approve', by: 'Nov 15' }],
+      plan: { now: [{ action: 'Do it', owner: 'Mash IT', decision: true }], next: [], later: [] },
+      protection: [{ question: 'get_in', inPlace: 'MFA', thisQuarter: 'Fine' }],
+      recommendations: ['Legacy'],
+    });
+  });
+
+  it('returns undefined when nothing was edited', () => {
+    expect(narrativeEditsFromBody({ headline: ' ', did: [], lede: '' })).toBeUndefined();
+  });
+
+  it('keeps an emptied decisions list and plan so the author can clear them', () => {
+    expect(narrativeEditsFromBody({ decisions: [], plan: { now: [], next: [], later: [] } })).toEqual({
+      decisions: [],
+      plan: { now: [], next: [], later: [] },
+    });
+  });
+});
+
 describe('dedupeByKey (PDF imports must not double-count synced metrics)', () => {
   it('keeps the integration row when a pdf:* import collides on key', async () => {
     const { dedupeByKey } = await import('../src/service.js');
@@ -244,5 +390,241 @@ describe('dedupeByKey (PDF imports must not double-count synced metrics)', () =>
       { key: 'b', label: 'B', value: 2, source: 'ninja', category: 'security' },
     ] as never[];
     expect(dedupeByKey(metrics)).toBe(metrics);
+  });
+});
+
+describe('locked quarters serve the stored package', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'qbr-served-'));
+    process.env['QBR_DATA_DIR'] = dir;
+    delete process.env['AzureWebJobsStorage'];
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env['QBR_DATA_DIR'];
+    delete process.env['ANTHROPIC_API_KEY'];
+  });
+
+  const storedModel = {
+    client: { name: 'Client One' },
+    period: { id: '2026-Q2', label: 'Q2 2026' },
+    brand: { orgName: 'Mash IT' },
+    executive: { headline: 'Stored headline', paragraphs: ['Stored paragraph.'], highlights: [] },
+    goals: [],
+  };
+
+  async function lockWithPackage(period: string) {
+    const { getDataStore, getDocStore } = await import('../src/store/index.js');
+    const { storePackage } = await import('../src/packages.js');
+    const store = getDataStore();
+    const seed = (await import('@mashit/core')).SEED_SNAPSHOTS.find((s) => s.clientId === 'anp')!;
+    await store.upsertClient({ id: 'c1', name: 'Client One' });
+    await store.putSnapshot({ ...seed, clientId: 'c1', period });
+    const pkg = await storePackage(store, getDocStore(), {
+      clientId: 'c1',
+      period,
+      stage: 'preread',
+      createdBy: 'jason',
+      artifacts: {
+        model: storedModel as never,
+        verification: true,
+        warnings: ['stored warning'],
+        pdf: Buffer.from('%PDF-stored'),
+        pptx: Buffer.from('PK-stored'),
+        html: '<!doctype html><p>stored</p>',
+      },
+    });
+    await store.upsertQbr({
+      clientId: 'c1',
+      period,
+      status: 'narrative_approved',
+      packageSentAt: '2026-06-20T00:00:00Z',
+      locks: { preread: { at: '2026-06-20T00:00:00Z', by: 'jason', version: pkg.version } },
+      updatedAt: new Date().toISOString(),
+    });
+    return pkg;
+  }
+
+  it('getQbr returns the stored model and never calls the narrative model', async () => {
+    await lockWithPackage('2026-Q2');
+    process.env['ANTHROPIC_API_KEY'] = 'test-key';
+    narrativeSpy.calls = 0;
+    const h = await import('../src/handlers.js');
+    const res = await h.getQbr('c1', '2026-Q2', '1');
+    expect(res.status).toBe(200);
+    const json = res.json as { model: { executive: { headline: string } }; warnings: string[]; package: { version: number; stage: string } };
+    expect(json.model.executive.headline).toBe('Stored headline');
+    expect(json.warnings).toEqual(['stored warning']);
+    expect(json.package.version).toBe(1);
+    expect(json.package.stage).toBe('preread');
+
+    const pdf = await h.getReportPdf('c1', '2026-Q2', '1');
+    expect(pdf.pdf?.toString()).toBe('%PDF-stored');
+    expect(pdf.filename).toBe('Mash IT QBR - Client One - Q2 2026.pdf');
+    expect((await h.getReportDeck('c1', '2026-Q2', '1')).pptx?.toString()).toBe('PK-stored');
+    expect((await h.getReportHtml('c1', '2026-Q2', '1')).html).toBe('<!doctype html><p>stored</p>');
+    const eml = await h.getEmailDraft('c1', '2026-Q2', '1');
+    expect(eml.status).toBe(200);
+    expect(eml.file?.bytes.toString()).toContain(Buffer.from('%PDF-stored').toString('base64'));
+    expect(narrativeSpy.calls).toBe(0);
+  });
+
+  it('answers 503 when the lock exists but the stored blob is missing', async () => {
+    const pkg = await lockWithPackage('2026-Q3');
+    const { getDocStore } = await import('../src/store/index.js');
+    await getDocStore().delete(pkg.files.pdf);
+    const h = await import('../src/handlers.js');
+    expect(await h.getReportPdf('c1', '2026-Q3', null)).toEqual({ status: 503, json: { error: 'Stored package missing; reopen to rebuild.' } });
+  });
+
+  it('later edits to goals and branding never change a locked quarter', async () => {
+    await lockWithPackage('2026-Q4');
+    const h = await import('../src/handlers.js');
+    const before = (await h.getQbr('c1', '2026-Q4', null)).json as { model: unknown };
+    expect((await h.putClientGoals('c1', { goals: [{ title: 'Open a second clinic' }] })).status).toBe(200);
+    expect((await h.putConfig('c1', { brand: { name: 'Renamed Brand' } })).status).toBe(200);
+    const after = (await h.getQbr('c1', '2026-Q4', null)).json as { model: unknown };
+    expect(after.model).toEqual(before.model);
+    expect(after.model).toEqual(storedModel);
+  });
+});
+
+describe('investment page data from the published budget plan', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'qbr-budget-report-'));
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  async function setup() {
+    const { JsonDataStore, storeDataSource, loadReportInputs } = await import('../src/store/index.js');
+    const { SEED_SNAPSHOTS } = await import('@mashit/core');
+    const store = new JsonDataStore(dir);
+    const seed = SEED_SNAPSHOTS.find((s) => s.clientId === 'anp')!;
+    await store.upsertClient({ id: 'fy1', name: 'Fiscal One', fiscalYearStartMonth: 1 });
+    const invoiced: Record<string, number> = { '2026-Q1': 30000, '2026-Q2': 21000, '2026-Q3': 25000 };
+    for (const [period, value] of Object.entries(invoiced)) {
+      const metrics = seed.metrics.filter((m) => m.key !== 'finance.quarter_invoiced' && m.key !== 'assets.warranty_expired');
+      metrics.push({ key: 'assets.warranty_expired', label: 'Devices out of warranty', value: 4, source: 'ninja', category: 'infrastructure' });
+      metrics.push({ key: 'finance.quarter_invoiced', label: 'Invoiced this quarter', value, source: 'halo', category: 'spend' });
+      await store.putSnapshot({ ...seed, clientId: 'fy1', period, metrics });
+    }
+    const base = {
+      clientId: 'fy1',
+      assumptions: ['Two hires.'],
+      movers: ['A second site.'],
+      caveats: [],
+      status: 'published' as const,
+      createdAt: 'x',
+      updatedAt: 'x',
+      updatedBy: 'jason',
+    };
+    await store.putBudgetPlan({
+      ...base,
+      fiscalLabel: 2026,
+      answers: { workstationUnitCost: 1500 },
+      lines: [{ category: 'managed_services', low: 118000, expected: 118000, high: 118000, basis: [{ source: 'halo', note: 'MRR' }] }],
+      totals: { low: 118000, expected: 118000, high: 118000 },
+      publishedPeriod: '2025-Q3',
+      published: {
+        at: 'x',
+        period: '2025-Q3',
+        lines: [{ category: 'managed_services', low: 118000, expected: 118000, high: 118000, basis: [{ source: 'halo', note: 'MRR' }] }],
+        totals: { low: 118000, expected: 118000, high: 118000 },
+        assumptions: [],
+        movers: [],
+        caveats: [],
+        unitCost: 1500,
+      },
+    });
+    await store.putBudgetPlan({
+      ...base,
+      fiscalLabel: 2027,
+      answers: { workstationUnitCost: 1650 },
+      lines: [{ category: 'managed_services', low: 65520, expected: 65520, high: 69480, basis: [{ source: 'halo', note: 'MRR' }] }],
+      totals: { low: 65520, expected: 65520, high: 69480 },
+      publishedPeriod: '2026-Q3',
+      published: {
+        at: 'x',
+        period: '2026-Q3',
+        lines: [{ category: 'managed_services', low: 65520, expected: 65520, high: 69480, basis: [{ source: 'halo', note: 'MRR' }] }],
+        totals: { low: 65520, expected: 65520, high: 69480 },
+        assumptions: ['Two hires.'],
+        movers: ['A second site.'],
+        caveats: [],
+        unitCost: 1650,
+      },
+      context: { researchedAt: 'x', sourced: true, items: [{ title: 'Secret benchmark title', insight: 'i', askClient: 'q' }] },
+    });
+    const build = async (period: string) =>
+      buildQbrReport(storeDataSource(store), 'fy1', period, { ...(await loadReportInputs(store, 'fy1', period)) });
+    return { store, build };
+  }
+
+  it('attaches the outlook only in the planning quarter', async () => {
+    const { build } = await setup();
+    const q3 = await build('2026-Q3');
+    expect(q3.model.investment?.outlook?.fiscalLabel).toBe(2027);
+    expect(q3.model.investment?.outlook?.totals.expected).toBe(65520);
+    expect(JSON.stringify(q3.model)).not.toContain('Secret benchmark title');
+    const q2 = await build('2026-Q2');
+    expect(q2.model.investment?.outlook).toBeUndefined();
+  });
+
+  it('sums plan versus actual over the fiscal periods seen so far', async () => {
+    const { build } = await setup();
+    const q2 = (await build('2026-Q2')).model.investment!.planVsActual!;
+    expect(q2).toMatchObject({ fiscalYearLabel: 'FY2026', planned: 118000, spent: 51000, pct: 43, elapsedPct: 50 });
+    expect(q2.note.startsWith('Under plan')).toBe(true);
+    const q3 = (await build('2026-Q3')).model.investment!.planVsActual!;
+    expect(q3.spent).toBe(76000);
+    expect(q3.elapsedPct).toBe(75);
+  });
+
+  it('prices the warranty refresh at the planning unit cost', async () => {
+    const { build } = await setup();
+    const q3 = await build('2026-Q3');
+    expect(q3.model.investment?.comingUp.join(' ')).toContain('$1,650 per device');
+    const q2 = await build('2026-Q2');
+    expect(q2.model.investment?.comingUp.join(' ')).toContain('$1,500 per device');
+    expect(q2.model.investment?.comingUp).toContain('At the Q3 review in October we will plan the 2027 budget together.');
+  });
+
+  it('reads only the published snapshot, never the working copy', async () => {
+    const { store, build } = await setup();
+    for (const fy of [2026, 2027]) {
+      const plan = (await store.getBudgetPlan('fy1', fy))!;
+      await store.putBudgetPlan({ ...plan, totals: { low: 1, expected: 2, high: 3 }, answers: { workstationUnitCost: 9999 } });
+    }
+    const q3 = (await build('2026-Q3')).model.investment!;
+    expect(q3.outlook?.totals.expected).toBe(65520);
+    expect(q3.planVsActual?.planned).toBe(118000);
+    expect(q3.comingUp.join(' ')).toContain('$1,650 per device');
+  });
+
+  it('warns instead of failing silently when the budget plan cannot be loaded', async () => {
+    const { store } = await setup();
+    const { loadReportInputs, storeDataSource, BUDGET_LOAD_WARNING } = await import('../src/store/index.js');
+    const broken = Object.assign(Object.create(Object.getPrototypeOf(store)), store, {
+      getBudgetPlan: async () => {
+        throw new Error('table unavailable');
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const inputs = await loadReportInputs(broken, 'fy1', '2026-Q2');
+    expect(inputs.budget).toBeUndefined();
+    expect(inputs.budgetWarning).toBe('Budget plan could not be loaded; plan versus actual omitted.');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+    const report = await buildQbrReport(storeDataSource(store), 'fy1', '2026-Q2', inputs);
+    expect(report.warnings).toContain(BUDGET_LOAD_WARNING);
+  });
+
+  it('leaves drafts off the report', async () => {
+    const { store, build } = await setup();
+    const plan = (await store.getBudgetPlan('fy1', 2027))!;
+    await store.putBudgetPlan({ ...plan, status: 'draft' });
+    expect((await build('2026-Q3')).model.investment?.outlook).toBeUndefined();
   });
 });

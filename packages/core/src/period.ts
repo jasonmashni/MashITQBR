@@ -86,3 +86,79 @@ export function lastPeriods(currentId: string, n: number): string[] {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Fiscal years. A fiscal year is labelled by the calendar year in which it
+// ends (a July 2026 start is FY2027; a January start is the same year). The
+// planning review is the QBR held in the quarter before the fiscal year
+// starts, which reviews the period two quarters before the start quarter.
+// ---------------------------------------------------------------------------
+
+export interface FiscalYear {
+  label: number;
+  startPeriod: string;
+  endPeriod: string;
+  startMonth: number;
+}
+
+/** Month 1..12; anything else (including undefined) falls back to January. */
+function normalizeStartMonth(startMonth: number | undefined): number {
+  return typeof startMonth === 'number' && Number.isInteger(startMonth) && startMonth >= 1 && startMonth <= 12
+    ? startMonth
+    : 1;
+}
+
+const startQuarterOf = (startMonth: number): Quarter => Math.ceil(startMonth / 3) as Quarter;
+
+export function fiscalYearOf(periodId: string, startMonth = 1): FiscalYear {
+  const month = normalizeStartMonth(startMonth);
+  const p = parsePeriod(periodId);
+  const qS = startQuarterOf(month);
+  // The fiscal year containing p starts at qS in p.year when p.quarter >= qS, else in p.year - 1.
+  const startYear = p.quarter >= qS ? p.year : p.year - 1;
+  const endsNextYear = qS !== 1;
+  const label = endsNextYear ? startYear + 1 : startYear;
+  const endQuarter = qS === 1 ? 4 : qS - 1;
+  return {
+    label,
+    startPeriod: `${startYear}-Q${qS}`,
+    endPeriod: `${label}-Q${endQuarter}`,
+    startMonth: month,
+  };
+}
+
+/** The four period ids in the fiscal year, oldest first. */
+export function fiscalPeriods(fiscalLabel: number, startMonth = 1): string[] {
+  const qS = startQuarterOf(normalizeStartMonth(startMonth));
+  let year = qS === 1 ? fiscalLabel : fiscalLabel - 1;
+  let q: number = qS;
+  const out: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    out.push(`${year}-Q${q}`);
+    q += 1;
+    if (q === 5) {
+      q = 1;
+      year += 1;
+    }
+  }
+  return out;
+}
+
+/** The period reviewed in the QBR held in the quarter before the fiscal year starts. */
+export function planningPeriodFor(fiscalLabel: number, startMonth = 1): string {
+  const qS = startQuarterOf(normalizeStartMonth(startMonth));
+  let year = qS === 1 ? fiscalLabel : fiscalLabel - 1;
+  let q = qS - 2;
+  while (q < 1) {
+    q += 4;
+    year -= 1;
+  }
+  return `${year}-Q${q}`;
+}
+
+/** True when this period's review is where next fiscal year's budget gets planned. */
+export function isPlanningPeriod(periodId: string, startMonth = 1): boolean {
+  const p = parsePeriod(periodId);
+  const thisFy = fiscalYearOf(p.id, startMonth);
+  return planningPeriodFor(thisFy.label + 1, startMonth) === p.id;
+}

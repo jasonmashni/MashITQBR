@@ -23,9 +23,9 @@ describe('client goals in the report', () => {
     expect(model.goals.map((g) => g.id)).toEqual(['g1', 'g2']);
   });
 
-  it('renders a Strategic Goals & IT Alignment section with titles, alignment and status', () => {
+  it('renders a strategic goals section with titles, alignment and status', () => {
     const html = renderReportHtml(model);
-    expect(html).toContain('Strategic Goals &amp; IT Alignment');
+    expect(html).toContain('Strategic goals and IT alignment');
     expect(html).toContain('Open two new clinics by year-end');
     expect(html).toContain('We are sizing network + endpoint rollout for each site.');
     expect(html).toContain('On track');
@@ -38,12 +38,13 @@ describe('client goals in the report', () => {
   it('omits the section entirely when a client has no goals', () => {
     const noGoals = buildReportModel({ client: baseClient, current: findSeedSnapshot('anp', '2026-Q1')! });
     expect(noGoals.goals).toEqual([]);
-    expect(renderReportHtml(noGoals)).not.toContain('Strategic Goals');
+    expect(renderReportHtml(noGoals)).not.toContain('Strategic goals');
   });
 
   it('the PDF definition and deck render without throwing when goals are present', async () => {
     const def = buildPdfDefinition(model);
     expect(Array.isArray(def['content'])).toBe(true);
+    expect(JSON.stringify(def)).toContain('Strategic goals and IT alignment');
     const deck = await renderDeck(model);
     expect(deck.length).toBeGreaterThan(1000); // a non-trivial pptx buffer
   });
