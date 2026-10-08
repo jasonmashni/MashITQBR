@@ -609,11 +609,17 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   const storedById = new Map(stored.map((i) => [i.id, i]));
   const hipaa = (await storeDataSource(store).getClient(clientId))?.hipaa === true;
   // HIPAA clients: an item that still reads as it arrived from Halo, a
-  // suggestion or the inbox stays off the report. The stored sourceTopic wins
-  // over the body so dropping it does not bypass the rule.
+  // suggestion or the inbox stays off the report. For an item already stored,
+  // its source, sourceRef and sourceTopic win over the body, so dropping them
+  // or changing the source to manual does not bypass the rule.
   const items: DiscussionItem[] = (raw as DiscussionItem[]).map((i) => {
-    const sourceTopic = storedById.get(i.id)?.sourceTopic ?? i.sourceTopic;
-    const item = sourceTopic !== undefined ? { ...i, sourceTopic } : i;
+    const prior = storedById.get(i.id);
+    const { source: _s, sourceRef: _r, ...rest } = i;
+    const origin = prior
+      ? { ...rest, ...(prior.source !== undefined ? { source: prior.source } : {}), ...(prior.sourceRef !== undefined ? { sourceRef: prior.sourceRef } : {}) }
+      : i;
+    const sourceTopic = prior?.sourceTopic ?? i.sourceTopic;
+    const item = sourceTopic !== undefined ? { ...origin, sourceTopic } : origin;
     return hipaaTopicUnrewritten(item, hipaa) && item.includeInReport !== false ? { ...item, includeInReport: false } : item;
   });
   // knownIds = the ids the client loaded. A stored item in neither the body
