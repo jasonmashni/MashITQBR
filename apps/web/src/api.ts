@@ -1,7 +1,11 @@
 // Thin typed fetch wrapper over the QBR API. All calls are relative to the
 // serving origin (the Function App also serves this SPA; Vite proxies /api in dev).
+import { notifications } from '@mantine/notifications';
+import type { BudgetKnownFact, BudgetPlanVsActual } from './pages/workspace/budget.js';
 import type {
   AuditEvent,
+  BudgetAnswers,
+  BudgetPlanRecord,
   BookingInfo,
   BookingSettings,
   Client,
@@ -13,11 +17,14 @@ import type {
   DocumentInfo,
   HaloMeta,
   Me,
+  NarrativeEdits,
   MetricRow,
   NotificationInfo,
   Opportunity,
   Overview,
+  PackageStage,
   PeriodInfo,
+  SuggestedConversationsResponse,
   QbrMeta,
   QbrResponse,
   QbrStatus,
@@ -26,11 +33,25 @@ import type {
   SystemInfo,
 } from './types.js';
 
-/** Thrown for a non-2xx response; `status` lets callers tell 401 from 409 from 500. */
+/**
+ * A status change that reaches lock 2 can save while the final package fails
+ * to store; the API says so in `warning`, and every caller shows it.
+ */
+function showLockWarning<T>(r: T): T {
+  const warning = (r as { warning?: unknown } | null)?.warning;
+  if (typeof warning === 'string' && warning) notifications.show({ color: 'watch', title: 'Package warning', message: warning });
+  return r;
+}
+
+/**
+ * Thrown for a non-2xx response; `status` lets callers tell 401 from 409 from
+ * 500. `warnings` carries the build warnings a refused lock sends back.
+ */
 export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly warnings?: string[],
   ) {
     super(message);
     this.name = 'ApiError';
@@ -41,14 +62,16 @@ async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     let message = `${res.status} ${res.statusText}`;
+    let warnings: string[] | undefined;
     try {
-      const body = JSON.parse(text) as { error?: string };
+      const body = JSON.parse(text) as { error?: string; warnings?: unknown };
       if (body.error) message = body.error;
+      if (Array.isArray(body.warnings)) warnings = body.warnings.filter((w): w is string => typeof w === 'string');
     } catch {
       // A redirect to a login page, or a host error page: keep the status text.
       if (res.status === 401 || res.redirected) message = 'Not signed in';
     }
-    throw new ApiError(message, res.status);
+    throw new ApiError(message, res.status, warnings);
   }
   return res.json() as Promise<T>;
 }
@@ -149,12 +172,12 @@ export const api = {
   // Narrative editor
   getNarrative: (clientId: string, period: string) =>
     send('GET', `/api/clients/${clientId}/qbr/${period}/narrative`).then(
-      json<{ edits: { headline?: string; summary_paragraphs?: string[]; highlights?: string[]; recommendations?: string[]; editedBy: string; editedAt: string } | null; hasCached: boolean }>,
+      json<{ edits: (NarrativeEdits & { editedBy: string; editedAt: string }) | null; hasCached: boolean }>,
     ),
   putNarrative: (
     clientId: string,
     period: string,
-    edits: { headline?: string; summary_paragraphs?: string[]; highlights?: string[]; recommendations?: string[] },
+    edits: NarrativeEdits,
   ) => send('PUT', `/api/clients/${clientId}/qbr/${period}/narrative`, edits).then(json<{ edits: unknown }>),
   regenerateNarrative: (clientId: string, period: string) =>
     send('POST', `/api/clients/${clientId}/qbr/${period}/narrative/regenerate`).then(json<{ cleared: boolean }>),
@@ -173,8 +196,9 @@ export const api = {
   putConfig: (clientId: string, config: ReportConfig) => send('PUT', `/api/clients/${clientId}/config`, config).then(json<ReportConfig>),
   getDiscussion: (clientId: string, period: string) =>
     send('GET', `/api/clients/${clientId}/qbr/${period}/discussion`).then(json<Discussion>),
-  putDiscussion: (clientId: string, period: string, disc: Discussion) =>
-    send('PUT', `/api/clients/${clientId}/qbr/${period}/discussion`, disc).then(json<Discussion>),
+  /** knownIds: every item id this client has seen, so items added elsewhere (the inbox) survive the save. */
+  putDiscussion: (clientId: string, period: string, disc: Discussion, knownIds?: string[]) =>
+    send('PUT', `/api/clients/${clientId}/qbr/${period}/discussion`, knownIds ? { ...disc, knownIds } : disc).then(json<Discussion>),
 
   // Attached documents (vendor reports + uploads)
   listDocuments: (clientId: string, period: string) =>
@@ -192,13 +216,21 @@ export const api = {
    * needs `force: true` and a reason, and is written to the audit log.
    */
   putStatus: (clientId: string, period: string, body: { status: QbrStatus; force?: boolean; reason?: string }) =>
-    send('PUT', `/api/clients/${clientId}/qbr/${period}/status`, body).then(json<QbrMeta>),
+    send('PUT', `/api/clients/${clientId}/qbr/${period}/status`, body).then(json<QbrMeta & { warning?: string }>).then(showLockWarning),
   /** Record that the report package went out (the explicit "Send package" step). */
   markPackageSent: (clientId: string, period: string) =>
-    send('POST', `/api/clients/${clientId}/qbr/${period}/package/sent`).then(json<QbrMeta>),
-  /** Client skipped the meeting: record the disposition and close the quarter as completed. */
+    send('POST', `/api/clients/${clientId}/qbr/${period}/package/sent`).then(json<QbrMeta & { warning?: string }>).then(showLockWarning),
+  /** Lock 2 on demand: store the final package and make the quarter read-only. */
+  finalize: (clientId: string, period: string) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/finalize`).then(json<QbrMeta & { warning?: string }>).then(showLockWarning),
+  /** Audited reopen: `final` reopens the agenda and decisions, `preread` reopens everything. */
+  reopen: (clientId: string, period: string, body: { stage: PackageStage; reason: string }) =>
+    send('POST', `/api/clients/${clientId}/qbr/${period}/reopen`, body).then(json<QbrMeta>),
+  /** Client skipped the meeting: record the disposition and store the final package. */
   dispositionSkipped: (clientId: string, period: string, reason?: string) =>
-    send('POST', `/api/clients/${clientId}/qbr/${period}/disposition`, reason ? { reason } : {}).then(json<unknown>),
+    send('POST', `/api/clients/${clientId}/qbr/${period}/disposition`, reason ? { reason } : {})
+      .then(json<QbrMeta & { warning?: string }>)
+      .then(showLockWarning),
   putSchedule: (clientId: string, period: string, body: { scheduledAt?: string; joinUrl?: string }) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/schedule`, body).then(json<unknown>),
   // Report repository (all quarters) + per-document updates
@@ -223,6 +255,22 @@ export const api = {
     send('DELETE', `/api/clients/${clientId}/qbr/${period}/metrics/import?source=${encodeURIComponent(source)}`).then(
       json<{ removed: number; source: string; period: string }>,
     ),
+
+  // Budget planner (internal; the published outlook reaches the report)
+  listBudgets: (clientId: string) =>
+    send('GET', `/api/clients/${clientId}/budget`).then(
+      json<{ plans: BudgetPlanRecord[]; fiscalYearStartMonth: number; known: BudgetKnownFact[]; knownAsOf?: string }>,
+    ),
+  getBudget: (clientId: string, fy: number) =>
+    send('GET', `/api/clients/${clientId}/budget/${fy}`).then(json<{ plan: BudgetPlanRecord; planVsActual?: BudgetPlanVsActual }>),
+  putBudget: (clientId: string, fy: number, body: { answers?: BudgetAnswers; assumptions?: string[]; movers?: string[] }) =>
+    send('PUT', `/api/clients/${clientId}/budget/${fy}`, body).then(json<{ plan: BudgetPlanRecord }>),
+  recomputeBudget: (clientId: string, fy: number) =>
+    send('POST', `/api/clients/${clientId}/budget/${fy}/outlook`).then(json<{ plan: BudgetPlanRecord }>),
+  researchBudget: (clientId: string, fy: number) =>
+    send('POST', `/api/clients/${clientId}/budget/${fy}/context`).then(json<{ available: boolean; note?: string; plan?: BudgetPlanRecord }>),
+  publishBudget: (clientId: string, fy: number) =>
+    send('POST', `/api/clients/${clientId}/budget/${fy}/publish`).then(json<{ plan: BudgetPlanRecord }>),
 
   // Opportunity board
   listOpportunities: (clientId: string) => send('GET', `/api/clients/${clientId}/opportunities`).then(json<{ opportunities: Opportunity[] }>),
@@ -301,6 +349,8 @@ export const api = {
     send('POST', `/api/clients/${clientId}/qbr/${period}/agenda`, { exclude }).then(
       json<{ suggestions: Array<{ topic: string; rationale: string }>; source: 'ai' | 'offline'; note?: string }>,
     ),
+  suggestedConversations: (clientId: string, period: string) =>
+    send('GET', `/api/clients/${clientId}/qbr/${period}/conversations/suggested`).then(json<SuggestedConversationsResponse>),
 
   // In-portal notifications (bell)
   notifications: (limit = 30) =>

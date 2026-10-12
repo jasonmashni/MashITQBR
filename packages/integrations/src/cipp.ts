@@ -1,4 +1,4 @@
-import type { MetricValue } from '@mashit/core';
+import { plural, type MetricValue } from '@mashit/core';
 import { metric, type CollectorContext, type CollectResult, type HttpTransport } from './types.js';
 import { toArray } from './util.js';
 
@@ -219,18 +219,44 @@ const licenseDate = (r: Json): string | undefined => {
 };
 
 /**
+ * Free, trial and developer plans Microsoft hands out in bulk. Part numbers are
+ * taken from Microsoft's "Product names and service plan identifiers for
+ * licensing" reference; each entry names its product so the list is auditable.
+ * Anything not listed is still caught by the bulk-unit heuristic below.
+ */
+const FREE_SKU_PART_NUMBERS = new Set<string>([
+  'POWERAPPS_DEV', // Microsoft Power Apps for Developer
+  'FLOW_FREE', // Microsoft Power Automate Free
+  'POWER_BI_STANDARD', // Power BI (free)
+  'TEAMS_EXPLORATORY', // Microsoft Teams Exploratory
+  'RIGHTSMANAGEMENT_ADHOC', // Rights Management Adhoc
+  'MICROSOFT_BUSINESS_CENTER', // Microsoft Business Center
+  'WINDOWS_STORE', // Windows Store for Business
+  'CCIBOTS_PRIVPREV_VIRAL', // Power Virtual Agents viral trial
+  'POWERAPPS_VIRAL', // Microsoft Power Apps Plan 2 Trial
+  'DYN365_ENTERPRISE_P1_IW', // Dynamics 365 P1 trial for information workers
+]);
+const BULK_FREE_UNITS = 1000;
+const BULK_FREE_ASSIGNED_RATIO = 0.05;
+
+const partNumberOf = (r: Json): string => String(r['SkuPartNumber'] ?? r['skuPartNumber'] ?? '').trim().toUpperCase();
+const isFreePlan = (r: Json, purchased: number, assigned: number): boolean =>
+  FREE_SKU_PART_NUMBERS.has(partNumberOf(r)) || (purchased >= BULK_FREE_UNITS && assigned / purchased < BULK_FREE_ASSIGNED_RATIO);
+
+/**
  * Microsoft 365 licensing across SKUs (tolerant field names). Emits the totals
  * an exec cares about — purchased, assigned, available (unused) — with a
  * per-SKU drill-down (name, counts, and renewal/expiry when CIPP surfaces it),
  * plus a renewal-soon count and the next renewal date when dates are present.
  */
-export function normalizeCippLicenses(rows: Json[], now: number = Date.now()): MetricValue[] {
+export function normalizeCippLicenses(rows: Json[], now: number = Date.now()): { metrics: MetricValue[]; warnings: string[] } {
   let used = 0;
   let total = 0;
   let recognized = 0;
   let expiringSoon = 0;
   let next: { date: string; ms: number } | undefined;
   const skuRows: Array<Record<string, string | number>> = [];
+  const uncounted: string[] = [];
 
   for (const r of rows) {
     const u = asNum(r['CountUsed'] ?? r['countUsed'] ?? r['consumedUnits']);
@@ -241,11 +267,22 @@ export function normalizeCippLicenses(rows: Json[], now: number = Date.now()): M
     const assigned = u ?? 0;
     const purchased = t !== undefined ? t : assigned + (a ?? 0);
     const available = a !== undefined ? a : Math.max(0, purchased - assigned);
-    used += assigned;
-    total += purchased;
+    const counted = !isFreePlan(r, purchased, assigned);
+    if (counted) {
+      used += assigned;
+      total += purchased;
+    } else {
+      uncounted.push(skuNameOf(r));
+    }
 
-    const row: Record<string, string | number> = { license: skuNameOf(r), purchased, assigned, available };
-    const date = licenseDate(r);
+    const row: Record<string, string | number> = {
+      license: skuNameOf(r),
+      purchased,
+      assigned,
+      available,
+      counted: counted ? 'yes' : 'no, free or developer plan',
+    };
+    const date = counted ? licenseDate(r) : undefined;
     if (date) {
       row['renews'] = date.slice(0, 10);
       const ms = Date.parse(date);
@@ -256,16 +293,16 @@ export function normalizeCippLicenses(rows: Json[], now: number = Date.now()): M
     }
     skuRows.push(row);
   }
-  if (recognized === 0) return [];
+  if (recognized === 0) return { metrics: [], warnings: [] };
 
   const available = Math.max(0, total - used);
   const out: MetricValue[] = [
-    { ...metric('licenses.total', 'Licenses purchased', total, { category: 'spend', source: 'cipp', unit: 'count' }), details: skuRows },
+    { ...metric('licenses.total', 'Paid license seats', total, { category: 'spend', source: 'cipp', unit: 'count' }), details: skuRows },
     metric('licenses.assigned', 'Licenses assigned', used, { category: 'spend', source: 'cipp', unit: 'count' }),
   ];
   // "Available" (paid but unassigned) — kept under the historical key for trend continuity.
   if (total > used) {
-    out.push(metric('licenses.unassigned', 'Licenses available (unassigned)', available, { category: 'spend', source: 'cipp', unit: 'count', higherIsBetter: false }));
+    out.push(metric('licenses.unassigned', 'Unused paid seats', available, { category: 'spend', source: 'cipp', unit: 'count', higherIsBetter: false }));
   }
   if (skuRows.some((r) => 'renews' in r)) {
     if (expiringSoon > 0) {
@@ -273,7 +310,14 @@ export function normalizeCippLicenses(rows: Json[], now: number = Date.now()): M
     }
     if (next) out.push(metric('licenses.next_renewal', 'Next license renewal', next.date, { category: 'spend', source: 'cipp' }));
   }
-  return out;
+  const n = uncounted.length;
+  const warnings =
+    n > 0
+      ? [
+          `${n} Microsoft ${plural(n, 'plan is a free or developer SKU and was', 'plans are free or developer SKUs and were')} not counted: ${uncounted.join(', ')}.`,
+        ]
+      : [];
+  return { metrics: out, warnings };
 }
 
 /** Collect Microsoft 365 posture for a tenant via CIPP. */
@@ -313,7 +357,11 @@ export async function collectCipp(ctx: CollectorContext, http: HttpTransport, cf
     }
     return normalizeCippCa(rows);
   });
-  await pull('ListLicenses', (j) => normalizeCippLicenses(toArray<Json>(j, ['Results'])));
+  await pull('ListLicenses', (j) => {
+    const lic = normalizeCippLicenses(toArray<Json>(j, ['Results']));
+    warnings.push(...lic.warnings);
+    return lic.metrics;
+  });
 
   if (metrics.length === 0) warnings.push('CIPP returned no usable data for this tenant.');
   return { source: 'cipp', metrics, warnings };

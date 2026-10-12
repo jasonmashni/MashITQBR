@@ -15,9 +15,12 @@ import {
 const anp = SEED_CLIENTS.find((c) => c.id === 'anp')!;
 const narrative: NarrativeOutput = {
   headline: 'A high-activity, security-forward quarter',
-  summary_paragraphs: ['Ticket volume rose to 141, up 200% from 47 last quarter.'],
-  highlights: ['22 email threats blocked before reaching inboxes'],
-  recommendations: ['Plan the May hardware refresh'],
+  lede: 'Ticket volume rose to 141, up 200% from 47 last quarter.',
+  did: ['22 email threats blocked before reaching inboxes', 'Handled every support request.', 'Kept monitoring running.'],
+  saw: ['Ticket volume tripled.', 'Four devices are past warranty.', 'Backups ran.'],
+  decisions: [{ ask: 'Approve the May hardware refresh', by: 'May 1' }],
+  plan: { now: [{ action: 'Plan the May hardware refresh', owner: 'Mash IT', decision: true }], next: [], later: [] },
+  protection: [],
   section_summaries: [
     { category: 'operations', summary: 'The team resolved a heavy quarter of support work without backlog growth.' },
     // Capitalized on purpose — the model matches categories case-insensitively.
@@ -75,14 +78,14 @@ describe('report model — discussion + documents + section summaries', () => {
 });
 
 describe('designed PDF (pdfmake)', () => {
-  it('builds a definition with cover, scorecard visuals, discussions and appendix', () => {
+  it('builds a definition with cover, protection, decisions and appendix', () => {
     const def = buildPdfDefinition(model);
     const text = JSON.stringify(def);
     expect(text).toContain('ANP Enertech');
     expect(text).toContain('Quarterly business review');
-    expect(text).toContain('Security & Risk Maturity');
-    expect(text).toContain('Active & Pending Conversations');
-    expect(text).toContain('Appendix: Attached Reports');
+    expect(text).toContain('How we are protecting you');
+    expect(text).toContain('Decisions and the next 90 days');
+    expect(text).toContain('Appendix: Attached reports');
     expect(text).toContain('"svg"'); // score visuals are inline SVG
     // Design round: section summaries, the KPI band, and page backgrounds.
     expect(text).toContain('heavy quarter');
@@ -90,6 +93,53 @@ describe('designed PDF (pdfmake)', () => {
     expect(text).toContain('up from 47');
     expect(typeof (def as { background?: unknown }).background).toBe('function');
     expect((def as { pageSize?: string }).pageSize).toBe('LETTER');
+  });
+
+  it('keeps the movers heading, caption and chart in one unbreakable block and prints the cover footer once', () => {
+    const mk = (key: string, current: number, previous: number, sentiment: 'positive' | 'negative') => ({
+      key,
+      label: key,
+      category: 'security' as const,
+      current,
+      previous,
+      deltaAbs: current - previous,
+      deltaPct: Math.round(((current - previous) / previous) * 1000) / 10,
+      direction: current > previous ? ('up' as const) : ('down' as const),
+      sentiment,
+    });
+    const withMovers = { ...model, trends: [mk('alerts.resolved', 12, 8, 'positive'), mk('patch.pending', 9, 5, 'negative')] };
+    const def = buildPdfDefinition(withMovers) as unknown as { content: unknown[] };
+    const json = JSON.stringify(def.content);
+    const movers = (def.content as Array<Record<string, unknown>>).find((n) => Array.isArray(n['stack']) && JSON.stringify(n['stack']).includes('What changed this quarter'));
+    expect(movers?.['unbreakable']).toBe(true);
+    expect(JSON.stringify(movers!['stack'])).toContain('"svg"');
+    const cover = (def.content as Array<Record<string, unknown>>).slice(0, 12);
+    expect(JSON.stringify(cover).match(/Prepared by Mash IT\. Confidential\./g) ?? []).toHaveLength(0);
+    expect(json).not.toMatch(/"fontSize":[0-7](\.|,|})/);
+  });
+
+  it('moves a heading to the next page when nothing follows it on its page', () => {
+    type BreakFn = (node: { headlineLevel?: number }, followingNodesOnPage: unknown[]) => boolean;
+    const def = buildPdfDefinition(model) as unknown as { pageBreakBefore?: BreakFn };
+    expect(typeof def.pageBreakBefore).toBe('function');
+    // pdfmake only collects the following nodes when the callback declares at least two parameters.
+    expect(def.pageBreakBefore!.length).toBeGreaterThanOrEqual(2);
+    expect(def.pageBreakBefore!({ headlineLevel: 1 }, [])).toBe(true);
+    expect(def.pageBreakBefore!({ headlineLevel: 2 }, [{ text: 'body' }])).toBe(false);
+    expect(def.pageBreakBefore!({}, [])).toBe(false);
+  });
+
+  it('keeps the HIPAA confidential-information notice in the footer of every page for HIPAA clients', () => {
+    const kpca = SEED_CLIENTS.find((c) => c.id === 'kpca')!;
+    expect(kpca.hipaa).toBe(true);
+    const hipaaModel = buildReportModel({ client: kpca, current: findSeedSnapshot('kpca', '2026-Q1')!, narrative });
+    type Footer = (page: number, pages: number) => unknown;
+    const footerText = (m: typeof model) => JSON.stringify((buildPdfDefinition(m) as unknown as { footer: Footer }).footer(1, 3));
+    expect(footerText(hipaaModel)).toContain('(HIPAA)');
+    expect(footerText(hipaaModel)).toContain('Prepared by Mash IT. Contains confidential client information (HIPAA).');
+    expect(anp.hipaa).toBe(false);
+    expect(footerText(model)).not.toContain('(HIPAA)');
+    expect(footerText(model)).toContain('Prepared by Mash IT. Confidential.');
   });
 
   it('never shouts: no uppercased labels, no middle-dot strings, no em dashes in chrome', () => {
@@ -166,7 +216,7 @@ describe('rebuilt deck (pptxgenjs)', () => {
       const xml = await zip.file(f)!.async('string');
       const texts = [...xml.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((m) => m[1]!.trim()).filter(Boolean);
       expect(texts.length, `${f} has no text`).toBeGreaterThan(0);
-      if (texts.some((t) => t.startsWith('Active & Pending Conversations') || t.startsWith('Active &amp; Pending Conversations'))) conversationSlides += 1;
+      if (texts.some((t) => t.startsWith('Decisions and the next 90 days'))) conversationSlides += 1;
     }
     expect(conversationSlides).toBeGreaterThanOrEqual(2);
   });

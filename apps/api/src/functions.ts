@@ -9,14 +9,17 @@ import * as h from './handlers.js';
 import type { ApiResult } from './handlers.js';
 import type { ConnectionInput } from './connections.js';
 import type { PushInput } from './actions.js';
+import { suggestedConversations } from './conversations.js';
+import * as budget from './budget.js';
 import './spa.js'; // registers the catch-all route that serves the React SPA
 
 const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
 function toResponse(r: ApiResult): HttpResponseInit {
   const sec = SECURITY_HEADERS;
-  if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...sec }, body: r.html };
-  if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf', ...sec }, body: r.pdf };
+  const inlineName: Record<string, string> = r.filename ? { 'Content-Disposition': contentDisposition(r.filename, { inline: true }) } : {};
+  if (r.html !== undefined) return { status: r.status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...inlineName, ...sec }, body: r.html };
+  if (r.pdf !== undefined) return { status: r.status, headers: { 'Content-Type': 'application/pdf', ...inlineName, ...sec }, body: r.pdf };
   if (r.pptx !== undefined) {
     const cd = r.filename ? contentDisposition(r.filename) : 'attachment';
     return { status: r.status, headers: { 'Content-Type': PPTX, 'Content-Disposition': cd, ...sec }, body: r.pptx };
@@ -125,6 +128,25 @@ route('pushAction', 'POST', 'api/clients/{clientId}/qbr/{period}/actions/push', 
 route('emailDraft', 'GET', 'api/clients/{clientId}/qbr/{period}/email.eml', (req) => h.getEmailDraft(req.params['clientId']!, req.params['period']!, ai(req), headerGet(req)));
 route('emailQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/email', async (req) => h.emailQbr(req.params['clientId']!, req.params['period']!, (await body(req)) as never, headerGet(req)));
 route('createMeeting', 'POST', 'api/clients/{clientId}/qbr/{period}/meeting', async (req) => h.createMeeting(req.params['clientId']!, req.params['period']!, (await body(req)) as never, headerGet(req)));
+
+// Workstream B: frozen quarters
+route('finalizeQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/finalize', (req) => h.finalizeQbr(req.params['clientId']!, req.params['period']!));
+route('reopenQbr', 'POST', 'api/clients/{clientId}/qbr/{period}/reopen', async (req) =>
+  h.reopenQbr(req.params['clientId']!, req.params['period']!, (await body(req)) as { stage?: unknown; reason?: unknown }),
+);
+
+// Workstream E: conversations
+route('suggestedConversations', 'GET', 'api/clients/{clientId}/qbr/{period}/conversations/suggested', (req) =>
+  suggestedConversations(req.params['clientId']!, req.params['period']!),
+);
+
+// Workstream D: budget planning
+route('listBudgets', 'GET', 'api/clients/{clientId}/budget', (req) => budget.listBudgets(req.params['clientId']!));
+route('getBudget', 'GET', 'api/clients/{clientId}/budget/{fy}', (req) => budget.getBudget(req.params['clientId']!, req.params['fy']!));
+route('putBudget', 'PUT', 'api/clients/{clientId}/budget/{fy}', async (req) => budget.putBudget(req.params['clientId']!, req.params['fy']!, await body(req)));
+route('recomputeBudget', 'POST', 'api/clients/{clientId}/budget/{fy}/outlook', (req) => budget.recomputeBudget(req.params['clientId']!, req.params['fy']!));
+route('contextBudget', 'POST', 'api/clients/{clientId}/budget/{fy}/context', (req) => budget.contextBudget(req.params['clientId']!, req.params['fy']!));
+route('publishBudget', 'POST', 'api/clients/{clientId}/budget/{fy}/publish', (req) => budget.publishBudget(req.params['clientId']!, req.params['fy']!));
 
 // Integrations
 route('listIntegrations', 'GET', 'api/integrations', () => h.listIntegrations());

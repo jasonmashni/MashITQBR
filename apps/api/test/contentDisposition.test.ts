@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contentDisposition } from '../src/contentDisposition.js';
+import { contentDisposition, deliverableFilename } from '../src/contentDisposition.js';
 
 describe('contentDisposition', () => {
   it('carries an ASCII fallback and an RFC 5987 UTF-8 name', () => {
@@ -22,4 +22,11 @@ describe('contentDisposition', () => {
   it('falls back to a generic name when nothing printable is left', () => {
     expect(contentDisposition('\r\n')).toContain('filename="download"');
   });
+});
+
+it('names deliverables consistently and offers inline disposition', () => {
+  expect(deliverableFilename('ANP Enertech', 'Q2 2026', 'pdf')).toBe('Mash IT QBR - ANP Enertech - Q2 2026.pdf');
+  expect(deliverableFilename('Acme / "Co"', 'Q1 2026', 'pptx')).toBe('Mash IT QBR - Acme Co - Q1 2026.pptx');
+  expect(contentDisposition('a.pdf', { inline: true }).startsWith('inline; filename="a.pdf"')).toBe(true);
+  expect(contentDisposition('a.pdf').startsWith('attachment;')).toBe(true);
 });

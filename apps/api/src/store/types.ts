@@ -1,4 +1,6 @@
 import type {
+  BudgetAnswers,
+  BudgetLine,
   Client,
   IntegrationId,
   MetricSnapshot,
@@ -7,6 +9,8 @@ import type {
   ReportConfig,
 } from '@mashit/core';
 import type { NarrativeResult } from '@mashit/narrative';
+
+export type { BudgetAnswers, BudgetCategory, BudgetLine, BudgetOutlook, BudgetSource } from '@mashit/core';
 
 /** Kind of integration a connection represents. */
 export type ConnectionType = IntegrationId | 'mcp' | 'zomentum';
@@ -62,10 +66,25 @@ export interface ClientConnectionMap {
 }
 
 /** QBR lifecycle record (status + meeting scheduling). */
+/** Who locked a stage, when, and which stored package version it produced. */
+export interface LockInfo {
+  at: string;
+  by: string;
+  version: number;
+}
+
 export interface QbrRecord {
   clientId: string;
   period: string;
   status: QbrStatus;
+  /**
+   * Lock 1 (`preread`) freezes data and narrative when the package is sent;
+   * lock 2 (`final`) freezes everything when decisions are captured. Reads of
+   * a locked quarter serve the stored package.
+   */
+  locks?: { preread?: LockInfo; final?: LockInfo };
+  /** Audited reopen history (newest last). */
+  reopened?: Array<{ at: string; by: string; stage: 'preread' | 'final'; reason: string }>;
   meeting?: { scheduledAt?: string; joinUrl?: string; heldAt?: string; attendees?: string[]; eventId?: string };
   /** When the QBR package (email draft with the PDF) was last generated. */
   packageSentAt?: string;
@@ -78,9 +97,23 @@ export interface QbrRecord {
   updatedAt: string;
 }
 
-/** Human edits overlaid on the generated narrative (undefined field = keep AI text). */
+/**
+ * Human edits overlaid on the generated narrative (undefined field = keep AI
+ * text). Covers every v4 prose field; the v3 lists remain for edits saved
+ * before v4.
+ */
 export interface NarrativeEdits {
   headline?: string;
+  lede?: string;
+  did?: string[];
+  saw?: string[];
+  decisions?: Array<{ ask: string; why?: string; by?: string }>;
+  plan?: {
+    now: Array<{ action: string; owner: string; decision?: boolean }>;
+    next: Array<{ action: string; owner: string; decision?: boolean }>;
+    later: Array<{ action: string; owner: string; decision?: boolean }>;
+  };
+  protection?: Array<{ question: 'get_in' | 'know' | 'recover' | 'keep_up' | 'run_well'; inPlace: string; thisQuarter: string }>;
   summary_paragraphs?: string[];
   highlights?: string[];
   recommendations?: string[];
@@ -129,6 +162,83 @@ export interface DocumentRecord {
   size: number;
   uploadedAt: string;
   uploadedBy: string;
+  /** Notable findings extracted from the document (at most 5). */
+  findings?: DocumentFinding[];
+}
+
+/** One thing an account manager must not miss in an attached report. */
+export interface DocumentFinding {
+  text: string;
+  severity: 'info' | 'watch' | 'act';
+}
+
+/** Which lock produced a stored package. */
+export type PackageStage = 'preread' | 'final';
+
+/**
+ * A frozen report package: the serialized model plus the rendered PDF, deck
+ * and HTML, stored in the document content store. Versions count up per
+ * client and period; reopening and re-locking stores the next version.
+ */
+export interface PackageRecord {
+  clientId: string;
+  period: string;
+  version: number;
+  stage: PackageStage;
+  createdAt: string;
+  createdBy: string;
+  /** Content-store keys for each artifact. */
+  files: { model: string; pdf: string; pptx: string; html: string };
+  /** Build warnings at lock time. */
+  warnings: string[];
+}
+
+/** Internal-only research item for budget prep. Never reaches a report. */
+export interface BudgetContextItem {
+  title: string;
+  insight: string;
+  askClient: string;
+  sourceName?: string;
+  sourceUrl?: string;
+}
+
+/** The client-facing outlook as it stood when the plan was put on the report. */
+export interface BudgetPublishedSnapshot {
+  at: string;
+  period: string;
+  lines: BudgetLine[];
+  totals: { low: number; expected: number; high: number };
+  assumptions: string[];
+  movers: string[];
+  caveats: string[];
+  /** Planning cost per device at publish (the warranty sentence on the report). */
+  unitCost?: number;
+}
+
+/** A client's budget plan for one fiscal year (label = year the FY ends). */
+export interface BudgetPlanRecord {
+  clientId: string;
+  fiscalLabel: number;
+  answers: BudgetAnswers;
+  assumptions: string[];
+  movers: string[];
+  lines: BudgetLine[];
+  totals: { low: number; expected: number; high: number };
+  caveats: string[];
+  status: 'draft' | 'published';
+  publishedPeriod?: string;
+  publishedAt?: string;
+  /**
+   * What is on the report: a copy of the outlook taken at publish. The report
+   * reads only this, so editing the working copy (answers, Re-run outlook)
+   * never moves the published baseline until the plan is put on the report again.
+   */
+  published?: BudgetPublishedSnapshot;
+  /** Internal only. Never copied onto a report model or a narrative input. */
+  context?: { researchedAt: string; sourced: boolean; items: BudgetContextItem[] };
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
 }
 
 /** Kanban columns for client opportunities/initiatives surfaced in QBRs. */
@@ -268,6 +378,15 @@ export interface DataStore {
   listOpportunities(clientId: string): Promise<OpportunityRecord[]>;
   putOpportunity(record: OpportunityRecord): Promise<OpportunityRecord>;
   deleteOpportunity(clientId: string, id: string): Promise<void>;
+
+  // frozen report packages (oldest version first)
+  listPackages(clientId: string, period: string): Promise<PackageRecord[]>;
+  putPackage(record: PackageRecord): Promise<PackageRecord>;
+
+  // budget plans (one per client and fiscal label)
+  listBudgetPlans(clientId: string): Promise<BudgetPlanRecord[]>;
+  getBudgetPlan(clientId: string, fiscalLabel: number): Promise<BudgetPlanRecord | undefined>;
+  putBudgetPlan(record: BudgetPlanRecord): Promise<BudgetPlanRecord>;
 
   // compliance audit trail
   appendAudit(event: AuditEvent): Promise<void>;

@@ -32,6 +32,8 @@ export interface Client {
   /** Strategic business goals the QBR aligns IT work to. */
   goals?: ClientGoal[];
   integrationRefs?: Record<string, string>;
+  /** 1..12; the month the client's fiscal year starts. Undefined means January. */
+  fiscalYearStartMonth?: number;
 }
 
 /** A collected metric (mirrors the server's MetricValue). */
@@ -95,7 +97,15 @@ export interface AccountHealth {
 export type Confidence = 'low' | 'medium' | 'high';
 
 /** What the dashboard should nudge the account manager to do for the current quarter. */
-export type Triage = 'not_started' | 'needs_scheduling' | 'meeting_soon' | 'meeting_passed' | 'package_not_sent' | 'in_progress' | 'done';
+export type Triage =
+  | 'not_started'
+  | 'needs_scheduling'
+  | 'meeting_soon'
+  | 'meeting_passed'
+  | 'package_not_sent'
+  | 'needs_finalizing'
+  | 'in_progress'
+  | 'done';
 
 /** The current quarter's state for one client (drives the triage band). */
 export interface CurrentQuarter {
@@ -104,6 +114,8 @@ export interface CurrentQuarter {
   meetingAt: string | null;
   packageSentAt: string | null;
   meetingSkipped: boolean;
+  /** Pre-read and final locks for the current quarter. */
+  locks?: { preread?: LockInfo; final?: LockInfo } | null;
 }
 
 /** One row of GET /api/overview. */
@@ -148,6 +160,8 @@ export interface PeriodInfo {
   hasSnapshot: boolean;
   /** QBR workflow status for that quarter, when a record exists. */
   status?: string;
+  /** Pre-read and final locks for that quarter, when any. */
+  locks?: { preread?: LockInfo; final?: LockInfo };
 }
 
 export interface FunctionScore {
@@ -167,12 +181,84 @@ export interface MetricTrend {
   sentiment: string;
 }
 
+export type ProtectionQuestionId = 'get_in' | 'know' | 'recover' | 'keep_up' | 'run_well';
+export interface PlanItem {
+  action: string;
+  owner: string;
+  /** True when the item needs the client's yes. */
+  decision?: boolean;
+}
+export interface NarrativeDecision {
+  ask: string;
+  why?: string;
+  by?: string;
+}
+export interface NarrativePlan {
+  now: PlanItem[];
+  next: PlanItem[];
+  later: PlanItem[];
+}
+export interface NarrativeProtection {
+  question: ProtectionQuestionId;
+  inPlace: string;
+  thisQuarter: string;
+}
+
+/** Author edits to the v4 narrative (every field optional: blank keeps the generated text). */
+export interface NarrativeEdits {
+  headline?: string;
+  lede?: string;
+  did?: string[];
+  saw?: string[];
+  decisions?: NarrativeDecision[];
+  plan?: NarrativePlan;
+  protection?: NarrativeProtection[];
+  /** v3 fields from edits saved before v4. */
+  summary_paragraphs?: string[];
+  highlights?: string[];
+  recommendations?: string[];
+}
+
+export interface SinceLastRow {
+  topic: string;
+  status: 'done' | 'in_progress' | 'waiting' | 'closed';
+  detail?: string;
+}
+
+export interface ProtectionRowView {
+  id: ProtectionQuestionId;
+  question: string;
+  rating: Rating;
+  functions: Array<{ function: string; score: number | null }>;
+  safeguards: Array<{ id: string; title: string; evidence: string; measured: boolean; rating: Rating }>;
+  inPlace?: string;
+  thisQuarter?: string;
+}
+
+export interface InvestmentView {
+  invoiced: number;
+  recurring: number;
+  variable: number;
+  previousInvoiced?: number;
+  breakdown: Array<{ label: string; amount: number; recurring: boolean }>;
+  planVsActual?: { fiscalYearLabel: string; planned: number; spent: number; pct: number; note: string };
+  comingUp: string[];
+  outlook?: Pick<BudgetPlanRecord, 'fiscalLabel' | 'assumptions' | 'movers' | 'lines' | 'totals' | 'caveats'>;
+}
+
 export interface ReportModel {
   client: { name: string; industry?: string; hipaa?: boolean };
   period: { id: string; label: string };
   previousPeriod?: { id: string; label: string };
   brand?: { name?: string; logoDataUri?: string };
-  executive: { headline?: string; paragraphs: string[]; highlights: string[] };
+  /** lede, did and saw are v4; optional so a stored pre-v4 model still renders. */
+  executive: { headline?: string; paragraphs: string[]; highlights: string[]; lede?: string; did?: string[]; saw?: string[] };
+  decisions?: NarrativeDecision[];
+  plan?: NarrativePlan;
+  sinceLastQuarter?: SinceLastRow[];
+  protection?: ProtectionRowView[];
+  investment?: InvestmentView;
+  revisedAt?: string;
   scorecard: {
     overall: { score: number | null; rating: Rating; coverage: number; confidence: Confidence };
     functions: FunctionScore[];
@@ -196,6 +282,79 @@ export interface QbrMeta {
   meetingSkipped?: { at: string; reason?: string };
   /** Set when the last sync was refused because every tool failed; cleared by the next successful sync. */
   lastSyncAttempt?: { at: string; warnings: string[] };
+  /** Lock 1 (pre-read sent) and lock 2 (decisions captured). */
+  locks?: { preread?: LockInfo; final?: LockInfo };
+  reopened?: Array<{ at: string; by: string; stage: PackageStage; reason: string }>;
+}
+
+export interface LockInfo {
+  at: string;
+  by: string;
+  version: number;
+}
+export type PackageStage = 'preread' | 'final';
+
+export interface DocumentFinding {
+  text: string;
+  severity: 'info' | 'watch' | 'act';
+}
+
+export type BudgetCategory = 'managed_services' | 'licensing' | 'hardware' | 'projects' | 'support_hours' | 'compliance' | 'contingency';
+export type BudgetSource = 'halo' | 'cipp' | 'ninja' | 'hudu' | 'opportunities' | 'answer';
+export interface BudgetLine {
+  category: BudgetCategory;
+  low: number;
+  expected: number;
+  high: number;
+  basis: Array<{ source: BudgetSource; note: string }>;
+}
+export interface BudgetAnswers {
+  headcountChange?: number;
+  newLocations?: 0 | 1 | 2;
+  projects?: Array<{ name: string; low?: number; high?: number }>;
+  workstationUnitCost?: number;
+  refreshPolicy?: 'run_to_failure' | 'at_warranty_end' | 'early';
+  complianceDeadlines?: Array<{ what: string; when: string; estimate?: number }>;
+  copilotSeats?: number;
+  copilotSeatPrice?: number;
+  appetite?: 'lean' | 'balanced' | 'cautious';
+  notes?: string;
+}
+export interface BudgetContextItem {
+  title: string;
+  insight: string;
+  askClient: string;
+  sourceName?: string;
+  sourceUrl?: string;
+}
+export interface BudgetPlanRecord {
+  clientId: string;
+  fiscalLabel: number;
+  answers: BudgetAnswers;
+  assumptions: string[];
+  movers: string[];
+  lines: BudgetLine[];
+  totals: { low: number; expected: number; high: number };
+  caveats: string[];
+  status: 'draft' | 'published';
+  publishedPeriod?: string;
+  publishedAt?: string;
+  /** The outlook as it stood when put on the report; the report reads only this. */
+  published?: {
+    at: string;
+    period: string;
+    lines: BudgetLine[];
+    totals: { low: number; expected: number; high: number };
+    assumptions: string[];
+    movers: string[];
+    caveats: string[];
+    unitCost?: number;
+  };
+  /** Internal only: shown in the planner, never on a client page. */
+  context?: { researchedAt: string; sourced: boolean; items: BudgetContextItem[] };
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string;
 }
 
 export interface QbrResponse {
@@ -203,6 +362,8 @@ export interface QbrResponse {
   warnings: string[];
   verification: boolean;
   meta: QbrMeta;
+  /** Present when the quarter is locked and served from a stored package. */
+  package?: { version: number; stage: PackageStage; createdAt: string };
 }
 
 export interface Brand {
@@ -230,6 +391,8 @@ export interface ReportConfig {
   sectionGuidance?: Record<string, string>;
   /** Metric keys left out of the report. */
   excludedMetrics?: string[];
+  /** Show "Since last quarter" on page one. Undefined means true. */
+  showSinceLastQuarter?: boolean;
 }
 
 export interface DiscussionItem {
@@ -245,6 +408,27 @@ export interface DiscussionItem {
   /** Agenda order (lower first). */
   sortOrder?: number;
   externalRef?: { system: string; id: string; status?: string };
+  /** Where the item came from. Undefined means typed by hand. */
+  source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report';
+  sourceRef?: string;
+  /** The topic as it arrived from the source; a HIPAA client's item stays off the report until the topic differs. */
+  sourceTopic?: string;
+}
+/** A conversation from Halo the Meeting tab offers to add to the agenda. */
+export interface SuggestedConversation {
+  topic: string;
+  detail?: string;
+  source: 'halo_ticket' | 'halo_opportunity' | 'halo_note';
+  /** Unique across sources (`ticket:{id}`, `opportunity:{id}`, `note:{id}`); becomes the item's sourceRef. */
+  ref: string;
+  /** YYYY-MM-DD, or '' when unknown. */
+  when: string;
+}
+export interface SuggestedConversationsResponse {
+  items: SuggestedConversation[];
+  warnings: string[];
+  /** The client is HIPAA-covered: added items default to off the report. */
+  hipaa?: boolean;
 }
 export interface Discussion {
   clientId: string;

@@ -1,4 +1,4 @@
-import { periodFor } from '@mashit/core';
+import { lastPeriods, periodFor, type Client, type DiscussionItem } from '@mashit/core';
 import type { DataStore, DocContentStore, DocumentRecord } from './store/index.js';
 import { docPath } from './store/index.js';
 
@@ -84,6 +84,57 @@ export function routeClientId(recipients: string[], mailbox: string): string | u
   return undefined;
 }
 
+/** Forward and reply prefixes ("Fw:", "RE: FWD:", "AW:") stripped from a subject. */
+export function stripSubjectPrefixes(subject: string): string {
+  return subject.replace(/^\s*((fw|fwd|re|aw)\s*:\s*)+/i, '').trim();
+}
+
+/**
+ * A message body as plain text: HTML tags (and style/script blocks) removed
+ * when the body is HTML, common entities decoded, whitespace collapsed, cut
+ * to `max` characters.
+ */
+export function plainTextBody(body: { contentType?: string; content?: string } | undefined, fallback = '', max = 400): string {
+  let text = body?.content ?? '';
+  if (text && (body?.contentType ?? '').toLowerCase() === 'html') {
+    text = text
+      .replace(/<(style|script|head)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&#x([0-9a-f]+);/gi, (_m, hex: string) => safeChar(parseInt(hex, 16)))
+      .replace(/&#(\d+);/g, (_m, dec: string) => safeChar(parseInt(dec, 10)))
+      .replace(/&amp;/gi, '&');
+  }
+  if (!text.trim()) text = fallback;
+  return text.replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+/** A numeric character reference as text; out-of-range code points become a space. */
+function safeChar(code: number): string {
+  return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ' ';
+}
+
+/**
+ * The quarter a forwarded conversation lands on: the newest of the last 8
+ * periods that has a snapshot and no final lock (final quarters are skipped),
+ * else the current calendar quarter. Never a quarter with a final lock:
+ * undefined when even the fallback is final.
+ */
+export async function openQuarterFor(store: DataStore, clientId: string, now: Date): Promise<string | undefined> {
+  const current = periodFor(now).id;
+  for (const period of lastPeriods(current, 8)) {
+    const qbr = await store.getQbr(clientId, period);
+    if (qbr?.locks?.final) continue;
+    if (await store.getSnapshot(clientId, period)) return period;
+  }
+  const qbr = await store.getQbr(clientId, current);
+  return qbr?.locks?.final ? undefined : current;
+}
+
 /** A `2026-Q3`-style tag anywhere in the subject picks the quarter. */
 export function routePeriod(subject: string, now: Date): string {
   const m = subject.match(/\b(20\d{2}-Q[1-4])\b/);
@@ -132,9 +183,11 @@ interface InboxMessage {
   id: string;
   subject?: string;
   hasAttachments?: boolean;
-  from?: { emailAddress?: { address?: string } };
+  from?: { emailAddress?: { address?: string; name?: string } };
   toRecipients?: Array<{ emailAddress?: { address?: string } }>;
   ccRecipients?: Array<{ emailAddress?: { address?: string } }>;
+  body?: { contentType?: string; content?: string };
+  bodyPreview?: string;
   /** Which polled folder the message came from (set locally, not by Graph). */
   folder?: string;
 }
@@ -149,6 +202,8 @@ export interface InboxFailure {
 export interface InboxPollResult {
   processed: number;
   filed: number;
+  /** Forwarded messages without attachments that became draft agenda items. */
+  agenda: number;
   unrouted: number;
   /** Messages from senders outside the allowlist, or from Junk (not filed). */
   untrusted?: number;
@@ -191,6 +246,7 @@ export async function pollReportInbox(
   const clients = await store.listClients();
   let processed = 0;
   let filed = 0;
+  let agenda = 0;
   let unrouted = 0;
   let untrusted = 0;
   const failed: InboxFailure[] = [];
@@ -210,8 +266,10 @@ export async function pollReportInbox(
     }
 
     const listRes = await fetchFn(
-      `${mbx}/mailFolders/${folder}/messages?$filter=isRead eq false&$top=25&$select=id,subject,hasAttachments,from,toRecipients,ccRecipients`,
-      { headers },
+      `${mbx}/mailFolders/${folder}/messages?$filter=isRead eq false&$top=25&$select=id,subject,hasAttachments,from,toRecipients,ccRecipients,body,bodyPreview`,
+      // Graph returns the body as plain text with this header (documented on
+      // List messages); the HTML stripper stays as a fallback.
+      { headers: { ...headers, Prefer: 'outlook.body-content-type="text"' } },
     );
     if (!listRes.ok) {
       if (folder !== 'inbox') continue; // junk access is optional
@@ -260,10 +318,14 @@ export async function pollReportInbox(
     const clientTag = routeClientId(recipients, cfg.mailbox);
     const client = clientTag ? clients.find((c) => c.id.toLowerCase() === clientTag.toLowerCase()) : undefined;
 
-    if (!client || !msg.hasAttachments) {
+    if (!client) {
       unrouted++;
       // Mark read + categorize so it surfaces in the mailbox without looping.
-      await mark(msg.id, client ? 'QBR: no attachments' : 'QBR: unrouted');
+      await mark(msg.id, 'QBR: unrouted');
+      return 0;
+    }
+    if (!msg.hasAttachments) {
+      await addAgendaItem(msg, client);
       return 0;
     }
 
@@ -307,5 +369,50 @@ export async function pollReportInbox(
     return filedHere;
   }
 
-  return { processed, filed, unrouted, untrusted, failed, folders };
+  /**
+   * Forward to QBR: a routed message with no attachments becomes a planned,
+   * unpublished agenda item on the client's open quarter. Written straight
+   * through the store (the inbox is not a user edit) but never into a quarter
+   * with a final lock. HIPAA clients never get the body stored.
+   */
+  async function addAgendaItem(msg: InboxMessage, client: Client): Promise<void> {
+    const topic = stripSubjectPrefixes(msg.subject ?? '');
+    if (!topic) {
+      unrouted++;
+      await mark(msg.id, 'QBR: no subject');
+      return;
+    }
+    const period = await openQuarterFor(store, client.id, now);
+    if (!period) {
+      unrouted++;
+      await mark(msg.id, 'QBR: quarter closed');
+      return;
+    }
+    const existing = await store.getDiscussion(client.id, period);
+    const items = [...(existing?.items ?? [])];
+    if (!items.some((i) => i.source === 'email' && i.sourceRef === msg.id)) {
+      const response = client.hipaa === true ? undefined : plainTextBody(msg.body, msg.bodyPreview ?? '') || undefined;
+      const owner = msg.from?.emailAddress?.name?.trim() || msg.from?.emailAddress?.address || undefined;
+      const maxOrder = items.reduce((m, i) => Math.max(m, typeof i.sortOrder === 'number' ? i.sortOrder : -1), -1);
+      const item: DiscussionItem = {
+        id: Math.random().toString(36).slice(2, 10),
+        topic,
+        ...(response ? { response } : {}),
+        ...(owner ? { owner } : {}),
+        status: 'planned',
+        includeInReport: false,
+        sortOrder: maxOrder + 1,
+        source: 'email',
+        sourceRef: msg.id,
+        // For a HIPAA client the item stays off the report until the topic is rewritten.
+        sourceTopic: topic,
+      };
+      items.push(item);
+      await store.putDiscussion({ clientId: client.id, period, items, ...(existing?.notes !== undefined ? { notes: existing.notes } : {}) });
+    }
+    agenda++;
+    await mark(msg.id, 'QBR: agenda');
+  }
+
+  return { processed, filed, agenda, unrouted, untrusted, failed, folders };
 }

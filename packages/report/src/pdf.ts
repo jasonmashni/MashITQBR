@@ -1,19 +1,42 @@
-import type { DiscussionItem, FunctionScore, MetricTrend, Rating } from '@mashit/core';
+import type { BudgetOutlook, FunctionScore, MetricTrend, Rating } from '@mashit/core';
 import type { BrandTokens } from './brand.js';
-import {
-  formatPercent,
-  formatValue,
-  ratingColor,
-  ratingWord,
-  discussionOutcome,
-  trendDeltaText,
-  goalStatusLabel,
-  goalStatusColor,
-  SEMANTIC,
-} from './format.js';
-import { moversBarChartSvg, moversCaption, selectKpiTiles } from './charts.js';
+import { formatValue, ratingColor, ratingWord, trendDeltaText, goalStatusLabel, goalStatusColor, SEMANTIC } from './format.js';
+import { investmentBarsSvg, moversBarChartSvg, moversCaption, planMeterSvg, selectKpiTiles } from './charts.js';
 import { isRenderableRaster } from './images.js';
-import type { ReportModel, ReportSection } from './model.js';
+import { conversationStatus, type InvestmentModel, type ReportModel, type ReportSection } from './model.js';
+import {
+  basisText,
+  BUDGET_CATEGORY_LABEL,
+  conversationColor,
+  CONVERSATION_LABEL,
+  decisionSubline,
+  DECISIONS_LEDE,
+  DENSE_TABLE_ROWS,
+  footerText,
+  functionScoresText,
+  hasPlan,
+  howWeScore,
+  investmentLede,
+  investmentTiles,
+  money,
+  PAGE_TITLES,
+  PLAN_COLUMNS,
+  planningDecisions,
+  PLANNING_LEDE,
+  planDecisionLabel,
+  planningTitle,
+  planVsActualText,
+  PROTECTION_SUBTITLE,
+  protectionInPlace,
+  protectionStatusWord,
+  protectionThisQuarter,
+  ringNote,
+  showDecisionsPage,
+  showInvestmentPage,
+  sinceColor,
+  sinceLabel,
+  whatToFixFirst,
+} from './pages.js';
 
 /**
  * Designed, branded PDF built with pdfmake (pure JS — no Chromium, so it runs
@@ -21,10 +44,15 @@ import type { ReportModel, ReportSection } from './model.js';
  * font files to ship); score visuals are generated as inline SVG. pdfmake is
  * imported dynamically so the package still builds/tests without it installed.
  *
- * Same story as the HTML report: the opening page carries the headline, the
- * narrative, the at-a-glance tiles with their movement, and a data-confidence
- * note; the maturity page withholds the score on thin data and shows "Not
- * measured" in slate; the "vs last" column exists only when something can be
+ * Executive-first page order, shared with the HTML and the deck: cover; page
+ * one (headline, lede, tiles, what we did / saw / need from you, since last
+ * quarter); how we are protecting you; decisions and the next 90 days; your
+ * IT investment (plus the planning page in the planning quarter); quarter in
+ * numbers; appendix. Readability is a hard rule: body 10pt or larger, nothing
+ * under 8pt, 0.75in margins, headings keep with next, charts, tile bands and
+ * callouts never split, tables repeat their header row. When content does
+ * not fit, the page count grows; sizes never shrink. The score is withheld on
+ * thin data and the "vs last" column exists only when something can be
  * compared. Sentence case throughout; nothing is uppercased or letter-spaced.
  */
 
@@ -129,6 +157,7 @@ function calloutBlock(text: string, accent: string, margin: number[] = [0, 2, 0,
       ],
     },
     layout: { defaultBorder: false, paddingLeft: () => 0, paddingRight: () => 0, paddingTop: () => 0, paddingBottom: () => 0 },
+    unbreakable: true,
     margin,
   };
 }
@@ -144,8 +173,8 @@ function confidenceBlock(m: ReportModel): Node | undefined {
           { text: '', fillColor: SEMANTIC.watch, border: [false, false, false, false] },
           {
             stack: [
-              { text: 'Data confidence', bold: true, fontSize: 9.5, color: SEMANTIC.watch, margin: [0, 0, 0, 3] },
-              { ul: m.dataConfidence.map((w) => ({ text: w, fontSize: 9, color: TEXT, margin: [0, 1, 0, 1] })) },
+              { text: 'Data confidence', bold: true, fontSize: 10.5, color: SEMANTIC.watch, margin: [0, 0, 0, 3] },
+              { ul: m.dataConfidence.map((w) => ({ text: w, fontSize: 10, color: TEXT, margin: [0, 1, 0, 1] })) },
             ],
             margin: [8, 6, 8, 6],
             fillColor: SEMANTIC.watchBg,
@@ -155,6 +184,7 @@ function confidenceBlock(m: ReportModel): Node | undefined {
       ],
     },
     layout: { defaultBorder: false, paddingLeft: () => 0, paddingRight: () => 0, paddingTop: () => 0, paddingBottom: () => 0 },
+    unbreakable: true,
     margin: [0, 4, 0, 12],
   };
 }
@@ -180,7 +210,7 @@ function sectionTable(section: ReportSection, brand: BrandTokens): Node {
   ];
   return {
     stack: [
-      { text: section.title, style: 'h2', color: brand.primary },
+      { text: section.title, style: 'h2', headlineLevel: 2, color: brand.primary },
       ...(section.summary ? [calloutBlock(section.summary, brand.accent)] : []),
       {
         table: { headerRows: 1, widths: hasPrior ? ['*', 90, 70] : ['*', 110], body },
@@ -207,6 +237,7 @@ function kpiBand(m: ReportModel): Node | undefined {
   if (tiles.length < 2) return undefined;
   const toneColor = (tone: string | undefined) => (tone === 'good' ? SEMANTIC.good : tone === 'bad' ? SEMANTIC.act : GRAY);
   return {
+    unbreakable: true,
     table: {
       widths: tiles.map(() => '*'),
       body: [
@@ -231,38 +262,6 @@ function kpiBand(m: ReportModel): Node | undefined {
   };
 }
 
-function discussionTable(items: DiscussionItem[], brand: BrandTokens): Node {
-  const body: unknown[][] = [
-    [
-      { text: 'Discussion / decision', style: 'th' },
-      { text: 'Response & notes', style: 'th' },
-      { text: 'Outcome', style: 'th' },
-    ],
-    ...items.map((d) => [
-      { text: d.topic, style: 'td', bold: true },
-      { text: d.response ?? '—', style: 'td' },
-      {
-        stack: [
-          { text: discussionOutcome(d), style: 'td', color: brand.accent, bold: true },
-          ...(d.owner ? [{ text: d.owner, style: 'small' }] : []),
-        ],
-      },
-    ]),
-  ];
-  return {
-    table: { headerRows: 1, widths: ['*', '*', 80], body },
-    layout: {
-      hLineWidth: (i: number) => (i <= 1 ? 1 : 0.5),
-      vLineWidth: () => 0,
-      hLineColor: (i: number) => (i <= 1 ? brand.accent : RULE),
-      paddingTop: () => 6,
-      paddingBottom: () => 6,
-      paddingLeft: () => 2,
-      paddingRight: () => 2,
-    },
-  };
-}
-
 /** LETTER page geometry (points). */
 const PAGE = { width: 612, height: 792 };
 const COVER_BAND_H = 132;
@@ -275,8 +274,9 @@ function coverPage(m: ReportModel): Node[] {
   const orgBlock: Node | undefined = org
     ? { width: '*', stack: [org, ...(brand.tagline ? [{ text: brand.tagline, color: GRAY, fontSize: 9.5, margin: [0, 5, 0, 0] as number[] }] : [])] }
     : undefined;
-  if (orgBlock && client) logos.push({ columns: [orgBlock, { width: 'auto', stack: [client] }], columnGap: 16 });
-  else if (orgBlock) logos.push(orgBlock);
+  // Logos are drawn as svg or image nodes; like every chart they never split.
+  if (orgBlock && client) logos.push({ unbreakable: true, columns: [orgBlock, { width: 'auto', stack: [client] }], columnGap: 16 });
+  else if (orgBlock) logos.push({ unbreakable: true, stack: [orgBlock] });
 
   const meta: Node[] = [];
   if (m.client.primaryContact) meta.push({ text: [{ text: 'Prepared for  ', color: GRAY }, { text: m.client.primaryContact, bold: true }], margin: [0, 2, 0, 2] });
@@ -298,13 +298,6 @@ function coverPage(m: ReportModel): Node[] {
       fontSize: 13,
       bold: true,
       absolutePosition: { x: 52, y: PAGE.height - COVER_BAND_H + 40 },
-    },
-    {
-      text: `Prepared by ${brand.orgName}. ${m.client.hipaa ? 'Contains confidential client information (HIPAA).' : 'Confidential.'}`,
-      color: '#ffffff',
-      opacity: 0.85,
-      fontSize: 9,
-      absolutePosition: { x: 52, y: PAGE.height - COVER_BAND_H + 62 },
     },
     { text: '', pageBreak: 'after' },
   ];
@@ -331,211 +324,425 @@ function pageBackground(brand: BrandTokens): (page: number) => unknown {
   };
 }
 
-/** The maturity block: honest about how much it measured. */
-function maturityBlock(m: ReportModel, brand: BrandTokens): Node[] {
-  const s = m.scorecard;
-  const { score, rating, coverage, confidence } = s.overall;
-  const coverageText = `${formatPercent(Math.round(coverage * 100))} of the controls we check could be measured this quarter`;
-  const unmeasured = s.functions.filter((f) => f.score === null).map((f) => FUNCTION_NAME[f.function] ?? f.function);
-  const withheld = score === null || confidence === 'low';
-  const left: Node = withheld
-    ? {
-        width: 170,
-        stack: [
-          { text: 'Not scored', fontSize: 20, bold: true, color: GRAY, margin: [0, 18, 0, 6] },
-          { text: 'Not enough security data to score this quarter.', bold: true, fontSize: 10, color: brand.primary },
-          {
-            text: `Only ${coverageText}. Connecting the remaining tools lets the score appear next quarter; nothing here should be read as a failing grade.`,
-            style: 'small',
-            margin: [0, 4, 0, 0],
-          },
+/** Content width on Letter at the 54pt side margins. */
+const CONTENT_W = PAGE.width - 2 * 54;
+
+const tableLayout = (brand: BrandTokens) => ({
+  hLineWidth: (i: number) => (i <= 1 ? 1 : 0.5),
+  vLineWidth: () => 0,
+  hLineColor: (i: number) => (i <= 1 ? brand.accent : RULE),
+  paddingTop: () => 6,
+  paddingBottom: () => 6,
+  paddingLeft: () => 4,
+  paddingRight: () => 4,
+});
+
+const zeroPadding = { defaultBorder: false, paddingLeft: () => 0, paddingRight: () => 0, paddingTop: () => 0, paddingBottom: () => 0 };
+
+/** A shaded block with an accent bar that never splits (Since last quarter, What to fix first, assumptions). */
+function panel(stack: Node[], accent: string, fill: string, margin: number[] = [0, 10, 0, 10]): Node {
+  return {
+    unbreakable: true,
+    table: {
+      widths: [3, '*'],
+      body: [
+        [
+          { text: '', fillColor: accent, border: [false, false, false, false] },
+          { stack, margin: [10, 8, 10, 8], fillColor: fill, border: [false, false, false, false] },
         ],
-      }
-    : { width: 170, stack: [{ svg: donutSvg(score, rating), width: 150 }] };
-  const right: Node = {
+      ],
+    },
+    layout: zeroPadding,
+    margin,
+  };
+}
+
+/** Status chip as an inline highlighted run. */
+function chip(word: string, fill: string): Node {
+  return { text: ` ${word} `, color: '#ffffff', background: fill, bold: true, fontSize: 9 };
+}
+
+/** Page one: headline, lede, tiles, what we did / saw / need, since last quarter. */
+function pageOne(m: ReportModel): Node[] {
+  const brand = m.brand;
+  const out: Node[] = [{ text: m.executive.headline || PAGE_TITLES.fallbackHeadline, style: 'h1', headlineLevel: 1, color: brand.primary }];
+  if (m.executive.lede) out.push({ text: m.executive.lede, style: 'lede' });
+  const band = kpiBand(m);
+  if (band) out.push(band);
+  const confidence = confidenceBlock(m);
+  if (confidence) out.push(confidence);
+
+  const list = (title: string, items: string[]): Node => ({
     width: '*',
     stack: [
-      { svg: functionBarsSvg(s.functions), width: 320 },
-      ...(withheld
-        ? []
-        : [
-            {
-              text: `${ratingWord(rating)}${confidence === 'medium' ? ', provisional' : ''}. ${coverageText}${
-                confidence === 'medium' ? '; the score firms up as more tools are connected' : ''
-              }.${unmeasured.length ? ` Not yet measured: ${unmeasured.join(', ')}.` : ''}`,
-              style: 'small',
-              margin: [0, 8, 0, 0],
-            },
-          ]),
+      { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 150, y2: 0, lineWidth: 2, lineColor: RULE }], margin: [0, 0, 0, 6] },
+      { text: title, style: 'h3', color: brand.primary },
+      items.length
+        ? { ul: items.map((t) => ({ text: t, style: 'body', margin: [0, 0, 0, 4] })) }
+        : { text: 'Nothing to report this quarter.', style: 'small' },
     ],
+  });
+  const decisions: Node[] = m.decisions.length
+    ? m.decisions.map((d) => ({
+        columns: [
+          { width: 12, canvas: [{ type: 'rect', x: 0, y: 3, w: 7, h: 7, r: 1, lineWidth: 1, lineColor: SEMANTIC.watch }] },
+          {
+            width: '*',
+            stack: [
+              { text: d.ask, style: 'body', margin: [0, 0, 0, 1] },
+              ...(decisionSubline(d) ? [{ text: decisionSubline(d), style: 'small' }] : []),
+            ],
+          },
+        ],
+        margin: [0, 0, 0, 6],
+      }))
+    : [{ text: 'Nothing needs your decision this quarter.', style: 'body' }];
+  const need: Node = {
+    width: '*',
+    table: {
+      widths: ['*'],
+      body: [[{ stack: [{ text: 'What we need from you', style: 'h3', color: SEMANTIC.watch }, ...decisions], fillColor: SEMANTIC.watchBg, margin: [8, 8, 8, 4] }]],
+    },
+    layout: { defaultBorder: false, hLineWidth: (i: number) => (i === 0 ? 2 : 0), hLineColor: () => SEMANTIC.watch, vLineWidth: () => 0, paddingLeft: () => 0, paddingRight: () => 0, paddingTop: () => 0, paddingBottom: () => 0 },
   };
-  return [{ columns: [left, right], columnGap: 18, margin: [0, 4, 0, 14] }];
+  out.push({ unbreakable: true, columns: [list('What we did', m.executive.did), list('What we saw', m.executive.saw), need], columnGap: 16, margin: [0, 12, 0, 0] });
+
+  if (m.sinceLastQuarter.length) {
+    out.push(
+      panel(
+        [
+          { text: 'Since last quarter', bold: true, color: SEMANTIC.ink, fontSize: 10.5, margin: [0, 0, 0, 4] },
+          ...m.sinceLastQuarter.map((r) => ({
+            columns: [
+              { width: '*', stack: [{ text: r.topic, style: 'td' }, ...(r.detail ? [{ text: r.detail, style: 'small' }] : [])] },
+              { width: 'auto', text: sinceLabel(r), bold: true, fontSize: 10, color: sinceColor(r) },
+            ],
+            columnGap: 12,
+            margin: [0, 2, 0, 2],
+          })),
+        ],
+        brand.primary,
+        CANVAS,
+        [0, 14, 0, 0],
+      ),
+    );
+  }
+  return out;
+}
+
+/** Page two: the ring and its honesty note, the five questions, what to fix first. */
+function protectionPage(m: ReportModel): Node[] {
+  const brand = m.brand;
+  const { score, rating, confidence } = m.scorecard.overall;
+  const withheld = score === null || confidence === 'low';
+  const out: Node[] = [{ text: PAGE_TITLES.protection, style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' }];
+  out.push({
+    unbreakable: true,
+    columns: [
+      withheld
+        ? { width: 96, text: 'Not scored', fontSize: 16, bold: true, color: GRAY, margin: [0, 28, 0, 0] }
+        : { width: 96, stack: [{ svg: donutSvg(score, rating, 96), width: 96 }] },
+      { width: '*', text: ringNote(m), style: 'body', margin: [0, withheld ? 22 : 20, 0, 0] },
+    ],
+    columnGap: 16,
+    margin: [0, 0, 0, 10],
+  });
+  const body: unknown[][] = [
+    [
+      { text: 'The question', style: 'th' },
+      { text: 'What is in place', style: 'th' },
+      { text: 'This quarter', style: 'th' },
+      { text: 'Status', style: 'th' },
+    ],
+    ...m.protection.map((row) => [
+      { stack: [{ text: row.question, bold: true, color: SEMANTIC.ink, fontSize: 10 }, { text: PROTECTION_SUBTITLE[row.id] ?? '', style: 'small', margin: [0, 2, 0, 0] }] },
+      { text: protectionInPlace(row), style: 'td' },
+      { text: protectionThisQuarter(row), style: 'td' },
+      { stack: [{ text: [chip(protectionStatusWord(row), ratingColor(row.rating))] }, { text: functionScoresText(row), style: 'small', margin: [0, 4, 0, 0] }] },
+    ]),
+  ];
+  out.push({ table: { headerRows: 1, dontBreakRows: true, widths: [104, '*', '*', 78], body }, layout: tableLayout(brand), margin: [0, 0, 0, 8] });
+  const fix = whatToFixFirst(m);
+  if (fix) out.push(panel([{ text: 'What to fix first', bold: true, color: SEMANTIC.watch, margin: [0, 0, 0, 2] }, { text: fix, style: 'body', margin: [0, 0, 0, 0] }], SEMANTIC.watch, SEMANTIC.watchBg));
+  return out;
+}
+
+/** Page three: what we are tracking with you, then Now / Next / Later. */
+function decisionsPage(m: ReportModel): Node[] {
+  const brand = m.brand;
+  const out: Node[] = [
+    { text: PAGE_TITLES.decisions, style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' },
+    { text: DECISIONS_LEDE, style: 'body', color: GRAY },
+  ];
+  if (m.discussion.length) {
+    out.push({ text: 'What we are tracking with you', style: 'h2', headlineLevel: 2, color: brand.primary });
+    const body: unknown[][] = [
+      [
+        { text: 'Topic', style: 'th' },
+        { text: 'Where it stands', style: 'th' },
+        { text: 'Owner', style: 'th' },
+        { text: 'Status', style: 'th' },
+      ],
+      ...m.discussion.map((d) => {
+        const status = conversationStatus(d);
+        return [
+          { text: d.topic, style: 'td', bold: true, color: SEMANTIC.ink },
+          { text: d.response?.trim() || 'To discuss', style: 'td' },
+          { text: d.owner ?? '', style: 'td' },
+          { text: [chip(CONVERSATION_LABEL[status], conversationColor(status, brand.primary))] },
+        ];
+      }),
+    ];
+    out.push({ table: { headerRows: 1, dontBreakRows: true, widths: [130, '*', 70, 70], body }, layout: tableLayout(brand) });
+  }
+  if (m.notes) {
+    out.push({ text: 'Meeting notes', style: 'h2', headlineLevel: 2, color: brand.primary });
+    out.push({ text: m.notes, style: 'body', italics: true });
+  }
+  if (hasPlan(m)) {
+    out.push({
+      text: 'The next 90 days',
+      style: 'h2',
+      headlineLevel: 2,
+      color: brand.primary,
+      ...(m.discussion.length > DENSE_TABLE_ROWS ? { pageBreak: 'before' } : {}),
+    });
+    out.push({
+      unbreakable: true,
+      columnGap: 16,
+      columns: PLAN_COLUMNS.map((c) => ({
+        width: '*',
+        stack: [
+          { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 150, y2: 0, lineWidth: 2, lineColor: RULE }], margin: [0, 0, 0, 6] },
+          { text: [{ text: c.title, bold: true, color: brand.primary, fontSize: 11 }, { text: `  ${c.span}`, fontSize: 8.5, color: GRAY }], margin: [0, 0, 0, 6] },
+          ...(m.plan[c.key].length
+            ? m.plan[c.key].map((p) => ({
+                stack: [
+                  { text: p.action, bold: true, fontSize: 10.5, color: SEMANTIC.ink },
+                  { text: p.owner, style: 'small' },
+                  ...(p.decision ? [{ text: planDecisionLabel(m, p), bold: true, fontSize: 8.5, color: SEMANTIC.watch }] : []),
+                ],
+                margin: [0, 0, 0, 8],
+              }))
+            : [{ text: 'Nothing planned yet.', style: 'small' }]),
+        ],
+      })),
+    });
+  }
+  return out;
+}
+
+/** Page four: invested, recurring versus project work, where it went, plan versus actual, coming up. */
+function investmentPage(m: ReportModel, inv: InvestmentModel): Node[] {
+  const brand = m.brand;
+  const out: Node[] = [{ text: PAGE_TITLES.investment, style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' }];
+  const lede = investmentLede(inv);
+  if (lede) out.push({ text: lede, style: 'lede' });
+  if (inv.invoiced > 0) {
+    out.push({
+      unbreakable: true,
+      table: {
+        widths: ['*', '*', '*'],
+        body: [
+          investmentTiles(inv).map((t) => ({
+            stack: [
+              { text: t.value, fontSize: 20, bold: true, color: brand.primary },
+              { text: t.label, fontSize: 8.5, color: TEXT, margin: [0, 3, 0, 0] },
+              ...(t.note ? [{ text: t.note, fontSize: 8, color: GRAY, margin: [0, 1, 0, 0] }] : []),
+            ],
+            fillColor: CANVAS,
+            margin: [8, 10, 8, 10],
+          })),
+        ],
+      },
+      layout: { defaultBorder: false, vLineWidth: () => 4, vLineColor: () => '#ffffff', hLineWidth: () => 0 },
+      margin: [0, 6, 0, 10],
+    });
+  }
+  const bars = investmentBarsSvg(inv.breakdown, CONTENT_W, { recurring: brand.primary, variable: '#8fb3e6' });
+  if (bars) {
+    out.push({
+      unbreakable: true,
+      stack: [
+        { text: 'Where it went', style: 'h2', headlineLevel: 2, color: brand.primary },
+        { svg: bars, width: CONTENT_W },
+        { text: 'Darker bars are recurring services; lighter bars are project and support work.', style: 'small', margin: [0, 4, 0, 0] },
+      ],
+    });
+  }
+  if (inv.planVsActual) {
+    const p = inv.planVsActual;
+    out.push(
+      panel(
+        [
+          { text: `${p.fiscalYearLabel} plan versus actual`, bold: true, color: SEMANTIC.ink, margin: [0, 0, 0, 4] },
+          { svg: planMeterSvg(p.pct, CONTENT_W - 40, { elapsedPct: p.elapsedPct }), width: CONTENT_W - 40, margin: [0, 0, 0, 4] },
+          { text: planVsActualText(p), style: 'body', margin: [0, 0, 0, 0] },
+        ],
+        brand.primary,
+        CANVAS,
+        [0, 12, 0, 6],
+      ),
+    );
+  }
+  if (inv.comingUp.length) {
+    out.push({ text: 'Coming up', style: 'h2', headlineLevel: 2, color: brand.primary });
+    out.push({ ul: inv.comingUp.map((c) => ({ text: c, style: 'body', margin: [0, 0, 0, 3] })) });
+  }
+  return out;
+}
+
+/** Page 4b, planning quarter only: the twelve-month outlook built with the client. */
+function planningPage(m: ReportModel, outlook: BudgetOutlook): Node[] {
+  const brand = m.brand;
+  const out: Node[] = [
+    { text: planningTitle(outlook), style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' },
+    { text: PLANNING_LEDE, style: 'body' },
+  ];
+  const r = (n: number) => ({ text: money(n), style: 'td', alignment: 'right' });
+  const body: unknown[][] = [
+    [
+      { text: 'Category', style: 'th' },
+      { text: 'Low', style: 'th', alignment: 'right' },
+      { text: 'Expected', style: 'th', alignment: 'right' },
+      { text: 'High', style: 'th', alignment: 'right' },
+      { text: 'Based on', style: 'th' },
+    ],
+    ...outlook.lines.map((line) => [
+      { text: BUDGET_CATEGORY_LABEL[line.category] ?? line.category, style: 'td', bold: true, color: SEMANTIC.ink },
+      r(line.low),
+      r(line.expected),
+      r(line.high),
+      { text: basisText(line), style: 'td' },
+    ]),
+    [
+      { text: 'Total', style: 'td', bold: true, color: SEMANTIC.ink },
+      { ...r(outlook.totals.low), bold: true },
+      { ...r(outlook.totals.expected), bold: true },
+      { ...r(outlook.totals.high), bold: true },
+      { text: '', style: 'td' },
+    ],
+  ];
+  out.push({ table: { headerRows: 1, dontBreakRows: true, widths: [104, 60, 64, 60, '*'], body }, layout: tableLayout(brand), margin: [0, 4, 0, 6] });
+  if (outlook.caveats.length) out.push({ ul: outlook.caveats.map((c) => ({ text: c, style: 'small' })), margin: [0, 0, 0, 6] });
+  if (outlook.assumptions.length) {
+    out.push(panel([{ text: [{ text: 'What we assumed with you. ', bold: true, color: SEMANTIC.ink }, { text: outlook.assumptions.join(' ') }], style: 'body', margin: [0, 0, 0, 0] }], brand.primary, CANVAS, [0, 6, 0, 4]));
+  }
+  if (outlook.movers.length) {
+    out.push(panel([{ text: [{ text: 'What would move it. ', bold: true, color: SEMANTIC.ink }, { text: outlook.movers.join(' ') }], style: 'body', margin: [0, 0, 0, 0] }], brand.primary, CANVAS, [0, 4, 0, 6]));
+  }
+  out.push({ text: 'Decisions for the plan', style: 'h2', headlineLevel: 2, color: brand.primary });
+  out.push({ ul: planningDecisions(outlook).map((d) => ({ text: d, style: 'body' })) });
+  return out;
+}
+
+/** Strategic goals and how IT supports them (qualitative, so no guardrail concern). */
+function goalsPage(m: ReportModel): Node[] {
+  const brand = m.brand;
+  const out: Node[] = [
+    { text: PAGE_TITLES.goals, style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' },
+    { text: 'Your business objectives and how our services support them.', style: 'small', margin: [0, 0, 0, 8] },
+  ];
+  for (const g of m.goals) {
+    out.push({
+      unbreakable: true,
+      table: {
+        widths: ['*', 'auto'],
+        body: [
+          [
+            {
+              stack: [
+                { text: g.title, bold: true, color: brand.primary, fontSize: 11 },
+                ...(g.targetPeriod ? [{ text: `Target: ${g.targetPeriod}`, style: 'small', margin: [0, 1, 0, 0] as number[] }] : []),
+                ...(g.alignment ? [{ text: g.alignment, style: 'body', margin: [0, 4, 0, 0] as number[] }] : []),
+              ],
+              margin: [10, 8, 10, 8],
+            },
+            { text: goalStatusLabel(g.status), color: '#ffffff', fillColor: goalStatusColor(g.status), bold: true, fontSize: 8.5, alignment: 'center', margin: [8, 8, 8, 8] },
+          ],
+        ],
+      },
+      layout: { defaultBorder: false, fillColor: (i: number) => (i === 0 ? CANVAS : null) },
+      margin: [0, 0, 0, 8],
+    });
+  }
+  return out;
+}
+
+function customSectionNodes(cs: { title: string; body: string }, brand: BrandTokens): Node[] {
+  return [
+    { text: cs.title, style: 'h2', headlineLevel: 2, color: brand.primary },
+    ...cs.body
+      .split(/\n\s*\n/)
+      .filter(Boolean)
+      .map((p) => ({ text: p.trim(), style: 'body' })),
+  ];
 }
 
 /** Build the full pdfmake document definition (exported for tests). */
 export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
   const brand = m.brand;
-  const content: Node[] = [...coverPage(m)];
+  const content: Node[] = [...coverPage(m), ...pageOne(m)];
 
-  // Opening page: headline, narrative, at-a-glance tiles, data confidence, what changed.
-  if (m.executive.headline || m.executive.paragraphs.length || selectKpiTiles(m).length >= 2) {
-    content.push({ text: 'Executive Summary', style: 'h1', color: brand.primary });
-    if (m.executive.headline) content.push({ text: m.executive.headline, fontSize: 15, bold: true, color: brand.primary, lineHeight: 1.2, margin: [0, 0, 0, 10] });
-    for (const p of m.executive.paragraphs) content.push({ text: p, style: 'body' });
-    if (m.executive.highlights.length) {
-      content.push({ ul: m.executive.highlights.map((h) => ({ text: h, style: 'body', margin: [0, 1, 0, 1] })), margin: [0, 4, 0, 0] });
-    }
-    const band = kpiBand(m);
-    if (band) content.push(band);
-    const confidence = confidenceBlock(m);
-    if (confidence) content.push(confidence);
-    const moversSvg = moversBarChartSvg(m.trends, { width: 508 });
+  if (m.goals.length) content.push(...goalsPage(m));
+  for (const cs of m.customSections.filter((s) => s.placement === 'after-summary')) content.push(...customSectionNodes(cs, brand));
+
+  content.push(...protectionPage(m));
+  if (showDecisionsPage(m)) content.push(...decisionsPage(m));
+  if (showInvestmentPage(m.investment)) content.push(...investmentPage(m, m.investment));
+  if (m.investment?.outlook) content.push(...planningPage(m, m.investment.outlook));
+
+  // Quarter in numbers: the movers chart (one unbreakable block with its caption), then the tables.
+  const moversSvg = moversBarChartSvg(m.trends, { width: CONTENT_W });
+  if (m.sections.length || moversSvg) {
+    content.push({ text: PAGE_TITLES.numbers, style: 'h1', headlineLevel: 1, color: brand.primary, pageBreak: 'before' });
     if (moversSvg) {
-      content.push({ text: 'What changed this quarter', style: 'h2', color: brand.primary, margin: [0, 12, 0, 2] });
-      content.push({ text: moversCaption(m.trends), style: 'small', margin: [0, 0, 0, 6] });
-      content.push({ svg: moversSvg, width: 508, margin: [0, 0, 0, 8] });
-    }
-  }
-
-  // Strategic goals & IT alignment (qualitative; no figures, so no guardrail concern).
-  if (m.goals.length) {
-    content.push({ text: 'Strategic Goals & IT Alignment', style: 'h1', color: brand.primary, pageBreak: 'before' });
-    content.push({ text: 'Your business objectives and how our services support them.', style: 'small', margin: [0, 0, 0, 8] });
-    for (const g of m.goals) {
       content.push({
-        table: {
-          widths: ['*', 'auto'],
-          body: [
-            [
-              {
-                stack: [
-                  { text: g.title, bold: true, color: brand.primary, fontSize: 11 },
-                  ...(g.targetPeriod ? [{ text: `Target: ${g.targetPeriod}`, style: 'small', margin: [0, 1, 0, 0] as number[] }] : []),
-                  ...(g.alignment ? [{ text: g.alignment, style: 'body', margin: [0, 4, 0, 0] as number[] }] : []),
-                ],
-                margin: [10, 8, 10, 8],
-              },
-              {
-                text: goalStatusLabel(g.status),
-                color: '#ffffff',
-                fillColor: goalStatusColor(g.status),
-                bold: true,
-                fontSize: 8.5,
-                alignment: 'center',
-                margin: [8, 8, 8, 8],
-              },
-            ],
-          ],
-        },
-        layout: { defaultBorder: false, fillColor: (i: number) => (i === 0 ? CANVAS : null) },
-        margin: [0, 0, 0, 8],
+        unbreakable: true,
+        stack: [
+          { text: 'What changed this quarter', style: 'h2', headlineLevel: 2, color: brand.primary, margin: [0, 0, 0, 2] },
+          { text: moversCaption(m.trends), style: 'small', margin: [0, 0, 0, 6] },
+          { svg: moversSvg, width: CONTENT_W, margin: [0, 0, 0, 8] },
+        ],
       });
     }
-  }
-
-  // Custom sections placed right after the summary
-  for (const cs of m.customSections.filter((s) => s.placement === 'after-summary')) {
-    content.push({ text: cs.title, style: 'h2', color: brand.primary });
-    for (const p of cs.body.split(/\n\s*\n/).filter(Boolean)) content.push({ text: p.trim(), style: 'body' });
-  }
-
-  // Maturity scorecard
-  const s = m.scorecard;
-  content.push({ text: 'Security & Risk Maturity', style: 'h1', color: brand.primary, pageBreak: 'before' });
-  content.push(...maturityBlock(m, brand));
-  // Plain-English explainer so a non-technical reader knows what the score is
-  // (and is not); clients kept asking what "NIST" meant.
-  content.push({
-    table: {
-      widths: ['*'],
-      body: [
-        [
-          {
-            stack: [
-              { text: 'How to read this score', bold: true, fontSize: 9.5, color: brand.primary, margin: [0, 0, 0, 3] },
-              {
-                text:
-                  'We check the safeguards protecting your business (multi-factor authentication, endpoint protection, patching, backups and more) against CIS Controls v8, a widely used industry checklist of security best practices. The results are grouped under the six functions of the NIST Cybersecurity Framework (Govern, Identify, Protect, Detect, Respond, Recover) so you can see at a glance where your defenses are strong and where we recommend investment. The score reflects what our connected tools can measure this quarter. It is a posture guide, not a compliance certification.' +
-                  (m.client.complianceStandard
-                    ? ` Because ${m.client.name} answers to ${m.client.complianceStandard}, we weigh these findings with ${m.client.complianceStandard} expectations in mind throughout this review.`
-                    : ''),
-                fontSize: 8.5,
-                color: GRAY,
-                lineHeight: 1.25,
-              },
-            ],
-            fillColor: CANVAS,
-            margin: [10, 8, 10, 8],
-          },
-        ],
-      ],
-    },
-    layout: 'noBorders',
-    margin: [0, 0, 0, 14],
-  });
-  if (s.remediations.length) {
-    content.push({ text: 'Priority remediations', style: 'h2', color: brand.primary });
-    content.push({
-      ul: s.remediations.map((r) => ({ text: [{ text: `${r.title}: `, bold: true }, { text: r.evidence }], style: 'body', margin: [0, 1, 0, 1] })),
-    });
-  }
-
-  // Metric sections
-  if (m.sections.length) {
-    content.push({ text: 'Quarter in Numbers', style: 'h1', color: brand.primary, pageBreak: 'before' });
     for (const section of m.sections) content.push(sectionTable(section, brand));
   }
+  for (const cs of m.customSections.filter((c) => (c.placement ?? 'in-body') === 'in-body')) content.push(...customSectionNodes(cs, brand));
+  for (const cs of m.customSections.filter((c) => c.placement === 'end')) content.push(...customSectionNodes(cs, brand));
 
-  // In-body custom sections
-  for (const cs of m.customSections.filter((c) => (c.placement ?? 'in-body') === 'in-body')) {
-    content.push({ text: cs.title, style: 'h2', color: brand.primary });
-    for (const p of cs.body.split(/\n\s*\n/).filter(Boolean)) content.push({ text: p.trim(), style: 'body' });
-  }
-
-  // Discussion & decisions from the meeting
-  if (m.discussion.length || m.notes) {
-    content.push({ text: 'Active & Pending Conversations', style: 'h1', color: brand.primary, pageBreak: 'before' });
-    if (m.discussion.length) content.push(discussionTable(m.discussion, brand));
-    if (m.notes) {
-      content.push({ text: 'Meeting notes', style: 'h2', color: brand.primary, margin: [0, 14, 0, 4] });
-      content.push({ text: m.notes, style: 'body', italics: true });
-    }
-  }
-
-  // Recommendations
-  if (m.recommendations.length) {
-    content.push({ text: 'Recommendations & Next 90 Days', style: 'h1', color: brand.primary, pageBreak: 'before' });
-    content.push({ ol: m.recommendations.map((r) => ({ text: r, style: 'body', margin: [0, 2, 0, 2] })) });
-  }
-
-  // End-placed custom sections
-  for (const cs of m.customSections.filter((c) => c.placement === 'end')) {
-    content.push({ text: cs.title, style: 'h2', color: brand.primary });
-    for (const p of cs.body.split(/\n\s*\n/).filter(Boolean)) content.push({ text: p.trim(), style: 'body' });
-  }
-
-  // Appendix: attached vendor reports
+  // Appendix: attached vendor reports, then how the score works.
+  content.push({
+    text: m.documents.length ? PAGE_TITLES.appendixWithReports : PAGE_TITLES.appendixScoring,
+    style: 'h1',
+    headlineLevel: 1,
+    color: brand.primary,
+    pageBreak: 'before',
+  });
   if (m.documents.length) {
-    content.push({ text: 'Appendix: Attached Reports', style: 'h1', color: brand.primary, pageBreak: 'before' });
     content.push({ text: 'The following source reports accompany this review:', style: 'body' });
     content.push({
       ul: m.documents.map((d) => ({ text: [{ text: d.name, bold: true }, { text: `  (${d.source})`, color: GRAY }], style: 'body', margin: [0, 1, 0, 1] })),
     });
+    content.push({ text: 'How we score', style: 'h2', headlineLevel: 2, color: brand.primary });
   }
+  content.push({ text: howWeScore(m), style: 'body' });
 
   return {
     content,
     pageSize: 'LETTER',
-    pageMargins: [52, 58, 52, 56],
+    pageMargins: [54, 62, 54, 58],
     background: pageBackground(brand),
     info: { title: `${m.client.name} QBR, ${m.period.label}`, author: brand.orgName },
-    defaultStyle: { font: 'Helvetica', fontSize: 10.5, color: TEXT, lineHeight: 1.3 },
+    defaultStyle: { font: 'Helvetica', fontSize: 10.5, color: TEXT, lineHeight: 1.35 },
     styles: {
-      h1: { fontSize: 19, bold: true, margin: [0, 0, 0, 10] },
-      h2: { fontSize: 13, bold: true, margin: [0, 10, 0, 6] },
+      h1: { fontSize: 20, bold: true, lineHeight: 1.2, margin: [0, 0, 0, 10] },
+      h2: { fontSize: 13, bold: true, margin: [0, 12, 0, 6] },
+      h3: { fontSize: 11, bold: true, margin: [0, 0, 0, 6] },
       th: { fontSize: 8.5, bold: true, color: GRAY },
-      td: { fontSize: 10 },
-      body: { fontSize: 10.5, margin: [0, 0, 0, 6] },
+      td: { fontSize: 10, lineHeight: 1.35 },
+      body: { fontSize: 10.5, lineHeight: 1.4, margin: [0, 0, 0, 6] },
+      lede: { fontSize: 12, lineHeight: 1.45, margin: [0, 0, 0, 8] },
       small: { fontSize: 8.5, color: GRAY },
     },
     header: (page: number) =>
@@ -546,14 +753,19 @@ export function buildPdfDefinition(m: ReportModel): Record<string, unknown> {
               { text: `${brand.orgName} quarterly business review`, color: GRAY, fontSize: 8 },
               { text: `${m.client.name}, ${m.period.label}`, color: GRAY, fontSize: 8, alignment: 'right' },
             ],
-            margin: [52, 24, 52, 0],
+            margin: [54, 26, 54, 0],
           },
+    // Headings keep with next: pdfmake reads headlineLevel only through this callback.
+    // A heading with nothing after it on its page moves to the next page. The
+    // callback must declare both parameters or pdfmake skips collecting the list.
+    pageBreakBefore: (node: { headlineLevel?: number }, followingNodesOnPage: unknown[]) =>
+      Boolean(node.headlineLevel) && followingNodesOnPage.length === 0,
     footer: (page: number, pages: number) => ({
       columns: [
-        { text: `Prepared by ${brand.orgName}. Confidential.`, color: GRAY, fontSize: 8 },
-        { text: `Page ${page} of ${pages}`, color: GRAY, fontSize: 8, alignment: 'right' },
+        { text: footerText(m), color: GRAY, fontSize: 8 },
+        { text: `Page ${page} of ${pages}`, color: GRAY, fontSize: 8, alignment: 'right', width: 70 },
       ],
-      margin: [52, 18, 52, 0],
+      margin: [54, 20, 54, 0],
     }),
   };
 }

@@ -9,6 +9,7 @@ import {
   type NarrativeModel,
   type NarrativeOutput,
 } from '@mashit/narrative';
+import { v4 } from './v4.js';
 
 const anp = SEED_CLIENTS.find((c) => c.id === 'anp')!;
 const input = buildNarrativeInput({
@@ -17,18 +18,18 @@ const input = buildNarrativeInput({
   previous: findSeedSnapshot('anp', '2025-Q4')!,
 });
 
-const clean: NarrativeOutput = {
+const clean: NarrativeOutput = v4({
   headline: 'A high-activity, security-forward quarter',
-  summary_paragraphs: ['Ticket volume rose to 141, up 200% from 47 last quarter.'],
-  highlights: ['22 email threats blocked before reaching inboxes'],
-  recommendations: ['Plan the May hardware refresh'],
+  lede: 'Ticket volume rose to 141, up 200% from 47 last quarter.',
+  did: ['Blocked 22 email threats before reaching inboxes.', 'Handled every support request.', 'Kept monitoring running.'],
+  plan: { now: [], next: [{ action: 'Plan the May hardware refresh', owner: 'Mash IT', decision: true }], later: [] },
   figures_referenced: [
     { label: 'tickets this quarter', value: '141' },
     { label: 'tickets last quarter', value: '47' },
     { label: 'ticket change', value: '+200%' },
     { label: 'email threats blocked', value: '22' },
   ],
-};
+});
 
 const fabricated: NarrativeOutput = {
   ...clean,
@@ -97,7 +98,7 @@ describe('generateNarrative', () => {
       calls++;
       // Second call should have received the rejected draft + correction.
       if (calls === 1) return fabricated;
-      expect(messages.some((m) => m.content.includes('NOT present'))).toBe(true);
+      expect(messages.some((m) => m.content.includes('failed review'))).toBe(true);
       return clean;
     };
     const result = await generateNarrative(input, model, { maxRetries: 2 });
@@ -130,7 +131,7 @@ describe('model output validation', () => {
   });
 
   it('rejects a list holding a non-string', async () => {
-    const model = (async () => ({ ...clean, highlights: [42] })) as unknown as NarrativeModel;
+    const model = (async () => ({ ...clean, did: [42] })) as unknown as NarrativeModel;
     await expect(generateNarrative(input, model)).rejects.toThrow(/shape/);
   });
 
@@ -165,5 +166,19 @@ describe('model output validation', () => {
   it('parseModelText returns a valid narrative and shape-checks it', () => {
     expect(parseModelText(JSON.stringify(clean), 'end_turn')).toEqual(clean);
     expect(() => parseModelText('{"headline":"x"}', 'end_turn')).toThrow(/shape/);
+  });
+
+  it('a draft over a limit is retried with the limits in the correction', async () => {
+    const long = { ...clean, did: ['a', 'b'] };
+    const seen: string[] = [];
+    let calls = 0;
+    const model: NarrativeModel = async (messages) => {
+      seen.push(messages[messages.length - 1]!.content);
+      return calls++ === 0 ? long : clean;
+    };
+    const r = await generateNarrative(input, model, { maxRetries: 1 });
+    expect(r.attempts).toBe(2);
+    expect(r.verification.ok).toBe(true);
+    expect(seen[1]).toContain('did: 2 items (3 to 4)');
   });
 });

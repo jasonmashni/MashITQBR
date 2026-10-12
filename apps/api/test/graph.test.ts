@@ -68,8 +68,26 @@ describe('emailQbr / createMeeting handlers', () => {
     expect(captured.body.message.toRecipients[0].emailAddress.address).toBe('anne@client.com');
     const att = captured.body.message.attachments[0];
     expect(att['@odata.type']).toBe('#microsoft.graph.fileAttachment');
-    expect(att.name).toContain('.pptx');
+    expect(att.name).toMatch(/^Mash IT QBR - .+ - Q1 2026\.pptx$/);
     expect(att.contentBytes.length).toBeGreaterThan(1000); // real rendered deck
+  });
+
+  it('default subjects carry no em or en dash', async () => {
+    const h = await import('../src/handlers.js');
+    const subjects: string[] = [];
+    const fetchFn = async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      subjects.push(body.message?.subject ?? body.subject);
+      return new Response(JSON.stringify({ id: 'evt-2' }), { status: body.message ? 202 : 201 });
+    };
+    expect((await h.emailQbr('anp', '2026-Q1', { to: ['a@b.com'] }, withToken(), fetchFn)).status).toBe(200);
+    expect((await h.createMeeting('anp', '2026-Q2', { start: '2026-07-15T18:00:00.000Z' }, withToken(), fetchFn)).status).toBe(200);
+    expect(subjects).toHaveLength(2);
+    for (const s of subjects) {
+      expect(s).not.toMatch(/[–—]/);
+      expect(s).toContain('QBR');
+    }
+    expect(subjects[0]).toContain('Q1 2026');
   });
 
   it('creates a Teams meeting and schedules the QBR with the join link', async () => {

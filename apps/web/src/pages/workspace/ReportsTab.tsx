@@ -50,6 +50,7 @@ export function ReportsTab({
   refresh,
   reportsMailbox,
   aiEnabled,
+  lockedPeriods = {},
   onChanged,
 }: {
   clientId: string;
@@ -58,8 +59,11 @@ export function ReportsTab({
   refresh: number;
   reportsMailbox: string | null;
   aiEnabled: boolean;
+  /** Lock sentence per locked quarter: its documents cannot change until a Reopen. */
+  lockedPeriods?: Record<string, string>;
   onChanged: () => void;
 }) {
+  const uploadLock = lockedPeriods[period];
   const [docs, setDocs] = useState<DocumentInfo[] | null>(null);
   const [uploading, setUploading] = useState(false);
   const [renaming, setRenaming] = useState<DocumentInfo | null>(null);
@@ -331,13 +335,17 @@ export function ReportsTab({
                 AI match
               </Button>
             )}
-            <FileButton onChange={upload} accept="application/pdf,image/*,.csv,.xlsx,.docx">
-              {(props) => (
-                <Button {...props} loading={uploading} leftSection={<IconUpload size={16} />}>
-                  Upload to {period}
-                </Button>
-              )}
-            </FileButton>
+            <Tooltip label={uploadLock} disabled={!uploadLock} multiline w={300}>
+              <div>
+                <FileButton onChange={upload} accept="application/pdf,image/*,.csv,.xlsx,.docx" disabled={Boolean(uploadLock)}>
+                  {(props) => (
+                    <Button {...props} loading={uploading} leftSection={<IconUpload size={16} />} disabled={Boolean(uploadLock)}>
+                      Upload to {period}
+                    </Button>
+                  )}
+                </FileButton>
+              </div>
+            </Tooltip>
           </Group>
         </Group>
         {inboxAddress ? (
@@ -375,9 +383,9 @@ export function ReportsTab({
                     <Checkbox
                       size="xs"
                       aria-label="Select all reports"
-                      checked={docs.length > 0 && selected.size === docs.length}
-                      indeterminate={selected.size > 0 && selected.size < docs.length}
-                      onChange={(e) => setSelected(e.currentTarget.checked ? new Set(docs.map(aiKey)) : new Set())}
+                      checked={selected.size > 0 && selected.size === docs.filter((d) => !lockedPeriods[d.period]).length}
+                      indeterminate={selected.size > 0 && selected.size < docs.filter((d) => !lockedPeriods[d.period]).length}
+                      onChange={(e) => setSelected(e.currentTarget.checked ? new Set(docs.filter((d) => !lockedPeriods[d.period]).map(aiKey)) : new Set())}
                     />
                   </Table.Th>
                   <Table.Th>Report</Table.Th>
@@ -396,7 +404,10 @@ export function ReportsTab({
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {docs.map((d) => (
+                {docs.map((d) => {
+                  // A locked quarter's documents are frozen with its package.
+                  const rowLock = lockedPeriods[d.period];
+                  return (
                   <Fragment key={`${d.period}-${d.id}`}>
                   <Table.Tr>
                     <Table.Td>
@@ -404,6 +415,7 @@ export function ReportsTab({
                         size="xs"
                         aria-label={`Select ${d.name}`}
                         checked={selected.has(aiKey(d))}
+                        disabled={Boolean(rowLock)}
                         onChange={(e) => toggleSelected(aiKey(d), e.currentTarget.checked)}
                       />
                     </Table.Td>
@@ -419,6 +431,8 @@ export function ReportsTab({
                         data={DOC_CATEGORIES}
                         value={d.category ?? null}
                         onChange={(v) => patch(d, { category: v ?? '' }, v ? `Categorized as ${v}.` : 'Category cleared.')}
+                        disabled={Boolean(rowLock)}
+                        title={rowLock}
                         clearable
                         aria-label={`Category for ${d.name}`}
                       />
@@ -429,6 +443,8 @@ export function ReportsTab({
                         data={periodValues.some((p) => p.value === d.period) ? periodValues : [{ value: d.period, label: d.period }, ...periodValues]}
                         value={d.period}
                         onChange={(v) => v && v !== d.period && patch(d, { period: v }, `Moved to ${v}.`)}
+                        disabled={Boolean(rowLock)}
+                        title={rowLock}
                         allowDeselect={false}
                         aria-label={`Quarter for ${d.name}`}
                       />
@@ -439,39 +455,51 @@ export function ReportsTab({
                     <Table.Td>
                       <Group gap={2} wrap="nowrap" justify="flex-end">
                         {aiEnabled && isPdf(d) && (
-                          <Tooltip label="AI match: read the PDF and suggest name / quarter / category">
-                            <ActionIcon
-                              variant="subtle"
-                              color="good"
-                              aria-label={`AI match ${d.name}`}
-                              loading={ai[aiKey(d)]?.loading}
-                              onClick={() => analyze(d)}
-                            >
-                              <IconSparkles size={15} />
-                            </ActionIcon>
+                          <Tooltip label={rowLock ?? 'AI match: read the PDF and suggest name / quarter / category'} multiline w={rowLock ? 300 : undefined}>
+                            <span style={{ display: 'inline-block' }}>
+                              <ActionIcon
+                                variant="subtle"
+                                color="good"
+                                aria-label={`AI match ${d.name}`}
+                                loading={ai[aiKey(d)]?.loading}
+                                disabled={Boolean(rowLock)}
+                                onClick={() => analyze(d)}
+                              >
+                                <IconSparkles size={15} />
+                              </ActionIcon>
+                            </span>
                           </Tooltip>
                         )}
                         {aiEnabled && isPdf(d) && (
-                          <Tooltip label={`Extract metrics: read the numbers in this PDF into ${d.period}'s data`}>
-                            <ActionIcon
-                              variant="subtle"
-                              color="navy"
-                              aria-label={`Extract metrics from ${d.name}`}
-                              loading={extracting === aiKey(d)}
-                              onClick={() => extract(d)}
-                            >
-                              <IconTableImport size={15} />
-                            </ActionIcon>
+                          <Tooltip label={rowLock ?? `Extract metrics: read the numbers in this PDF into ${d.period}'s data`} multiline w={rowLock ? 300 : undefined}>
+                            <span style={{ display: 'inline-block' }}>
+                              <ActionIcon
+                                variant="subtle"
+                                color="navy"
+                                aria-label={`Extract metrics from ${d.name}`}
+                                loading={extracting === aiKey(d)}
+                                disabled={Boolean(rowLock)}
+                                onClick={() => extract(d)}
+                              >
+                                <IconTableImport size={15} />
+                              </ActionIcon>
+                            </span>
                           </Tooltip>
                         )}
-                        <Tooltip label="Rename">
-                          <ActionIcon variant="subtle" aria-label={`Rename ${d.name}`} onClick={() => { setRenaming(d); setNewName(d.name); }}>
-                            <IconPencil size={15} />
-                          </ActionIcon>
+                        <Tooltip label={rowLock ?? 'Rename'} multiline w={rowLock ? 300 : undefined}>
+                          <span style={{ display: 'inline-block' }}>
+                            <ActionIcon variant="subtle" aria-label={`Rename ${d.name}`} disabled={Boolean(rowLock)} onClick={() => { setRenaming(d); setNewName(d.name); }}>
+                              <IconPencil size={15} />
+                            </ActionIcon>
+                          </span>
                         </Tooltip>
-                        <ActionIcon color="act" variant="subtle" aria-label={`Remove ${d.name}`} onClick={() => remove(d)}>
-                          <IconTrash size={15} />
-                        </ActionIcon>
+                        <Tooltip label={rowLock ?? 'Delete'} multiline w={rowLock ? 300 : undefined}>
+                          <span style={{ display: 'inline-block' }}>
+                            <ActionIcon color="act" variant="subtle" aria-label={`Remove ${d.name}`} disabled={Boolean(rowLock)} onClick={() => remove(d)}>
+                              <IconTrash size={15} />
+                            </ActionIcon>
+                          </span>
+                        </Tooltip>
                       </Group>
                     </Table.Td>
                   </Table.Tr>
@@ -498,7 +526,11 @@ export function ReportsTab({
                                 )}
                               </div>
                               <Group gap="xs" wrap="nowrap">
-                                <Button size="compact-sm" color="good" onClick={() => acceptMatch(d, s)}>Match</Button>
+                                <Tooltip label={rowLock} disabled={!rowLock} multiline w={300}>
+                                  <span style={{ display: 'inline-block' }}>
+                                    <Button size="compact-sm" color="good" disabled={Boolean(rowLock)} onClick={() => acceptMatch(d, s)}>Match</Button>
+                                  </span>
+                                </Tooltip>
                                 <Button size="compact-sm" variant="subtle" color="slate" onClick={() => dismissMatch(d)}>Dismiss</Button>
                               </Group>
                             </Group>
@@ -508,7 +540,8 @@ export function ReportsTab({
                     );
                   })()}
                   </Fragment>
-                ))}
+                  );
+                })}
               </Table.Tbody>
             </Table>
           </Table.ScrollContainer>

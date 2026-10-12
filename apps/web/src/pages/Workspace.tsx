@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Tabs, Text, Stack, Alert, Loader, Center, Badge, Tooltip, Button, Group } from '@mantine/core';
+import { IconLock } from '@tabler/icons-react';
 import { api, ApiError, reportUrls } from '../api.js';
 import { lastPeriods } from '../periods.js';
-import type { Client, Discussion, QbrResponse, SystemInfo } from '../types.js';
+import type { Client, Discussion, PackageStage, QbrResponse, SystemInfo } from '../types.js';
 import { useResource } from '../hooks/useResource.js';
 import { toastError, toastOk } from '../toast.js';
 import { WorkspaceHeader } from './workspace/WorkspaceHeader.js';
-import { PipelineStepper } from './workspace/PipelineStepper.js';
+import { FinalizeConfirm, PipelineStepper } from './workspace/PipelineStepper.js';
 import { OverviewTab } from './workspace/OverviewTab.js';
 import { DataTab } from './workspace/DataTab.js';
 import { ReportsTab } from './workspace/ReportsTab.js';
@@ -15,7 +16,9 @@ import { MeetingTab } from './workspace/MeetingTab.js';
 import { ActionsTab } from './workspace/ActionsTab.js';
 import { OpportunitiesTab } from './workspace/OpportunitiesTab.js';
 import { StudioTab } from './workspace/StudioTab.js';
-import { deliverableGuard, deriveSteps, nextStep, type Step } from './workspace/nextStep.js';
+import { BudgetTab } from './workspace/BudgetTab.js';
+import { deliverableGuard, deriveSteps, lockNotice, primaryStep, type Step } from './workspace/nextStep.js';
+import { chooseLandingPeriod, lockedPeriodNotices, metaFromPeriodList, nextPeriodIn, qbrLoadError, type LandingPeriod } from './workspace/landing.js';
 
 /** The quarter the calendar is in right now, e.g. 2026-Q4 (UTC, same as the API). */
 function currentQuarterId(d = new Date()): string {
@@ -43,7 +46,7 @@ export function Workspace() {
     setSearchParams(next, { replace: true });
   };
   const [periods, setPeriods] = useState<Array<{ value: string; label: string }>>([]);
-  const [periodList, setPeriodList] = useState<Array<{ period: string; hasSnapshot: boolean; status?: string }>>([]);
+  const [periodList, setPeriodList] = useState<LandingPeriod[]>([]);
   const [periodsError, setPeriodsError] = useState<string | null>(null);
   const [period, setPeriod] = useState('');
   const [qbr, setQbr] = useState<QbrResponse | null>(null);
@@ -57,10 +60,11 @@ export function Workspace() {
   const [client, setClient] = useState<Client | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [signedOut, setSignedOut] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ title: string; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [primaryBusy, setPrimaryBusy] = useState(false);
+  const [confirmFinalize, setConfirmFinalize] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [tab, setTab] = useState<string>('overview');
   // Unsaved-work guards: a refresh must not clobber a mid-meeting agenda, and
@@ -135,25 +139,11 @@ export function Workspace() {
   }, [clientId]);
 
   // Choose the active quarter off the loaded list (synchronous, no refetch):
-  // the URL's ?period= wins when it's in range; otherwise land on the newest
-  // quarter with data, or the NEXT quarter when that one is already closed.
+  // the URL's ?period= wins when it's in range; otherwise the open quarter,
+  // else the newest final one (read-only). The URL is rewritten to carry it.
   useEffect(() => {
     if (periodList.length === 0) return;
-    if (wantedPeriod && periodList.some((p) => p.period === wantedPeriod)) {
-      setPeriod(wantedPeriod);
-      return;
-    }
-    let chosen: string | undefined;
-    const newestWithData = periodList.find((p) => p.hasSnapshot);
-    const done = newestWithData?.status === 'completed' || newestWithData?.status === 'archived';
-    if (newestWithData && done) {
-      const idx = periodList.findIndex((p) => p.period === newestWithData.period);
-      chosen = (periodList[Math.max(0, idx - 1)] ?? newestWithData).period;
-    } else if (newestWithData) {
-      chosen = newestWithData.period;
-    } else if (periodList[0]) {
-      chosen = periodList[0].period;
-    }
+    const chosen = chooseLandingPeriod(periodList, wantedPeriod);
     if (chosen) {
       setPeriod(chosen);
       if (chosen !== wantedPeriod) selectPeriod(chosen);
@@ -171,8 +161,9 @@ export function Workspace() {
       .catch((e) => {
         if (!live) return;
         setQbr(null);
-        // A quarter with no snapshot is an empty state, not an error.
-        setError(e instanceof ApiError && e.status === 404 ? null : e instanceof Error ? e.message : 'Failed to build QBR');
+        // A quarter with no snapshot is an empty state, not an error; a
+        // locked quarter with a missing package says to reopen it.
+        setError(qbrLoadError(e instanceof ApiError ? e.status : undefined, e instanceof Error ? e.message : 'Failed to build QBR'));
       })
       .finally(() => live && setLoading(false));
     // Switching client/quarter always reloads the discussion; a plain refresh
@@ -213,13 +204,27 @@ export function Workspace() {
     }
   }
 
-  async function onComplete() {
+  /** Lock 2 on demand: the final package is stored and the quarter goes read-only. */
+  async function onFinalize() {
     try {
-      await api.putStatus(clientId, period, { status: 'completed' });
-      toastOk(`${period} closed. The workspace will open on the next quarter from now on.`);
+      const saved = await api.finalize(clientId, period);
+      toastOk(`${period} finalized. The final package is stored and the quarter is read-only.`);
+      setPeriodList((list) => list.map((p) => (p.period === period ? { ...p, status: saved.status, locks: saved.locks } : p)));
       setRefresh((n) => n + 1);
     } catch (e) {
-      toastError('Could not close the quarter', e);
+      toastError('Could not finalize the quarter', e);
+      throw e;
+    }
+  }
+
+  async function onReopen(stage: PackageStage, reason: string) {
+    try {
+      const saved = await api.reopen(clientId, period, { stage, reason });
+      toastOk(stage === 'final' ? `${period} reopened. The agenda and decisions can change again.` : `${period} reopened. Data, narrative and agenda can change again.`);
+      setPeriodList((list) => list.map((p) => (p.period === period ? { ...p, status: saved.status, locks: saved.locks } : p)));
+      setRefresh((n) => n + 1);
+    } catch (e) {
+      toastError('Could not reopen the quarter', e);
       throw e;
     }
   }
@@ -247,8 +252,8 @@ export function Workspace() {
         if (qbr && qbr.verification) void onApprove();
         else setTab('overview');
         return;
-      case 'complete':
-        setTab('overview');
+      case 'finalize':
+        setConfirmFinalize(true);
         return;
       default:
         setTab(step.tab);
@@ -256,14 +261,25 @@ export function Workspace() {
   }
 
   const urls = reportUrls(clientId, period);
-  const meta = qbr?.meta;
+  // When the QBR fails to load (a locked quarter whose package is missing),
+  // the lock state still comes from the period list so Reopen stays available.
+  const meta = qbr?.meta ?? metaFromPeriodList(periodList, clientId, period);
   const steps = deriveSteps({ hasData: Boolean(qbr), meta, unfiled, disc });
-  const next = nextStep(steps);
+  const next = primaryStep(steps, meta);
+  const notice = lockNotice(meta);
+  const finalized = Boolean(meta?.locks?.final);
+  // Lock sentence per quarter for the Reports tab (it spans every quarter);
+  // the selected quarter follows its freshly loaded record.
+  const lockedPeriods = lockedPeriodNotices(periodList, clientId);
+  if (notice) lockedPeriods[period] = notice;
+  else if (qbr?.meta) delete lockedPeriods[period];
+  const nextQuarter = finalized ? nextPeriodIn(periodList, period) : undefined;
   const guard = deliverableGuard({
     hasQbr: Boolean(qbr),
     verificationOk: qbr?.verification ?? false,
     status: meta?.status,
     confidence: qbr?.model.scorecard.overall.confidence,
+    locked: Boolean(notice),
   });
 
   return (
@@ -271,6 +287,7 @@ export function Workspace() {
       <WorkspaceHeader
         name={client?.name ?? qbr?.model.client.name ?? clientId}
         qbr={qbr}
+        meta={meta}
         periods={periods}
         period={period}
         onPeriodChange={(v) => {
@@ -286,7 +303,30 @@ export function Workspace() {
         primaryBusy={primaryBusy}
         onPrimary={onPrimary}
         onPackageSent={() => setRefresh((n) => n + 1)}
+        lockNotice={notice}
+        onReopen={onReopen}
       />
+      <FinalizeConfirm opened={confirmFinalize} period={period} onClose={() => setConfirmFinalize(false)} onFinalize={onFinalize} />
+
+      {notice && (
+        <Alert color={finalized ? 'good' : 'navy'} variant="light" icon={<IconLock size={18} />}>
+          <Group justify="space-between" gap="sm" wrap="wrap">
+            <Text size="sm">{notice}</Text>
+            {nextQuarter && (
+              <Button
+                size="compact-sm"
+                variant="light"
+                onClick={() => {
+                  setPeriod(nextQuarter);
+                  selectPeriod(nextQuarter);
+                }}
+              >
+                Start next quarter
+              </Button>
+            )}
+          </Group>
+        </Alert>
+      )}
 
       {signedOut && (
         <Alert color="act" title="Your session has expired">
@@ -296,7 +336,7 @@ export function Workspace() {
           </Group>
         </Alert>
       )}
-      {error && <Alert color="act" title="Could not build the report">{error}. Try a Sync, or check the client's tool mappings on the Integrations page.</Alert>}
+      {error && <Alert color="act" title={error.title}>{error.text}</Alert>}
       {periodsError && (
         <Alert color="watch" title="Quarter list unavailable">
           {periodsError}. Showing the last four calendar quarters without data markers.
@@ -343,6 +383,7 @@ export function Workspace() {
           <Tabs.Tab value="meeting">Meeting</Tabs.Tab>
           <Tabs.Tab value="actions">Actions</Tabs.Tab>
           <Tabs.Tab value="board">Opportunities</Tabs.Tab>
+          <Tabs.Tab value="budget">Budget</Tabs.Tab>
           <Tabs.Tab value="studio">Studio</Tabs.Tab>
         </Tabs.List>
 
@@ -360,7 +401,8 @@ export function Workspace() {
                 packageSent={Boolean(meta?.packageSentAt)}
                 period={period}
                 goTab={setTab}
-                onComplete={onComplete}
+                finalizeDue={next?.key === 'finalize'}
+                onFinalize={onFinalize}
                 onSkipMeeting={async (reason) => {
                   try {
                     await api.dispositionSkipped(clientId, period, reason || undefined);
@@ -405,6 +447,7 @@ export function Workspace() {
                 setConfig={setConfig}
                 refresh={refresh}
                 lastSyncAttempt={meta?.lastSyncAttempt}
+                lockNotice={notice}
                 onDirty={(d) => (dataDirty.current = d)}
                 onSaved={() => setRefresh((n) => n + 1)}
               />
@@ -423,6 +466,7 @@ export function Workspace() {
               refresh={refresh}
               reportsMailbox={system?.reportsMailbox ?? null}
               aiEnabled={system?.ai ?? false}
+              lockedPeriods={lockedPeriods}
               onChanged={() => setRefresh((n) => n + 1)}
             />
           )}
@@ -446,6 +490,7 @@ export function Workspace() {
               clientId={clientId}
               period={period}
               meta={meta}
+              hipaa={client?.hipaa === true}
               onSavedDiscussion={() => (discDirty.current = false)}
               onChanged={() => setRefresh((n) => n + 1)}
             />
@@ -460,6 +505,10 @@ export function Workspace() {
 
         <Tabs.Panel value="board">
           <OpportunitiesTab clientId={clientId} period={period} />
+        </Tabs.Panel>
+
+        <Tabs.Panel value="budget">
+          <BudgetTab clientId={clientId} period={period} onPublished={() => setRefresh((n) => n + 1)} />
         </Tabs.Panel>
 
         <Tabs.Panel value="studio">

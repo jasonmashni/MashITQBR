@@ -139,7 +139,7 @@ describe('CIPP', () => {
   it('normalizers tolerate odd shapes', () => {
     expect(normalizeCippMfa([])).toHaveLength(0);
     expect(normalizeCippUserCounts(undefined)).toHaveLength(0);
-    expect(normalizeCippLicenses([{ License: 'x' }])).toHaveLength(0);
+    expect(normalizeCippLicenses([{ License: 'x' }]).metrics).toHaveLength(0);
     expect(normalizeCippDevices([])).toHaveLength(0);
     // Devices without a compliance state still count the fleet.
     expect(normalizeCippDevices([{ id: 1 }]).map((m) => m.key)).toEqual(['devices.m365_managed']);
@@ -147,7 +147,7 @@ describe('CIPP', () => {
 
   it('licenses: totals, per-SKU drill-down, and renewal dates when present', () => {
     const now = Date.parse('2026-07-15T00:00:00Z');
-    const metrics = normalizeCippLicenses(
+    const { metrics } = normalizeCippLicenses(
       [
         { License: 'Microsoft 365 Business Premium', CountUsed: 20, CountAvailable: 5, RenewalDate: '2026-08-30T00:00:00Z' },
         { License: 'Exchange Online (Plan 1)', TotalLicenses: 10, CountUsed: 10, ExpiryDate: '2027-01-01T00:00:00Z' },
@@ -167,7 +167,7 @@ describe('CIPP', () => {
   });
 
   it('licenses: backward-compatible with count-only rows (no dates)', () => {
-    const by = Object.fromEntries(normalizeCippLicenses([{ License: 'BP', CountUsed: 20, CountAvailable: 5 }]).map((m) => [m.key, m.value]));
+    const by = Object.fromEntries(normalizeCippLicenses([{ License: 'BP', CountUsed: 20, CountAvailable: 5 }]).metrics.map((m) => [m.key, m.value]));
     expect(by['licenses.assigned']).toBe(20);
     expect(by['licenses.unassigned']).toBe(5);
     expect(by['licenses.next_renewal']).toBeUndefined();
@@ -224,5 +224,31 @@ describe('Google Workspace', () => {
       normalizeGoogleWorkspaceUsers([{ isEnrolledIn2Sv: true }, { isEnrolledIn2Sv: false }, { isEnrolledIn2Sv: false }]).map((m) => [m.key, m.value]),
     );
     expect(by['identity.users_without_mfa']).toBe(2);
+  });
+});
+
+describe('normalizeCippLicenses counts paid seats only', () => {
+  const rows = [
+    { License: 'Microsoft 365 Business Premium', SkuPartNumber: 'SPB', CountUsed: 31, CountAvailable: 1, TotalLicenses: 32 },
+    { License: 'Microsoft Power Apps for Developer', SkuPartNumber: 'POWERAPPS_DEV', CountUsed: 0, CountAvailable: 10000, TotalLicenses: 10000 },
+    { License: 'Mystery Viral Plan', SkuPartNumber: 'UNKNOWN_VIRAL', CountUsed: 3, CountAvailable: 4997, TotalLicenses: 5000 },
+  ];
+  it('excludes denylisted and near-empty thousand-unit SKUs from totals', () => {
+    const { metrics, warnings } = normalizeCippLicenses(rows);
+    const by = Object.fromEntries(metrics.map((m) => [m.key, m]));
+    expect(by['licenses.total']!.value).toBe(32);
+    expect(by['licenses.total']!.label).toBe('Paid license seats');
+    expect(by['licenses.assigned']!.value).toBe(31);
+    expect(by['licenses.unassigned']!.label).toBe('Unused paid seats');
+    expect(by['licenses.unassigned']!.value).toBe(1);
+    const details = by['licenses.total']!.details as Array<Record<string, string | number>>;
+    expect(details.find((d) => d['license'] === 'Microsoft Power Apps for Developer')!['counted']).toBe('no, free or developer plan');
+    expect(details.find((d) => d['license'] === 'Microsoft 365 Business Premium')!['counted']).toBe('yes');
+    expect(warnings).toEqual([
+      '2 Microsoft plans are free or developer SKUs and were not counted: Microsoft Power Apps for Developer, Mystery Viral Plan.',
+    ]);
+  });
+  it('returns no warning when every SKU is paid', () => {
+    expect(normalizeCippLicenses([rows[0]!]).warnings).toEqual([]);
   });
 });

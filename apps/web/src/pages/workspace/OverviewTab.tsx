@@ -15,6 +15,7 @@ import {
   Divider,
   Progress,
   Box,
+  Tooltip,
 } from '@mantine/core';
 import { RadarChart, BarChart, DonutChart } from '@mantine/charts';
 import { IconAlertTriangle, IconPencil, IconPaperclip, IconInfoCircle } from '@tabler/icons-react';
@@ -22,7 +23,9 @@ import { api, documentUrl } from '../../api.js';
 import { money } from '../../format.js';
 import type { DocumentInfo, QbrResponse, ReportConfig } from '../../types.js';
 import { RatingBadge, ratingColorKey, ratingWord } from '../../ui.js';
+import type { ReportModel } from '../../types.js';
 import { NarrativeEditor } from './NarrativeEditor.js';
+import { lockNotice } from './nextStep.js';
 
 /** Human names for the NIST CSF 2.0 functions; the enum never reaches the screen. */
 const FUNCTION_NAME: Record<string, string> = {
@@ -33,6 +36,72 @@ const FUNCTION_NAME: Record<string, string> = {
   RESPOND: 'Respond',
   RECOVER: 'Recover',
 };
+
+const SINCE_LABEL: Record<string, { label: string; color: string }> = {
+  done: { label: 'Done', color: 'good.8' },
+  in_progress: { label: 'In progress', color: 'navy.8' },
+  waiting: { label: 'Waiting', color: 'watch.8' },
+  closed: { label: 'Closed', color: 'slate.6' },
+};
+
+const PLAN_COLUMNS = [
+  { key: 'now', title: 'Now', span: 'next 30 days' },
+  { key: 'next', title: 'Next', span: '31 to 60 days' },
+  { key: 'later', title: 'Later', span: '61 to 90 days' },
+] as const;
+
+/** Page one as the client reads it: headline, opening, what we did, saw and need, since last quarter. */
+function PageOnePreview({ model }: { model: ReportModel }) {
+  const did = model.executive.did ?? model.executive.highlights;
+  const saw = model.executive.saw ?? [];
+  const decisions = model.decisions ?? [];
+  const since = model.sinceLastQuarter ?? [];
+  const lede = model.executive.lede ?? model.executive.paragraphs.join(' ');
+  return (
+    <>
+      {model.executive.headline && <Text fw={600} c="navy.9" size="lg" mt={6} maw="40ch">{model.executive.headline}</Text>}
+      {lede && <Text mt="sm" size="sm" maw="68ch">{lede}</Text>}
+      <SimpleGrid cols={{ base: 1, md: 3 }} mt="md">
+        <div>
+          <Text size="sm" fw={600} c="brand.8" mb={4}>What we did</Text>
+          {did.length ? <List size="sm" spacing={4}>{did.map((h, i) => <List.Item key={i}>{h}</List.Item>)}</List> : <Text size="sm" c="dimmed">Nothing yet.</Text>}
+        </div>
+        <div>
+          <Text size="sm" fw={600} c="brand.8" mb={4}>What we saw</Text>
+          {saw.length ? <List size="sm" spacing={4}>{saw.map((h, i) => <List.Item key={i}>{h}</List.Item>)}</List> : <Text size="sm" c="dimmed">Nothing yet.</Text>}
+        </div>
+        <Box p="sm" style={{ background: 'var(--mantine-color-watch-0)', borderTop: '2px solid var(--mantine-color-watch-7)', borderRadius: 4 }}>
+          <Text size="sm" fw={600} c="watch.8" mb={4}>What we need from you</Text>
+          {decisions.length ? (
+            <Stack gap={6}>
+              {decisions.map((d, i) => (
+                <div key={i}>
+                  <Text size="sm">{d.ask}</Text>
+                  {(d.by || d.why) && <Text size="xs" c="dimmed">{[d.by, d.why].filter(Boolean).join('. ')}</Text>}
+                </div>
+              ))}
+            </Stack>
+          ) : (
+            <Text size="sm" c="dimmed">Nothing needs a decision this quarter.</Text>
+          )}
+        </Box>
+      </SimpleGrid>
+      {since.length > 0 && (
+        <Box mt="md" p="sm" style={{ background: 'var(--mantine-color-gray-0)', borderLeft: '4px solid var(--mantine-color-brand-8)' }}>
+          <Text size="sm" fw={600} mb={4}>Since last quarter</Text>
+          <Stack gap={4}>
+            {since.map((r, i) => (
+              <Group key={i} justify="space-between" wrap="nowrap">
+                <Text size="sm">{r.topic}</Text>
+                <Text size="sm" fw={600} c={SINCE_LABEL[r.status]?.color}>{SINCE_LABEL[r.status]?.label ?? r.status}</Text>
+              </Group>
+            ))}
+          </Stack>
+        </Box>
+      )}
+    </>
+  );
+}
 
 /** One brand-tinted ramp for the spend donut, largest slice first. */
 const SPEND_PALETTE = ['#004aad', '#2866e7', '#0b2545', '#34539c', '#6b7a90', '#98a5b8', '#d8dfe8'];
@@ -67,6 +136,8 @@ export function OverviewTab({
   const [editing, setEditing] = useState(false);
   const [docs, setDocs] = useState<DocumentInfo[]>([]);
   const { model } = qbr;
+  // A data-locked quarter keeps its frozen narrative: no edits, no regenerate.
+  const lockedReason = lockNotice(qbr.meta);
   const overall = model.scorecard.overall;
   const scored = overall.score !== null && overall.confidence !== 'low';
   const coveragePct = Math.round((overall.coverage ?? 0) * 100);
@@ -149,22 +220,21 @@ export function OverviewTab({
 
       <Card padding="lg">
         <Group justify="space-between" align="flex-start">
-          <Title order={4}>Executive summary, {model.period.label}</Title>
-          <Button size="xs" variant="light" leftSection={<IconPencil size={14} />} onClick={() => setEditing((e) => !e)}>
-            {editing ? 'Close the editor' : 'Edit the narrative'}
-          </Button>
+          <Title order={4}>Page one, {model.period.label}</Title>
+          <Tooltip label={lockedReason} disabled={!lockedReason} multiline w={300}>
+            <span style={{ display: 'inline-block' }}>
+              <Button size="xs" variant="light" leftSection={<IconPencil size={14} />} disabled={Boolean(lockedReason)} onClick={() => setEditing((e) => !e)}>
+                {editing && !lockedReason ? 'Close the editor' : 'Edit the narrative'}
+              </Button>
+            </span>
+          </Tooltip>
         </Group>
-        {model.executive.headline && <Text fw={600} c="navy.9" size="lg" mt={6} maw="40ch">{model.executive.headline}</Text>}
-        <Box maw="68ch">
-          {model.executive.paragraphs.map((p, i) => <Text key={i} mt="sm" size="sm">{p}</Text>)}
-          {model.executive.highlights.length > 0 && (
-            <List size="sm" mt="md" spacing={4}>{model.executive.highlights.map((h, i) => <List.Item key={i}>{h}</List.Item>)}</List>
-          )}
-        </Box>
+        <PageOnePreview model={model} />
       </Card>
 
-      {editing && (
+      {editing && !lockedReason && (
         <NarrativeEditor
+          lockedReason={lockedReason}
           clientId={clientId}
           period={period}
           model={model}
@@ -179,6 +249,30 @@ export function OverviewTab({
             onChanged();
           }}
         />
+      )}
+
+      {(model.protection?.length ?? 0) > 0 && (
+        <Card padding="lg">
+          <Title order={5} mb={2}>How we are protecting you</Title>
+          <Text size="xs" c="dimmed" mb="md">The five questions on page two, with the status and NIST scores the client sees.</Text>
+          <Stack gap="sm">
+            {model.protection!.map((row) => (
+              <Group key={row.id} align="flex-start" wrap="nowrap" gap="md">
+                <Box w={220} style={{ flex: '0 0 auto' }}>
+                  <Text size="sm" fw={600}>{row.question}</Text>
+                  <Text size="xs" c="dimmed">
+                    {row.functions.map((f) => `${FUNCTION_NAME[f.function] ?? f.function} ${f.score === null ? 'not measured' : Math.round(f.score)}`).join(', ')}
+                  </Text>
+                </Box>
+                <Box style={{ flex: 1 }}>
+                  <Text size="sm">{row.inPlace || row.safeguards.filter((g) => g.measured).map((g) => g.evidence).join(' ') || 'Not measured this quarter.'}</Text>
+                  {row.thisQuarter && <Text size="sm" c="dimmed" mt={2}>{row.thisQuarter}</Text>}
+                </Box>
+                <Badge color={ratingColorKey(row.rating)} variant="filled" style={{ flex: '0 0 auto' }}>{ratingWord(row.rating)}</Badge>
+              </Group>
+            ))}
+          </Stack>
+        </Card>
       )}
 
       <SimpleGrid cols={{ base: 1, md: 2 }}>
@@ -310,11 +404,34 @@ export function OverviewTab({
         </Card>
       )}
 
-      {model.recommendations.length > 0 && (
+      {model.plan && model.plan.now.length + model.plan.next.length + model.plan.later.length > 0 ? (
         <Card padding="lg">
-          <Title order={5} mb="md">Recommendations and the next 90 days</Title>
-          <List size="sm" spacing={4}>{model.recommendations.map((r, i) => <List.Item key={i}>{r}</List.Item>)}</List>
+          <Title order={5} mb="md">The next 90 days</Title>
+          <SimpleGrid cols={{ base: 1, md: 3 }}>
+            {PLAN_COLUMNS.map((c) => (
+              <div key={c.key}>
+                <Text size="sm" fw={600} c="brand.8">{c.title} <Text span size="xs" c="dimmed" fw={400}>{c.span}</Text></Text>
+                <Stack gap={6} mt={6}>
+                  {model.plan![c.key].map((p, i) => (
+                    <div key={i}>
+                      <Text size="sm" fw={600}>{p.action}</Text>
+                      <Text size="xs" c="dimmed">{p.owner}</Text>
+                      {p.decision && <Text size="xs" fw={600} c="watch.8">Your decision</Text>}
+                    </div>
+                  ))}
+                  {model.plan![c.key].length === 0 && <Text size="xs" c="dimmed">Nothing planned yet.</Text>}
+                </Stack>
+              </div>
+            ))}
+          </SimpleGrid>
         </Card>
+      ) : (
+        model.recommendations.length > 0 && (
+          <Card padding="lg">
+            <Title order={5} mb="md">Recommendations and the next 90 days</Title>
+            <List size="sm" spacing={4}>{model.recommendations.map((r, i) => <List.Item key={i}>{r}</List.Item>)}</List>
+          </Card>
+        )
       )}
 
       {docs.length > 0 && (

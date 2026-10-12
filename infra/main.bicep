@@ -1,15 +1,16 @@
 // ─────────────────────────────────────────────────────────────────────────
 // Mash IT QBR Tool: the topology the app actually runs on.
 //
-// One Linux Consumption (Y1) Function App on Node 22 serves both the API and
-// the built React SPA. Easy Auth (authsettingsV2, Entra ID) fronts every path
+// One Flex Consumption (FC1) Function App on Node 24 serves both the API and
+// the built React SPA. Code ships as a zip to a private blob container, read
+// by the app's system-assigned identity. Easy Auth (authsettingsV2, Entra ID) fronts every path
 // except the public client self-scheduling page and its API. Data lives in
 // Table Storage + Blob on the AzureWebJobsStorage account; secrets live in Key
 // Vault, written by the app's system-assigned identity. Logs, storage and
 // vault diagnostics go to one Log Analytics workspace.
 //
-// Consumption has no VNet integration, so storage and Key Vault keep public
-// endpoints. Access is by account key (storage) and Entra RBAC (vault), TLS 1.2
+// Flex Consumption supports VNet integration, but this template does not
+// configure it, so storage and Key Vault keep public endpoints. Access is by account key (storage) and Entra RBAC (vault), TLS 1.2
 // only, with diagnostics on both.
 //
 // Validate locally with:  az bicep build --file infra/main.bicep
@@ -94,6 +95,15 @@ resource docsContainer 'Microsoft.Storage/storageAccounts/blobServices/container
   properties: { publicAccess: 'None' }
 }
 
+// Flex Consumption deploys from a blob container rather than WEBSITE_RUN_FROM_PACKAGE.
+var deploymentContainerName = 'app-package'
+
+resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobService
+  name: deploymentContainerName
+  properties: { publicAccess: 'None' }
+}
+
 // ── Key Vault (RBAC, soft delete 90 days, purge protection) ─────────────────
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: kvName
@@ -109,12 +119,12 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-// ── Functions (Linux Consumption) ───────────────────────────────────────────
+// ── Functions (Flex Consumption) ────────────────────────────────────────────
 resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: '${namePrefix}-${env}-plan'
   location: location
   tags: tags
-  sku: { name: 'Y1', tier: 'Dynamic' }
+  sku: { name: 'FC1', tier: 'FlexConsumption' }
   kind: 'functionapp'
   properties: { reserved: true }
 }
@@ -130,8 +140,20 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
+    // Flex Consumption takes the runtime and deployment source here, not from
+    // linuxFxVersion, FUNCTIONS_WORKER_RUNTIME or WEBSITE_RUN_FROM_PACKAGE.
+    functionAppConfig: {
+      runtime: { name: 'node', version: '24' }
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storage.properties.primaryEndpoints.blob}${deploymentContainerName}'
+          authentication: { type: 'SystemAssignedIdentity' }
+        }
+      }
+      scaleAndConcurrency: { maximumInstanceCount: 100, instanceMemoryMB: 2048 }
+    }
     siteConfig: {
-      linuxFxVersion: 'Node|22'
       minTlsVersion: '1.2'
       ftpsState: 'Disabled'
       // NOTE: this list REPLACES every app setting on the Function App. Settings
@@ -139,12 +161,9 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       // RESEARCH_MODEL, QBR_*) must be re-applied after an IaC deploy; see README.
       appSettings: [
         { name: 'AzureWebJobsStorage', value: storageConnection }
-        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'node' }
-        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         // The app reads KEY_VAULT_URL (must match apps/api/src/store/index.ts).
         { name: 'KEY_VAULT_URL', value: keyVault.properties.vaultUri }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
-        // No WEBSITE_RUN_FROM_PACKAGE: on Linux Consumption zip deploy sets it to the package URL; a literal 1 is invalid there.
         // Container NAME; the doc store resolves the account from AzureWebJobsStorage.
         { name: 'QBR_DOCS_CONTAINER', value: 'qbr-documents' }
       ]
@@ -159,6 +178,16 @@ resource kvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, functionApp.id, kvSecretsOfficer)
   scope: keyVault
   properties: { roleDefinitionId: kvSecretsOfficer, principalId: functionApp.identity.principalId, principalType: 'ServicePrincipal' }
+}
+
+// The app reads its deployment package with its identity, so it needs Storage
+// Blob Data Contributor, scoped to the deployment container only.
+var blobDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+
+resource deploymentRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(deploymentContainer.id, functionApp.id, blobDataContributor)
+  scope: deploymentContainer
+  properties: { roleDefinitionId: blobDataContributor, principalId: functionApp.identity.principalId, principalType: 'ServicePrincipal' }
 }
 
 // ── Easy Auth (Entra ID). Booking paths stay public: the token authorizes. ──

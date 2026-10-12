@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { buildCorrectionContent, buildUserContent } from './prompt.js';
 import { buildAllowedNumbers, buildAllowedQuotes, type NarrativeInput } from './input.js';
-import { NARRATIVE_JSON_SCHEMA, SYSTEM_PROMPT, type NarrativeOutput } from './schema.js';
+import { NARRATIVE_JSON_SCHEMA, PROTECTION_QUESTION_IDS, SYSTEM_PROMPT, type NarrativeOutput } from './schema.js';
 import { describeFailures, verifyNarrative, type VerificationResult } from './verify.js';
 
 export interface NarrativeMessage {
@@ -104,34 +104,56 @@ export function createClaudeNarrativeModel(
 
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
 
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const optString = (v: unknown) => v === undefined || typeof v === 'string';
+
 /**
- * Throw unless `x` has the NarrativeOutput shape: a string headline, string
- * arrays for summary_paragraphs/highlights/recommendations, a
+ * Throw unless `x` has the v4 NarrativeOutput shape: string headline and
+ * lede, string arrays for did and saw, decisions as {ask, why?, by?}, plan as
+ * {now, next, later} arrays of {action, owner, decision?}, protection as
+ * {question, inPlace, thisQuarter} with a known question id, a
  * figures_referenced array of {label, value} strings, and (when present)
- * section_summaries as {category, summary} strings. Structured output should
- * guarantee this, but a truncated or off-schema reply must fail loudly rather
- * than crash later in verification or rendering.
+ * section_summaries and the deprecated v3 string arrays. Counts and word
+ * limits are not shape: limitIssues reports those as verification failures.
+ * Structured output should guarantee the shape, but a truncated or off-schema
+ * reply must fail loudly rather than crash later in verification or rendering.
  */
 export function assertNarrativeShape(x: unknown): asserts x is NarrativeOutput {
   const problems: string[] = [];
-  const o = (typeof x === 'object' && x !== null ? x : {}) as Record<string, unknown>;
-  if (typeof x !== 'object' || x === null || Array.isArray(x)) problems.push('not an object');
-  if (typeof o['headline'] !== 'string') problems.push('headline is not a string');
+  const o = isObj(x) ? x : {};
+  if (!isObj(x)) problems.push('not an object');
+  for (const key of ['headline', 'lede'] as const) if (typeof o[key] !== 'string') problems.push(`${key} is not a string`);
+  for (const key of ['did', 'saw'] as const) if (!isStringArray(o[key])) problems.push(`${key} is not a string array`);
+  const decisions = o['decisions'];
+  if (!Array.isArray(decisions) || !decisions.every((d) => isObj(d) && typeof d['ask'] === 'string' && optString(d['why']) && optString(d['by']))) {
+    problems.push('decisions is not an {ask, why, by} array');
+  }
+  const plan = o['plan'];
+  const planItem = (p: unknown) =>
+    isObj(p) && typeof p['action'] === 'string' && typeof p['owner'] === 'string' && (p['decision'] === undefined || typeof p['decision'] === 'boolean');
+  if (!isObj(plan) || !(['now', 'next', 'later'] as const).every((c) => Array.isArray(plan[c]) && (plan[c] as unknown[]).every(planItem))) {
+    problems.push('plan is not {now, next, later} arrays of {action, owner, decision}');
+  }
+  const protection = o['protection'];
+  const protectionItem = (p: unknown) =>
+    isObj(p) &&
+    (PROTECTION_QUESTION_IDS as readonly unknown[]).includes(p['question']) &&
+    typeof p['inPlace'] === 'string' &&
+    typeof p['thisQuarter'] === 'string';
+  if (!Array.isArray(protection) || !protection.every(protectionItem)) {
+    problems.push('protection is not a {question, inPlace, thisQuarter} array');
+  }
   for (const key of ['summary_paragraphs', 'highlights', 'recommendations'] as const) {
-    if (!isStringArray(o[key])) problems.push(`${key} is not a string array`);
+    if (o[key] !== undefined && !isStringArray(o[key])) problems.push(`${key} is not a string array`);
   }
   const figures = o['figures_referenced'];
-  if (
-    !Array.isArray(figures) ||
-    !figures.every((f) => typeof f === 'object' && f !== null && typeof f.label === 'string' && typeof f.value === 'string')
-  ) {
+  if (!Array.isArray(figures) || !figures.every((f) => isObj(f) && typeof f['label'] === 'string' && typeof f['value'] === 'string')) {
     problems.push('figures_referenced is not a {label, value} array');
   }
   const sections = o['section_summaries'];
   if (
     sections !== undefined &&
-    (!Array.isArray(sections) ||
-      !sections.every((s) => typeof s === 'object' && s !== null && typeof s.category === 'string' && typeof s.summary === 'string'))
+    (!Array.isArray(sections) || !sections.every((s) => isObj(s) && typeof s['category'] === 'string' && typeof s['summary'] === 'string'))
   ) {
     problems.push('section_summaries is not a {category, summary} array');
   }

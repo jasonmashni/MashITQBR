@@ -29,6 +29,7 @@ import { RatingBadge, ratingWord } from '../ui.js';
 const TRIAGE: Array<{ key: Triage; label: string; color: string; hint: string }> = [
   { key: 'meeting_passed', label: 'Meeting passed, not closed', color: 'var(--qbr-act)', hint: 'The booked time has gone by. Capture the outcome or reschedule.' },
   { key: 'package_not_sent', label: 'Package not sent', color: 'var(--qbr-act)', hint: 'The review happened or was skipped, but the client has no report yet.' },
+  { key: 'needs_finalizing', label: 'Needs finalizing', color: 'var(--qbr-watch)', hint: 'The review is over but the final package is not stored. Open the quarter and press Finalize.' },
   { key: 'needs_scheduling', label: 'Needs scheduling', color: 'var(--qbr-watch)', hint: 'Data is in; nothing is on the calendar.' },
   { key: 'not_started', label: 'Not started', color: 'var(--qbr-watch)', hint: 'No data pulled for this quarter yet.' },
   { key: 'meeting_soon', label: 'Meeting this week', color: 'var(--qbr-brand, #004aad)', hint: 'Booked within the next seven days.' },
@@ -119,6 +120,12 @@ export function Dashboard() {
   );
   const groups = TRIAGE.map((t) => ({ ...t, clients: sorted.filter((r) => r.triage === t.key) })).filter((g) => g.clients.length > 0);
   const needsAction = rows.filter((r) => r.triage !== 'done' && r.triage !== 'in_progress').length;
+  // Quarters whose review is over but whose final package was never stored,
+  // oldest meeting first (no meeting time sorts first: it has waited longest).
+  const unfinalized = rows
+    .filter((r) => r.triage === 'needs_finalizing')
+    .sort((a, b) => (a.current.meetingAt ?? '').localeCompare(b.current.meetingAt ?? ''));
+  const oldestUnfinalized = unfinalized[0];
   const totalMrr = rows.reduce((sum, r) => sum + (r.mrr ?? 0), 0);
   const totalRoadmap = rows.reduce((sum, r) => sum + (r.roadmapValue ?? 0), 0);
 
@@ -148,6 +155,22 @@ export function Dashboard() {
               {needsAction === 0 ? 'Nothing waiting on you.' : `${needsAction} client${needsAction === 1 ? '' : 's'} need${needsAction === 1 ? 's' : ''} something from you.`}
             </Text>
           </Group>
+          {oldestUnfinalized && (
+            <Group gap="xs" mb="sm" wrap="wrap">
+              <Text size="sm" fw={500} c="watch.8">
+                {unfinalized.length === 1
+                  ? '1 quarter past its meeting is not finalized.'
+                  : `${unfinalized.length} quarters past their meeting are not finalized.`}
+              </Text>
+              <Anchor
+                component={Link}
+                to={`/clients/${oldestUnfinalized.clientId}?period=${oldestUnfinalized.currentPeriod}`}
+                size="sm"
+              >
+                Finalize {oldestUnfinalized.name} {oldestUnfinalized.currentPeriod}
+              </Anchor>
+            </Group>
+          )}
           <Group align="flex-start" gap="xl" wrap="wrap">
             {groups.map((g) => (
               <Box key={g.key} miw={160}>
@@ -248,7 +271,16 @@ export function Dashboard() {
                     <Table.Td>
                       {r.lastCompletedPeriod ? (
                         <Box>
-                          <Text size="sm" fw={500} data-num>{r.lastCompletedPeriod}</Text>
+                          <Anchor
+                            component={Link}
+                            to={`/clients/${r.clientId}?period=${r.lastCompletedPeriod}`}
+                            size="sm"
+                            fw={500}
+                            data-num
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {r.lastCompletedPeriod}
+                          </Anchor>
                           <Text size="xs" c="dimmed">Review complete</Text>
                         </Box>
                       ) : (

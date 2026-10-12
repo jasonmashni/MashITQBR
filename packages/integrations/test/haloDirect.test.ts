@@ -8,6 +8,7 @@ import {
   fetchHaloMeta,
   haloToken,
   listHaloClients,
+  listHaloConversations,
   normalizeHaloFinance,
   tallyHaloSla,
   type HttpRequest,
@@ -1017,5 +1018,82 @@ describe('ticket-type map caching and unclassified tickets', () => {
     expect(un?.details?.map((d) => d['id'])).toEqual(['2']);
     expect(out.metrics.find((m) => m.key === 'tickets.total')?.value).toBe(1);
     expect(out.warnings.some((w) => /unclassified/.test(w))).toBe(true);
+  });
+});
+
+describe('listHaloConversations', () => {
+  const cfg = { baseUrl: 'https://conv.halopsa.com', clientId: 'conv-test', clientSecret: 's' };
+  const args = { clientId: '62', start: '2026-07-01', end: '2026-09-30', primaryContactEmail: 'Anne@Client.com' };
+  const tickets = [
+    { id: 1, summary: 'New hire laptop for billing', tickettype_name: 'Service Request', user_email: 'anne@client.com', dateoccurred: '2026-08-04T10:00:00' },
+    { id: 2, summary: 'Outlook down', tickettype_name: 'Incident', user_email: 'anne@client.com', dateoccurred: '2026-08-05T10:00:00' },
+    { id: 3, summary: 'Move the firewall rules', tickettype_name: 'Change Request', user_email: 'bob@client.com', isvip: true, dateoccurred: '2026-09-01T10:00:00' },
+    { id: 4, summary: 'Printer question', tickettype_name: 'Service Request', user_email: 'bob@client.com', dateoccurred: '2026-09-02T10:00:00' },
+    { id: 5, summary: 'Ninja disk alert', tickettype_name: 'Ninja Alert', user_email: 'anne@client.com', dateoccurred: '2026-09-03T10:00:00' },
+  ];
+  const ticketsRoute = {
+    match: (r: HttpRequest) => r.url.includes('/api/Tickets'),
+    respond: () => ({ status: 200, json: { record_count: tickets.length, tickets } }),
+  };
+
+  it('degrades to tickets only with one warning when opportunities and CRM notes 404', async () => {
+    const { http, requests } = fakeHttp([tokenRoute(), ticketsRoute]);
+    const out = await listHaloConversations(http, cfg, args);
+    // Incidents and alerts are excluded; Bob's request is neither the primary contact nor VIP.
+    expect(out.items.map((i) => i.ref).sort()).toEqual(['ticket:1', 'ticket:3']);
+    expect(out.items.every((i) => i.source === 'halo_ticket')).toBe(true);
+    const first = out.items.find((i) => i.ref === 'ticket:1')!;
+    expect(first).toMatchObject({ topic: 'New hire laptop for billing', when: '2026-08-04' });
+    expect(out.warnings).toEqual(['Halo opportunities/CRM notes not available on this instance']);
+    expect(requests.some((r) => r.url.includes('/api/Opportunities'))).toBe(true);
+    expect(requests.some((r) => r.url.includes('/api/CRMNote'))).toBe(true);
+    const ticketReq = requests.find((r) => r.url.includes('/api/Tickets'))!;
+    expect(ticketReq.url).toContain('client_id=62');
+    expect(ticketReq.url).toContain('startdate=2026-07-01');
+  });
+
+  it('includes opportunities and CRM notes in the period when the instance serves them', async () => {
+    const { http } = fakeHttp([
+      tokenRoute(),
+      ticketsRoute,
+      {
+        match: (r) => r.url.includes('/api/Opportunities'),
+        respond: () => ({ status: 200, json: { opportunities: [{ id: 7, summary: 'Server refresh', dateoccurred: '2026-08-10' }, { id: 8, summary: 'Old deal', dateoccurred: '2025-01-10' }] } }),
+      },
+      {
+        match: (r) => r.url.includes('/api/CRMNote'),
+        respond: () => ({ status: 200, json: { crmnotes: [{ id: 9, subject: 'Call with Anne', note: 'Wants to talk about the new site.', date: '2026-09-15T14:00:00' }] } }),
+      },
+    ]);
+    const out = await listHaloConversations(http, cfg, args);
+    expect(out.warnings).toEqual([]);
+    expect(out.items.map((i) => i.ref)).toEqual(['note:9', 'ticket:3', 'opportunity:7', 'ticket:1']);
+    expect(out.items.find((i) => i.ref === 'note:9')).toMatchObject({ source: 'halo_note', topic: 'Call with Anne', detail: 'Wants to talk about the new site.', when: '2026-09-15' });
+    expect(out.items.find((i) => i.ref === 'opportunity:7')).toMatchObject({ source: 'halo_opportunity', topic: 'Server refresh' });
+  });
+
+  it('keeps only VIP tickets when there is no primary contact email', async () => {
+    const { http } = fakeHttp([tokenRoute(), ticketsRoute]);
+    const out = await listHaloConversations(http, cfg, { clientId: '62', start: '2026-07-01', end: '2026-09-30' });
+    expect(out.items.map((i) => i.ref)).toEqual(['ticket:3']);
+  });
+});
+
+describe('listHaloConversations limits', () => {
+  const cfg = { baseUrl: 'https://conv2.halopsa.com', clientId: 'conv-test-2', clientSecret: 's' };
+  it('skips rows without an id and warns when the cap is hit', async () => {
+    const tickets = [
+      { summary: 'No id', tickettype_name: 'Service Request', isvip: true, dateoccurred: '2026-08-01' },
+      ...Array.from({ length: 60 }, (_, i) => ({ id: i + 1, summary: `Request ${i + 1}`, tickettype_name: 'Service Request', isvip: true, dateoccurred: '2026-08-02' })),
+    ];
+    const { http } = fakeHttp([
+      tokenRoute(),
+      { match: (r) => r.url.includes('/api/Tickets'), respond: () => ({ status: 200, json: { record_count: tickets.length, tickets } }) },
+      { match: (r) => r.url.includes('/api/Opportunities') || r.url.includes('/api/CRMNote'), respond: () => ({ status: 200, json: [] }) },
+    ]);
+    const out = await listHaloConversations(http, cfg, { clientId: '62', start: '2026-07-01', end: '2026-09-30' });
+    expect(out.items).toHaveLength(50);
+    expect(out.items.some((i) => i.topic === 'No id')).toBe(false);
+    expect(out.warnings).toEqual(['Halo returned more than 50 items for this quarter; showing the first 50.']);
   });
 });

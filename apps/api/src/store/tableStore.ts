@@ -1,6 +1,6 @@
 import { TableClient, odata, type TableEntity } from '@azure/data-tables';
 import type { Client, MetricSnapshot, QbrDiscussion, ReportConfig } from '@mashit/core';
-import type { AuditEvent, BookingRecord, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, NotificationRecord, OpportunityRecord, QbrRecord } from './types.js';
+import type { AuditEvent, BookingRecord, BudgetPlanRecord, ClientConnectionMap, Connection, DataStore, DocumentRecord, NarrativeRecord, NotificationRecord, OpportunityRecord, PackageRecord, QbrRecord } from './types.js';
 
 const TABLES = {
   clients: 'qbrClients',
@@ -13,6 +13,8 @@ const TABLES = {
   narratives: 'qbrNarratives',
   documents: 'qbrDocuments',
   opportunities: 'qbrOpportunities',
+  packages: 'qbrPackages',
+  budgets: 'qbrBudgets',
   audit: 'qbrAudit',
   bookings: 'qbrBookings',
   notifications: 'qbrNotifications',
@@ -183,6 +185,21 @@ export class TableDataStore implements DataStore {
       if (!isNotFound(err)) throw err;
     }
   }
+
+  // frozen report packages: partition per client+period, zero-padded version rowKey
+  async listPackages(clientId: string, period: string): Promise<PackageRecord[]> {
+    const rows = await this.list<PackageRecord>(TABLES.packages, `${clientId}:${period}`);
+    return rows.sort((a, b) => a.version - b.version);
+  }
+  putPackage = (p: PackageRecord) => this.put(TABLES.packages, `${p.clientId}:${p.period}`, String(p.version).padStart(4, '0'), p);
+
+  // budget plans: partition per client, rowKey is the fiscal label
+  async listBudgetPlans(clientId: string): Promise<BudgetPlanRecord[]> {
+    const rows = await this.list<BudgetPlanRecord>(TABLES.budgets, clientId);
+    return rows.sort((a, b) => a.fiscalLabel - b.fiscalLabel);
+  }
+  getBudgetPlan = (clientId: string, fiscalLabel: number) => this.get<BudgetPlanRecord>(TABLES.budgets, clientId, String(fiscalLabel));
+  putBudgetPlan = (b: BudgetPlanRecord) => this.put(TABLES.budgets, b.clientId, String(b.fiscalLabel), b);
 
   // compliance audit trail — a fixed partition with descending-time rowKeys
   // makes "latest N" a single-partition, single-page range read.
