@@ -39,7 +39,7 @@ import { api, documentUrl } from '../../api.js';
 import type { DocExtraction, DocMatchSuggestion, DocumentInfo } from '../../types.js';
 import { toastError } from '../../toast.js';
 import { SECTIONS } from './shared.js';
-import { groupDocumentsByPeriod, sectionTitle } from './reportsGrouping.js';
+import { groupDocumentsByPeriod, sectionTitle, selectionLabel } from './reportsGrouping.js';
 
 const DOC_CATEGORIES = ['Security', 'Backup', 'Endpoint', 'Email', 'Network', 'Compliance', 'Billing', 'Other'];
 /** Metric categories = report sections; labels come from SECTIONS in shared.ts. */
@@ -80,9 +80,11 @@ export function ReportsTab({
   const [extracting, setExtracting] = useState<string | null>(null);
   const [review, setReview] = useState<{ doc: DocumentInfo; extraction: DocExtraction; source: string; checked: Set<number>; target: string } | null>(null);
   const [importing, setImporting] = useState(false);
-  // Open quarter sections: the active quarter by default, others collapsed.
-  const [openPeriods, setOpenPeriods] = useState<string[]>([period]);
-  useEffect(() => setOpenPeriods([period]), [clientId, period]);
+  // Open quarter sections, seeded from groupDocumentsByPeriod's `open` once per
+  // client and quarter (after this client's documents load), then left to the user.
+  const [openPeriods, setOpenPeriods] = useState<string[]>([]);
+  const seededFor = useRef<string | null>(null);
+  const openSection = (p: string) => setOpenPeriods((o) => (o.includes(p) ? o : [...o, p]));
 
   useEffect(() => {
     let live = true;
@@ -91,6 +93,13 @@ export function ReportsTab({
       live = false;
     };
   }, [clientId, refresh]);
+
+  useEffect(() => {
+    const key = `${clientId}:${period}`;
+    if (docs === null || seededFor.current === key || docs.some((d) => d.clientId !== clientId)) return;
+    seededFor.current = key;
+    setOpenPeriods(groupDocumentsByPeriod(docs, period).filter((g) => g.open).map((g) => g.period));
+  }, [clientId, period, docs]);
 
   const reload = () => api.listClientDocuments(clientId).then((d) => setDocs(d.documents)).catch(() => {});
 
@@ -162,6 +171,7 @@ export function ReportsTab({
       const dataBase64 = dataUri.split(',')[1] ?? '';
       await api.uploadDocument(clientId, period, { name: file.name, contentType: file.type || 'application/octet-stream', dataBase64 });
       notifications.show({ color: 'good', message: `${file.name} filed under ${period}.` });
+      openSection(period);
       await reload();
       onChanged();
     } catch (e) {
@@ -177,7 +187,7 @@ export function ReportsTab({
       notifications.show({ color: 'good', message: note });
       // A moved row lands in its new quarter's section; open it so the row stays in view.
       const to = body.period;
-      if (to && to !== doc.period) setOpenPeriods((o) => (o.includes(to) ? o : [...o, to]));
+      if (to && to !== doc.period) openSection(to);
       await reload();
       onChanged();
     } catch (e) {
@@ -302,6 +312,9 @@ export function ReportsTab({
     onChanged();
   }
 
+  // Sections the selection spans, for the bulk bar.
+  const selectedSections = new Set((docs ?? []).filter((d) => selected.has(aiKey(d))).map((d) => d.period)).size;
+
   function toggleSelected(key: string, on: boolean) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -387,7 +400,7 @@ export function ReportsTab({
           <Stack gap="sm">
             {selected.size > 0 && (
               <Group gap="xs">
-                <Text size="sm">{selected.size} selected</Text>
+                <Text size="sm">{selectionLabel(selected.size, selectedSections)}</Text>
                 <Button size="compact-xs" color="act" variant="light" loading={bulkDeleting} onClick={removeSelected}>
                   Delete {selected.size}
                 </Button>
@@ -408,7 +421,7 @@ export function ReportsTab({
                     <Text size="sm" fw={600}>{sectionTitle(g.period, g.docs.length)}</Text>
                     {groupLock && (
                       <Tooltip label={groupLock} multiline w={300}>
-                        <IconLock size={14} aria-label="Locked" style={{ color: 'var(--mantine-color-dimmed)' }} />
+                        <IconLock size={14} aria-hidden style={{ color: 'var(--mantine-color-dimmed)' }} />
                       </Tooltip>
                     )}
                   </Group>
