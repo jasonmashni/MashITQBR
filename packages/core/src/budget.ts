@@ -8,8 +8,16 @@ import type { BudgetAnswers, BudgetCategory, BudgetLine, BudgetSource } from './
 
 /** What the data sources already tell us. Every field is optional; a missing one is said out loud. */
 export interface BudgetFacts {
-  /** Monthly recurring value on Halo contracts (finance.mrr). */
+  /** Monthly recurring value on Halo contracts (finance.mrr), or derived from invoice lines when that is absent. */
   mrr?: number;
+  /**
+   * True when `mrr` was derived from the latest quarter's recurring invoice
+   * lines (classifyInvoiceLine) because the Halo contracts carry no monthly
+   * value. Licensing lines are excluded from it.
+   */
+  mrrFromInvoices?: boolean;
+  /** Labels of the invoice lines behind a derived `mrr`, largest first. */
+  mrrLines?: string[];
   /** Managed End User line over licensed users, monthly. */
   perUserMonthly?: number;
   /** CIPP paid seats. */
@@ -49,13 +57,23 @@ const note = (source: BudgetSource, text: string) => ({ source, note: text });
 
 export const M365_IN_AGREEMENT = 'Base Microsoft 365 seats are billed on your Mash IT agreement and counted in managed services.';
 
+/** Names up to three of the invoice lines behind a derived MRR. */
+function fromInvoicesNote(labels: string[]): string {
+  const named = labels.slice(0, 3);
+  const more = labels.length - named.length;
+  const list = named.length ? ` (${named.join(', ')}${more > 0 ? `, and ${more} more` : ''})` : '';
+  return `From recurring lines on Halo invoices${list}; Halo contracts carry no monthly value.`;
+}
+
 function managedServices(facts: BudgetFacts, answers: BudgetAnswers, caveats: string[]): BudgetLine {
   if (!has(facts.mrr)) {
     caveats.push('Managed services could not be computed from Halo; the total is understated.');
     return line('managed_services', 0, 0, 0, [note('halo', 'No recurring value on Halo contracts')]);
   }
   const base = facts.mrr * 12;
-  const basis: Basis = [note('halo', `${money(facts.mrr)} a month on Halo contracts, times 12`)];
+  const basis: Basis = facts.mrrFromInvoices
+    ? [note('halo', `${money(facts.mrr)} a month, times 12`), note('halo', fromInvoicesNote(facts.mrrLines ?? []))]
+    : [note('halo', `${money(facts.mrr)} a month on Halo contracts, times 12`)];
   const hires = Math.max(0, answers.headcountChange ?? 0);
   let high = base;
   if (hires > 0) {
