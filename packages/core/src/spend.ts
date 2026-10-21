@@ -34,14 +34,13 @@ const VARIABLE: RegExp[] = [
   /ryzen/i,
   /intel core/i,
   /mini pc/i,
-  /\b\d+\s*(gb|tb)\b/i,
   /^\s*other\s*$/i,
 ];
 
 /** Words that make a line recurring even when it also names labour ("Managed Support Agreement"). */
-const STRONG_RECURRING = /managed|agreement|subscription|\bper\s+(user|device|seat)\b/i;
+const STRONG_RECURRING = /\bmanaged|agreement|subscription|\bper[\s-]+(user|device|seat)\b/i;
 
-const RECURRING = /managed|monitoring|management|compliance|backup|security|subscription|maintenance|agreement|\bper\s+(user|device|seat)\b/i;
+const RECURRING = /\bmanaged|monitoring|management|compliance|backup|security|subscription|maintenance|agreement|\bper[\s-]+(user|device|seat)\b/i;
 
 /** Licensing first, then strong recurring words, then labour and one-offs, then the other recurring words. */
 export function classifyInvoiceLine(label: string): InvoiceLineKind {

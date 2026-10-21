@@ -54,6 +54,12 @@ describe('classifyInvoiceLine', () => {
     }
   });
 
+  it('does not treat sizes as hardware, accepts hyphenated per-user, and ignores "unmanaged"', () => {
+    expect(classifyInvoiceLine('Cloud Backup 500GB')).toBe('recurring');
+    expect(classifyInvoiceLine('Per-User Support Plan')).toBe('recurring');
+    expect(classifyInvoiceLine('Unmanaged switch')).toBe('variable');
+  });
+
   it('treats anything unknown as variable', () => {
     expect(classifyInvoiceLine('Dell Latitude 5450')).toBe('variable');
     expect(classifyInvoiceLine('')).toBe('variable');
