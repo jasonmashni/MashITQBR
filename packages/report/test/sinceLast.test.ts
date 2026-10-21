@@ -95,3 +95,64 @@ describe('protection rows on the model', () => {
     expect(buildReportModel(base).revisedAt).toBeUndefined();
   });
 });
+
+describe('sinceLastQuarter overrides from the current quarter', () => {
+  const at = '2026-10-21T00:00:00Z';
+  const previousDiscussion: DiscussionItem[] = [
+    item({ id: 'a', topic: 'SSO rollout', status: 'discussed', response: 'Phase one first', sortOrder: 1 }),
+    item({ id: 'b', topic: 'Studio 5000 access', status: 'planned', sortOrder: 2 }),
+    item({ id: 'c', topic: 'Clock-in tablet', disposition: 'create_ticket', status: 'discussed', externalRef: { system: 'halo', id: '41882', status: 'Closed' }, sortOrder: 3 }),
+    item({ id: 'd', topic: 'Old PC', status: 'discussed', sortOrder: 4 }),
+  ];
+
+  it('an override wins over the computed status and maps dropped to closed', () => {
+    const rows = buildReportModel({
+      ...base,
+      previousDiscussion,
+      sinceOverrides: {
+        a: { status: 'done', at, by: 'jason' },
+        b: { status: 'in_progress', at, by: 'jason' },
+        c: { status: 'waiting', at, by: 'jason' },
+        d: { status: 'dropped', at, by: 'jason' },
+      },
+    }).sinceLastQuarter;
+    expect(rows.map((r) => [r.topic, r.status])).toEqual([
+      ['SSO rollout', 'done'],
+      ['Studio 5000 access', 'in_progress'],
+      ['Clock-in tablet', 'waiting'],
+      ['Old PC', 'closed'],
+    ]);
+  });
+
+  it('the override note becomes the row detail; without a note the computed detail stays', () => {
+    const rows = buildReportModel({
+      ...base,
+      previousDiscussion,
+      sinceOverrides: { a: { status: 'done', note: 'Live for all staff in August', at, by: 'jason' }, b: { status: 'waiting', at, by: 'jason' } },
+    }).sinceLastQuarter;
+    expect(rows[0]!.detail).toBe('Live for all staff in August');
+    expect(rows[1]!.detail).toBeUndefined();
+    expect(rows[2]!.detail).toBe('Ticket 41882');
+  });
+
+  it('ignores overrides for ids that are not on last quarter agenda', () => {
+    const rows = buildReportModel({ ...base, previousDiscussion, sinceOverrides: { zzz: { status: 'dropped', at, by: 'jason' } } }).sinceLastQuarter;
+    expect(rows.map((r) => r.status)).toEqual(['in_progress', 'waiting', 'done', 'in_progress']);
+  });
+});
+
+describe('sinceLastRows (the Meeting tab list)', () => {
+  it('returns computed and effective status, the note and the ticket, ignoring showSinceLastQuarter', async () => {
+    const { sinceLastRows } = await import('@mashit/report');
+    const previousDiscussion: DiscussionItem[] = [
+      item({ id: 'h', topic: 'Hidden', includeInReport: false, sortOrder: 0 }),
+      item({ id: 'a', topic: 'Tablet', disposition: 'create_ticket', status: 'discussed', externalRef: { system: 'halo', id: '41882', status: 'Open' }, sortOrder: 1 }),
+      item({ id: 'b', topic: 'SSO', status: 'discussed', sortOrder: 2 }),
+    ];
+    const rows = sinceLastRows(previousDiscussion, { '41882': 'Resolved' }, { b: { status: 'dropped', note: 'Not needed', at: 'x', by: 'jason' } });
+    expect(rows).toEqual([
+      { id: 'a', topic: 'Tablet', computed: 'done', effective: 'done', ticket: { id: '41882', status: 'Resolved' } },
+      { id: 'b', topic: 'SSO', computed: 'in_progress', effective: 'closed', override: { status: 'dropped', note: 'Not needed', at: 'x', by: 'jason' }, note: 'Not needed' },
+    ]);
+  });
+});

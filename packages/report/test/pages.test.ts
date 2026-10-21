@@ -227,3 +227,20 @@ describe('page structure: deck', () => {
     expect(planning.some((s) => s[0] === 'Planning your FY2027 IT budget')).toBe(true);
   });
 });
+
+describe('since last quarter close-out notes', () => {
+  const noted = {
+    ...model,
+    sinceLastQuarter: [
+      { topic: 'SSO rollout', status: 'done' as const, detail: 'Live for all staff in August' },
+      { topic: 'Old PC', status: 'closed' as const },
+    ],
+  };
+  it('HTML, PDF and deck print the note under the row', async () => {
+    expect(renderReportHtml(noted)).toContain('Live for all staff in August');
+    expect(JSON.stringify(buildPdfDefinition(noted))).toContain('Live for all staff in August');
+    const text = (await slideTexts(await renderDeck(noted))).flat().join(' ');
+    expect(text).toContain('Live for all staff in August');
+    expect(text).toContain('Old PC: Closed');
+  });
+});

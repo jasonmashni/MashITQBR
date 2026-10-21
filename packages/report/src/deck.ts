@@ -358,7 +358,9 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
     const needHeight = model.decisions.reduce((h, d) => h + lines(d.ask, 40) * perLine + (decisionSubline(d) ? lines(decisionSubline(d), 48) * 0.18 : 0) + 0.08, 0);
     const bodyH = Math.max(listHeight(model.executive.did), listHeight(model.executive.saw), needHeight, perLine) + 0.1;
     const colH = 0.5 + bodyH;
-    const sinceH = model.sinceLastQuarter.length ? 0.36 + 0.24 * model.sinceLastQuarter.length : 0;
+    const sinceH = model.sinceLastQuarter.length
+      ? 0.36 + model.sinceLastQuarter.reduce((h, r) => h + 0.24 + (r.detail ? 0.18 * lines(r.detail, 110) : 0), 0)
+      : 0;
     if (y + colH + (sinceH ? sinceH + 0.15 : 0) > FOOTER_Y - 0.15) {
       notes(s, model.executive.lede ?? '');
       s = pptx.addSlide({ masterName: 'QBR' });
@@ -399,10 +401,13 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
       s.addText(
         [
           { text: 'Since last quarter', options: { bold: true, color: hex(SEMANTIC.ink), breakLine: true } },
-          ...model.sinceLastQuarter.map((r, i) => ({
-            text: `${r.topic}: ${sinceLabel(r)}`,
-            options: { color: TEXT, breakLine: i < model.sinceLastQuarter.length - 1 },
-          })),
+          ...model.sinceLastQuarter.flatMap((r, i) => {
+            const last = i === model.sinceLastQuarter.length - 1;
+            return [
+              { text: `${r.topic}: ${sinceLabel(r)}`, options: { color: TEXT, breakLine: !last || !!r.detail } },
+              ...(r.detail ? [{ text: r.detail, options: { color: GRAY, fontSize: 9, breakLine: !last } }] : []),
+            ];
+          }),
         ],
         { x: CONTENT_X + 0.2, y, w: CONTENT_W - 0.3, h: sinceH, fontFace: FONT, fontSize: 11, valign: 'middle' },
       );

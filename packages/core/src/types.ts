@@ -290,14 +290,27 @@ export interface DiscussionItem {
   /** Set once pushed to an external system (Halo ticket / Zomentum opportunity). */
   externalRef?: { system: 'halo' | 'zomentum'; id: string; status?: string };
   /** Where the item came from. Undefined means typed by hand. */
-  source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report';
-  /** Message id, Halo id, or other external reference for the source. */
+  source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report' | 'carried';
+  /** Message id, Halo id, previous-quarter item id, or other external reference for the source. */
   sourceRef?: string;
   /**
    * The topic as it arrived from the source (suggestion, Halo, inbox). For a
    * HIPAA client the item stays off the report until the topic differs.
    */
   sourceTopic?: string;
+}
+
+/** How the account manager closed out a previous quarter's agenda item. */
+export const SINCE_OVERRIDE_STATUSES = ['done', 'in_progress', 'waiting', 'dropped'] as const;
+export type SinceOverrideStatus = (typeof SINCE_OVERRIDE_STATUSES)[number];
+
+/** A close-out set on the current quarter for one of last quarter's items. */
+export interface SinceOverride {
+  status: SinceOverrideStatus;
+  /** One short line; printed under the row on page one. */
+  note?: string;
+  at: string;
+  by: string;
 }
 
 /** The review-time discussion + notes for a client's QBR. */
@@ -307,6 +320,12 @@ export interface QbrDiscussion {
   items: DiscussionItem[];
   /** General meeting notes not tied to a specific item. */
   notes?: string;
+  /**
+   * "Since last quarter" close-outs, keyed by the previous quarter's
+   * discussion item id. Stored on this quarter so the previous (usually
+   * locked) quarter is never written.
+   */
+  sinceOverrides?: Record<string, SinceOverride>;
 }
 
 /** Where a strategic client goal stands — tracked across QBRs. */

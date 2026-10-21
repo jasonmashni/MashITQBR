@@ -24,6 +24,8 @@ import {
   type MetricValue,
   type ProtectionRow,
   type ReportConfig,
+  type SinceOverride,
+  type SinceOverrideStatus,
 } from '@mashit/core';
 import type { NarrativeDecision, NarrativeOutput, PlanItem } from '@mashit/narrative';
 import { resolveBrand, type BrandTokens } from './brand.js';
@@ -87,6 +89,61 @@ function reportable(items: DiscussionItem[]): DiscussionItem[] {
 }
 
 const SINCE_LAST_MAX = 5;
+
+/** A since-last-quarter status: the report's row status. */
+export type SinceStatus = SinceLastRow['status'];
+
+/** How a close-out reads on the report: dropped prints as closed. */
+export const SINCE_OVERRIDE_STATUS: Record<SinceOverrideStatus, SinceStatus> = {
+  done: 'done',
+  in_progress: 'in_progress',
+  waiting: 'waiting',
+  dropped: 'closed',
+};
+
+/** One row of the Meeting tab's "Since last quarter" list. */
+export interface SinceRowState {
+  /** The previous quarter's discussion item id. */
+  id: string;
+  topic: string;
+  /** What the data says (conversationStatus, on plan shown as in progress). */
+  computed: SinceStatus;
+  /** What the report prints: the override when set, else computed. */
+  effective: SinceStatus;
+  override?: SinceOverride;
+  note?: string;
+  ticket?: { id: string; status?: string };
+}
+
+/**
+ * Last quarter's reportable items in agenda order (at most five), with the
+ * computed status from live ticket statuses and the current quarter's
+ * close-outs applied. An override always wins over the computed status.
+ */
+export function sinceLastRows(
+  previous: DiscussionItem[],
+  ticketStatuses?: Record<string, string>,
+  overrides?: Record<string, SinceOverride>,
+): SinceRowState[] {
+  return reportable(withLiveStatus(previous, ticketStatuses))
+    .slice(0, SINCE_LAST_MAX)
+    .map((d) => {
+      const status = conversationStatus(d);
+      const computed: SinceStatus = status === 'on_plan' ? 'in_progress' : status;
+      const override = Object.prototype.hasOwnProperty.call(overrides ?? {}, d.id) ? overrides![d.id] : undefined;
+      const note = override?.note?.trim();
+      const ref = d.externalRef?.system === 'halo' ? d.externalRef : undefined;
+      return {
+        id: d.id,
+        topic: d.topic,
+        computed,
+        effective: override ? SINCE_OVERRIDE_STATUS[override.status] ?? computed : computed,
+        ...(override ? { override } : {}),
+        ...(note ? { note } : {}),
+        ...(ref ? { ticket: { id: ref.id, ...(ref.status ? { status: ref.status } : {}) } } : {}),
+      };
+    });
+}
 
 /** Page four: what the client invested this quarter and what is coming. */
 export interface InvestmentModel {
@@ -283,6 +340,8 @@ export function buildReportModel(args: {
   previousDiscussion?: DiscussionItem[];
   /** Live Halo ticket statuses by externalRef id; they refine the stored status. */
   ticketStatuses?: Record<string, string>;
+  /** This quarter's close-outs of last quarter's items, keyed by item id. */
+  sinceOverrides?: Record<string, SinceOverride>;
   /** When a reopened quarter was locked again. */
   revisedAt?: string;
   /** Published budget plan data; absent until a plan exists (workstream D). */
@@ -361,13 +420,14 @@ export function buildReportModel(args: {
     sinceLastQuarter:
       config?.showSinceLastQuarter === false
         ? []
-        : reportable(withLiveStatus(args.previousDiscussion ?? [], args.ticketStatuses))
-            .slice(0, SINCE_LAST_MAX)
-            .map((d) => {
-              const status = conversationStatus(d);
-              const detail = d.response?.trim() || (d.externalRef?.system === 'halo' ? `Ticket ${d.externalRef.id}` : undefined);
-              return { topic: d.topic, status: status === 'on_plan' ? 'in_progress' : status, ...(detail ? { detail } : {}) };
-            }),
+        : (() => {
+            const byId = new Map((args.previousDiscussion ?? []).map((d) => [d.id, d]));
+            return sinceLastRows(args.previousDiscussion ?? [], args.ticketStatuses, args.sinceOverrides).map((r) => {
+              const d = byId.get(r.id)!;
+              const detail = r.note || d.response?.trim() || (r.ticket ? `Ticket ${r.ticket.id}` : undefined);
+              return { topic: r.topic, status: r.effective, ...(detail ? { detail } : {}) };
+            });
+          })(),
     protection: protectionRows(scorecard).map((row) => {
       const prose = narrative?.protection?.find((p) => p.question === row.id);
       return prose ? { ...row, inPlace: prose.inPlace, thisQuarter: prose.thisQuarter } : row;
