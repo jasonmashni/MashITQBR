@@ -1097,3 +1097,124 @@ describe('listHaloConversations limits', () => {
     expect(out.warnings).toEqual(['Halo returned more than 50 items for this quarter; showing the first 50.']);
   });
 });
+
+describe('Halo recurring invoices (UNVERIFIED field names, parsed tolerantly)', () => {
+  const P = ' $periodStartDate - $PeriodEndDate';
+  /** ANP-shaped: "Recurring Invoice (ANP-AYCE)" with section rows, mixed amount fields and placeholders. */
+  const anpRecurring = {
+    id: 501,
+    name: 'Recurring Invoice (ANP-AYCE)',
+    billingperiod: 'Monthly',
+    nettotal: 6512.63,
+    lines: [
+      { item_shortdescription: 'Managed Services' }, // section header row
+      { item_shortdescription: `Managed Workstation - Windows PC${P}`, qty_order: 34, unit_price: 95 },
+      { item_shortdescription: `Managed NAS/SAS${P}`, qty_order: 1, unit_price: 78 },
+      { item_shortdescription: `Managed End User${P}`, qty_order: 22, unit_price: 80 },
+      { item_shortdescription: `Compliance Management - Reg${P}`, net_amount: 450 },
+      { description: `Networking Monitoring & Management - Small Site${P}`, nettotal: 200 },
+      { item_shortdescription: 'Subscriptions', net_amount: 0 }, // section header row
+      { item_shortdescription: `Microsoft 365 Copilot (NCE)${P}`, qty_order: 2, unit_price: 31.5 },
+      { item_shortdescription: `Windows 365 Cloud PC${P}`, net_amount: 25.6 },
+      { name: `Power BI Pro${P}`, qty: 3, unitprice: 16.8 },
+      { item_shortdescription: `Microsoft 365 Business Premium${P}`, qty_order: 14, unit_price: 23.1 },
+      { item_shortdescription: `Microsoft Teams Rooms Premium${P}`, net_amount: 40 },
+      { item_shortdescription: `Microsoft 365 F3${P}`, qty_order: 9, unit_price: 9.6 },
+      { item_shortdescription: `Microsoft Purview Suite${P}`, net: 10.5 },
+      { item_name: `Foxit PDF Editor Pro+${P}`, quantity: 3, unit_price: 14 },
+      { item_shortdescription: `Radius Server cloud${P}`, total: 153.33 },
+      { item_shortdescription: `Remote Support (per hr)${P}`, net_amount: 285 }, // labour: excluded
+    ],
+  };
+  const quarter = { periodStart: '2026-07-01', periodEnd: '2026-09-30' };
+  const val = (metrics: Array<{ key: string; value: unknown }>, key: string) => metrics.find((m) => m.key === key)?.value;
+
+  it('turns the ANP recurring invoice into finance.mrr and one recurring line per item', () => {
+    const out = normalizeHaloFinance({
+      contracts: [],
+      invoices: [],
+      recurringInvoices: [anpRecurring, { id: 502, name: 'Old plan', inactive: true, lines: [{ description: 'Managed Server', net_amount: 999 }] }],
+      ...quarter,
+    });
+    const expected = 34 * 95 + 78 + 22 * 80 + 450 + 200 + 2 * 31.5 + 25.6 + 3 * 16.8 + 14 * 23.1 + 40 + 9 * 9.6 + 10.5 + 3 * 14 + 153.33;
+    expect(val(out.metrics, 'finance.mrr')).toBe(Math.round(expected * 100) / 100);
+    expect(val(out.metrics, 'finance.mrr')).toBe(6512.63);
+    const recurring = out.metrics.filter((m) => m.key.startsWith('finance.recurring.'));
+    expect(recurring).toHaveLength(14);
+    expect(recurring.map((m) => m.label)).toContain('Managed Workstation - Windows PC (monthly)');
+    expect(recurring.map((m) => m.label)).toContain('Networking Monitoring & Management - Small Site (monthly)');
+    expect(recurring.every((m) => !m.label.includes('$'))).toBe(true);
+    expect(recurring.some((m) => /remote support|managed server/i.test(m.label))).toBe(false);
+    expect(val(out.metrics, 'finance.recurring.managed_end_user')).toBe(1760);
+    expect(out.warnings).toEqual([]);
+  });
+
+  it('scales a quarterly invoice to a month and reads unknown periods as monthly with a warning', () => {
+    const out = normalizeHaloFinance({
+      contracts: [],
+      invoices: [],
+      recurringInvoices: [
+        { id: 1, name: 'Quarterly backup', billingperiod: 'Quarterly', lines: [{ description: 'Cloud Backup', net_amount: 300 }] },
+        { id: 2, name: 'Odd plan', billing_period: 'Fortnightly', lines: [{ description: 'Managed Firewall', net_amount: 50 }] },
+        { id: 3, name: 'Annual', period: 12, lines: [{ description: 'Domain Renewal', net_amount: 120 }] },
+      ],
+      ...quarter,
+    });
+    expect(val(out.metrics, 'finance.recurring.cloud_backup')).toBe(100);
+    expect(val(out.metrics, 'finance.recurring.managed_firewall')).toBe(50);
+    expect(val(out.metrics, 'finance.recurring.domain_renewal')).toBe(10);
+    expect(val(out.metrics, 'finance.mrr')).toBe(160);
+    expect(out.warnings.some((w) => w.includes('Odd plan') && w.includes('Fortnightly'))).toBe(true);
+  });
+
+  it('keeps contract MRR and adds recurring lines only when contracts gave no breakdown', () => {
+    const withContract = normalizeHaloFinance({ contracts: [{ monthlyvalue: 5000 }], invoices: [], recurringInvoices: [anpRecurring], ...quarter });
+    expect(val(withContract.metrics, 'finance.mrr')).toBe(5000);
+    expect(withContract.metrics.filter((m) => m.key.startsWith('finance.recurring.'))).toHaveLength(14);
+
+    const withBreakdown = normalizeHaloFinance({
+      contracts: [{ id: 9, monthlyvalue: 5000 }],
+      contractDetails: [{ id: 9, items: [{ description: 'Managed Services', monthlyprice: 5000 }] }],
+      invoices: [],
+      recurringInvoices: [anpRecurring],
+      ...quarter,
+    });
+    expect(val(withBreakdown.metrics, 'finance.mrr')).toBe(5000);
+    expect(withBreakdown.metrics.filter((m) => m.key.startsWith('finance.recurring.')).map((m) => m.label)).toEqual(['Managed Services (monthly)']);
+  });
+
+  it('warns with the fields it saw when active recurring invoices yield no lines', () => {
+    const out = normalizeHaloFinance({
+      contracts: [],
+      invoices: [],
+      recurringInvoices: [{ id: 1, name: 'Mystery', lines: [{ foo: 'Managed Thing', bar: 10 }] }],
+      ...quarter,
+    });
+    expect(val(out.metrics, 'finance.mrr')).toBeUndefined();
+    expect(out.warnings.some((w) => w.startsWith('Halo recurring invoices could not be read (fields seen:') && w.includes('foo'))).toBe(true);
+  });
+
+  it('collector: fetches lines for headers without them, and degrades when the endpoint fails', async () => {
+    const period = makePeriod(2026, 3);
+    const { http, requests } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => r.url.includes('/api/RecurringInvoice/501'),
+        respond: () => ({ status: 200, json: anpRecurring }),
+      },
+      {
+        match: (r) => r.url.includes('/api/RecurringInvoice'),
+        respond: () => ({ status: 200, json: { record_count: 1, recurringinvoices: [{ id: 501, name: 'Recurring Invoice (ANP-AYCE)' }] } }),
+      },
+    ]);
+    const out = await collectHaloDirect({ clientId: 'anp', period, externalRef: '35' }, http, { baseUrl: 'https://x.halopsa.com', clientId: 'recur-1', clientSecret: 's' });
+    expect(requests.some((r) => r.url.includes('/api/RecurringInvoice/501') && r.url.includes('includelines=true'))).toBe(true);
+    expect(out.metrics.find((m) => m.key === 'finance.mrr')?.value).toBe(6512.63);
+    expect(out.warnings.some((w) => w.includes('recurring invoices could not be read'))).toBe(false);
+
+    const failing = fakeHttp([tokenRoute()]); // RecurringInvoice 404s like everything else
+    const degraded = await collectHaloDirect({ clientId: 'anp', period, externalRef: '35' }, failing.http, { baseUrl: 'https://x.halopsa.com', clientId: 'recur-2', clientSecret: 's' });
+    expect(degraded.metrics.find((m) => m.key === 'finance.mrr')).toBeUndefined();
+    expect(degraded.warnings.some((w) => w.startsWith('Halo recurring invoices could not be read'))).toBe(true);
+  });
+});
