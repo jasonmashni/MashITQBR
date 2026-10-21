@@ -440,7 +440,7 @@ export function ReportsTab({
                   </Table.Th>
                   <Table.Th>Report</Table.Th>
                   <Table.Th w={130}>Category</Table.Th>
-                  <Table.Th w={110}>Quarter</Table.Th>
+                  <Table.Th w={130}>Quarter</Table.Th>
                   <Table.Th>Source</Table.Th>
                   <Table.Th>Size</Table.Th>
                   <Table.Th>Filed</Table.Th>
@@ -490,6 +490,7 @@ export function ReportsTab({
                         disabled={Boolean(rowLock)}
                         title={rowLock}
                         allowDeselect={false}
+                        miw={112}
                         aria-label={`Quarter for ${d.name}`}
                       />
                     </Table.Td>
