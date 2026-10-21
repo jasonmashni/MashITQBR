@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyInvoiceLine } from '../src/index.js';
+import { classifyInvoiceLine, isLabourLine, spendLabelKey, stripBillingPlaceholders } from '../src/index.js';
 
 describe('classifyInvoiceLine', () => {
   it.each([
@@ -60,8 +60,56 @@ describe('classifyInvoiceLine', () => {
     expect(classifyInvoiceLine('Unmanaged switch')).toBe('variable');
   });
 
-  it('treats anything unknown as variable', () => {
-    expect(classifyInvoiceLine('Dell Latitude 5450')).toBe('variable');
+  it('treats anything not labour, hardware or Other as recurring', () => {
+    for (const l of ['Radius Server cloud', 'Foxit PDF Editor Pro+', 'Windows 365 Cloud PC', 'Power BI Pro', 'Dell Latitude 5450 lease']) {
+      expect(classifyInvoiceLine(l)).toBe('recurring');
+    }
+    // Nothing to go on: not counted as recurring.
     expect(classifyInvoiceLine('')).toBe('variable');
+    expect(classifyInvoiceLine('   ')).toBe('variable');
+  });
+
+  it('knows hardware-looking items', () => {
+    for (const l of [
+      'Dell Laptop',
+      'HP Desktop',
+      'Dell 27in Monitor',
+      'Netgear 8-port Switch',
+      'FortiGate 60F Firewall Appliance',
+      'APC UPS 1500',
+      'USB-C Dock',
+      'Logitech Keyboard',
+      'Wireless Mouse',
+      'Intel Core i7 workstation',
+    ]) {
+      expect(classifyInvoiceLine(l)).toBe('variable');
+    }
+  });
+});
+
+describe('isLabourLine', () => {
+  it('is true only for labour and one-off service words, not hardware or Other', () => {
+    expect(isLabourLine('Remote Support')).toBe(true);
+    expect(isLabourLine('Consulting (per hr)')).toBe(true);
+    expect(isLabourLine('Onsite Labor')).toBe(true);
+    expect(isLabourLine('Managed Support Agreement')).toBe(false);
+    expect(isLabourLine('Managed End User')).toBe(false);
+    expect(isLabourLine('Radius Server cloud')).toBe(false);
+    expect(isLabourLine('Dell Laptop')).toBe(false);
+  });
+});
+
+describe('billing placeholders and spend label keys', () => {
+  it('strips Halo period placeholders with their joiner', () => {
+    expect(stripBillingPlaceholders('Managed End User $periodStartDate - $PeriodEndDate')).toBe('Managed End User');
+    expect(stripBillingPlaceholders('Power BI Pro ($PERIODSTARTDATE - $periodenddate)')).toBe('Power BI Pro');
+    expect(stripBillingPlaceholders('Radius Server cloud - $periodStartDate')).toBe('Radius Server cloud');
+    expect(stripBillingPlaceholders('Managed Workstation - Windows PC')).toBe('Managed Workstation - Windows PC');
+  });
+
+  it('gives recurring and posted labels the same key', () => {
+    expect(spendLabelKey('Managed Workstation - Windows PC $periodStartDate - $PeriodEndDate (monthly)')).toBe(spendLabelKey('Managed Workstation - Windows PC'));
+    expect(spendLabelKey('Managed End User (monthly)')).toBe('managed end user');
+    expect(spendLabelKey('  Compliance   Management - Reg ')).toBe('compliance management - reg');
   });
 });
