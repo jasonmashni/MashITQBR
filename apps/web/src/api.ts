@@ -12,6 +12,7 @@ import type {
   ClientGoal,
   ConnectionView,
   Discussion,
+  SinceRow,
   DocExtraction,
   DocMatchSuggestion,
   DocumentInfo,
@@ -199,6 +200,9 @@ export const api = {
   /** knownIds: every item id this client has seen, so items added elsewhere (the inbox) survive the save. */
   putDiscussion: (clientId: string, period: string, disc: Discussion, knownIds?: string[]) =>
     send('PUT', `/api/clients/${clientId}/qbr/${period}/discussion`, knownIds ? { ...disc, knownIds } : disc).then(json<Discussion>),
+  /** Last quarter's reportable items with computed and effective status (Meeting tab). */
+  getSince: (clientId: string, period: string) =>
+    send('GET', `/api/clients/${clientId}/qbr/${period}/since`).then(json<{ rows: SinceRow[] }>),
 
   // Attached documents (vendor reports + uploads)
   listDocuments: (clientId: string, period: string) =>
