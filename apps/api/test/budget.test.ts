@@ -323,3 +323,204 @@ describe('client fiscal year start month', () => {
     expect((await s.getClient('fyedit'))?.fiscalYearStartMonth).toBe(7);
   });
 });
+
+describe('budget facts when Halo contracts carry no monthly value (ANP)', () => {
+  // Real ANP finance metrics: no finance.mrr and no finance.recurring.*, only invoice lines.
+  const anp = (period: string, invoiced: number, lines: Array<[string, number]>, extra: MetricValue[] = []): MetricSnapshot => ({
+    clientId: 'anpco',
+    period,
+    capturedAt: '2026-10-01T00:00:00Z',
+    metrics: [
+      m('finance.quarter_invoiced', 'Invoiced this quarter (total)', invoiced),
+      ...lines.map(([label, v]) => m(`finance.invoiced.${label.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`, label, v)),
+      ...extra,
+    ],
+  });
+  const q1 = anp('2026-Q1', 30578.12, [
+    ['Managed Workstation - Windows PC', 6545],
+    ['Remote Support', 4900],
+    ['Pro Svcs (Without ZTNA)', 3799.62],
+    ['Managed End User', 3770],
+    ['Consulting (per hr)', 2300],
+    ['GMKtec Gaming Mini PC K8 Plus AMD Ryzen 7 8845HS(8C/16T', 1385.96],
+    ['Other', 6146.7],
+  ]);
+  const q2 = anp('2026-Q2', 21019.26, [
+    ['Managed Workstation - Windows PC', 8360],
+    ['Managed End User', 4960],
+    ['Remote Support', 2006.25],
+    ['Compliance Management - Reg', 1350],
+    ['Microsoft 365 Business Premium', 1108.8],
+    ['Networking Monitoring & Management - Small Site', 600],
+    ['Other', 1444.44],
+  ]);
+  const q3 = anp(
+    '2026-Q3',
+    20982.03,
+    [
+      ['Managed Workstation - Windows PC', 9310],
+      ['Managed End User', 5120],
+      ['Compliance Management - Reg', 1350],
+      ['Microsoft 365 Business Premium', 970.2],
+      ['Remote Support', 762.5],
+      ['Networking Monitoring & Management - Small Site', 600],
+      ['Other', 1681.67],
+    ],
+    [{ ...m('licenses.total', 'Paid license seats', 30), source: 'cipp' }],
+  );
+
+  beforeAll(async () => {
+    const s = await store();
+    await s.upsertClient({ id: 'anpco', name: 'ANP', fiscalYearStartMonth: 1 });
+    for (const snap of [q1, q2, q3]) await s.putSnapshot(snap);
+  });
+
+  it('splits each quarter with the invoice line classifier', async () => {
+    const b = await import('../src/budget.js');
+    // Recurring and licensing lines come off; labour, hardware and Other stay variable.
+    expect(b.quarterVariable(q1)).toBe(Math.round((30578.12 - (6545 + 3770)) * 100) / 100);
+    expect(b.quarterVariable(q2)).toBe(Math.round((21019.26 - (8360 + 4960 + 1350 + 1108.8 + 600)) * 100) / 100);
+    expect(b.quarterVariable(q3)).toBe(Math.round((20982.03 - (9310 + 5120 + 1350 + 970.2 + 600)) * 100) / 100);
+  });
+
+  it('derives managed services from recurring invoice lines and keeps licensing separate', async () => {
+    const b = await import('../src/budget.js');
+    const { computeOutlook } = await import('@mashit/core');
+    const { facts, known } = await b.gatherBudgetFacts(await store(), 'anpco', 2027, 1, new Date('2026-10-21T00:00:00Z'));
+    expect(facts.mrr).toBe((9310 + 5120 + 1350 + 600) / 3);
+    expect(facts.mrrFromInvoices).toBe(true);
+    expect(facts.seatPriceFromRecurring).toBeFalsy();
+    expect(known.some((k) => k.text === 'Recurring services: $5,460 a month, from Halo invoice lines.' && k.source === 'Halo invoices')).toBe(true);
+
+    const outlook = computeOutlook(facts, {});
+    const lineOf = (c: string) => outlook.lines.find((l) => l.category === c)!;
+    const managed = lineOf('managed_services');
+    expect(managed.expected).toBe(Math.round(((9310 + 5120 + 1350 + 600) / 3) * 12));
+    const notes = managed.basis.map((x) => x.note);
+    expect(notes).not.toContain('No recurring value on Halo contracts');
+    expect(notes).toContain(
+      'From recurring lines on Halo invoices (Managed Workstation - Windows PC, Managed End User, Compliance Management - Reg, and 1 more); Halo contracts carry no monthly value.',
+    );
+
+    const v = [20263.12, 4640.46, 3631.83];
+    const support = lineOf('support_hours');
+    expect([support.low, support.expected, support.high]).toEqual([
+      Math.round(Math.min(...v) * 4),
+      Math.round(((v[0]! + v[1]! + v[2]!) / 3) * 4),
+      Math.round(Math.max(...v) * 4),
+    ]);
+    expect([support.low, support.expected, support.high]).toEqual([14527, 38047, 81052]);
+
+    // Licensing is priced from the Microsoft invoice line, outside the derived MRR.
+    expect(facts.seatMonthly).toBe(Math.round((970.2 / 3 / 30) * 100) / 100);
+    expect(lineOf('licensing').expected).toBe(Math.round(30 * facts.seatMonthly! * 12));
+    expect(lineOf('licensing').basis.map((x) => x.note)).not.toContain('Base Microsoft 365 seats are billed on your Mash IT agreement and counted in managed services.');
+  });
+
+  it('prices new users from the Managed End User invoice line', async () => {
+    const b = await import('../src/budget.js');
+    const { computeOutlook } = await import('@mashit/core');
+    const { facts } = await b.gatherBudgetFacts(await store(), 'anpco', 2027, 1, new Date('2026-10-21T00:00:00Z'));
+    expect(facts.perUserMonthly).toBe(Math.round((5120 / 3 / 30) * 100) / 100);
+    const managed = computeOutlook(facts, { headcountChange: 2 }).lines.find((l) => l.category === 'managed_services')!;
+    expect(managed.expected).toBe(65520);
+    expect(managed.high).toBe(Math.round(65520 + 2 * facts.perUserMonthly! * 12));
+    expect(managed.high).toBe(66885);
+  });
+
+  it('keeps invoiced less three months of MRR when finance.mrr exists without a recurring breakdown', async () => {
+    const b = await import('../src/budget.js');
+    const withMrr: MetricSnapshot = { ...q3, metrics: [...q3.metrics, m('finance.mrr', 'Monthly recurring', 5000)] };
+    expect(b.quarterVariable(withMrr)).toBe(Math.round((20982.03 - 5000 * 3) * 100) / 100);
+  });
+});
+
+describe('budget facts from a Halo recurring invoice (ANP-AYCE)', () => {
+  // What the collector emits from "Recurring Invoice (ANP-AYCE)": one
+  // finance.recurring.* line per item plus finance.mrr, next to the posted
+  // invoice lines of each quarter.
+  const recurringLines: Array<[string, number]> = [
+    ['Managed Workstation - Windows PC', 34 * 95],
+    ['Managed NAS/SAS', 78],
+    ['Managed End User $periodStartDate - $PeriodEndDate', 22 * 80],
+    ['Compliance Management - Reg', 450],
+    ['Networking Monitoring & Management - Small Site', 200],
+    ['Microsoft 365 Copilot (NCE)', 2 * 31.5],
+    ['Windows 365 Cloud PC', 25.6],
+    ['Power BI Pro', 3 * 16.8],
+    ['Microsoft 365 Business Premium', 14 * 23.1],
+    ['Microsoft Teams Rooms Premium', 40],
+    ['Microsoft 365 F3', 9 * 9.6],
+    ['Microsoft Purview Suite', 10.5],
+    ['Foxit PDF Editor Pro+', 3 * 14],
+    ['Radius Server cloud', 153.33],
+  ];
+  const mrr = Math.round(recurringLines.reduce((s, [, v]) => s + v, 0) * 100) / 100;
+  const posted: Record<string, [number, Array<[string, number]>]> = {
+    '2026-Q1': [30578.12, [['Managed Workstation - Windows PC', 6545], ['Remote Support', 4900], ['Pro Svcs (Without ZTNA)', 3799.62], ['Managed End User', 3770], ['Consulting (per hr)', 2300], ['GMKtec Gaming Mini PC K8 Plus AMD Ryzen 7 8845HS(8C/16T', 1385.96], ['Other', 6146.7]]],
+    '2026-Q2': [21019.26, [['Managed Workstation - Windows PC', 8360], ['Managed End User', 4960], ['Remote Support', 2006.25], ['Compliance Management - Reg', 1350], ['Microsoft 365 Business Premium', 1108.8], ['Networking Monitoring & Management - Small Site', 600], ['Other', 1444.44]]],
+    '2026-Q3': [20982.03, [['Managed Workstation - Windows PC', 9310], ['Managed End User', 5120], ['Compliance Management - Reg', 1350], ['Microsoft 365 Business Premium', 970.2], ['Remote Support', 762.5], ['Networking Monitoring & Management - Small Site', 600], ['Other', 1681.67]]],
+  };
+  const slug = (l: string) => l.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  const RI = 'Recurring Invoice (ANP-AYCE)';
+  const snap = (period: string): MetricSnapshot => {
+    const [invoiced, lines] = posted[period]!;
+    return {
+      clientId: 'anpri',
+      period,
+      capturedAt: '2026-10-01T00:00:00Z',
+      metrics: [
+        // Shaped like the collector's output: rows tagged source recurring_invoice.
+        { ...m('finance.mrr', 'Monthly recurring revenue', mrr), details: [{ invoice: RI, monthly: mrr, source: 'recurring_invoice' }] },
+        m('finance.quarter_invoiced', 'Invoiced this quarter (total)', invoiced),
+        ...lines.map(([l, v]) => m(`finance.invoiced.${slug(l)}`, l, v)),
+        ...recurringLines.map(([l, v]) => ({
+          ...m(`finance.recurring.${slug(l)}`, `${l} (monthly)`, v),
+          details: [{ item: l, monthly: v, invoice: RI, source: 'recurring_invoice' }],
+        })),
+        { ...m('licenses.total', 'Paid license seats', 30), source: 'cipp' },
+      ],
+    };
+  };
+
+  beforeAll(async () => {
+    const s = await store();
+    await s.upsertClient({ id: 'anpri', name: 'ANP (recurring invoice)', fiscalYearStartMonth: 1 });
+    for (const p of Object.keys(posted)) await s.putSnapshot(snap(p));
+  });
+
+  it('prices managed services from the recurring invoice, licensing as deltas, and support hours from the rest', async () => {
+    const b = await import('../src/budget.js');
+    const { computeOutlook } = await import('@mashit/core');
+    expect(mrr).toBe(6512.63);
+    const { facts, known } = await b.gatherBudgetFacts(await store(), 'anpri', 2027, 1, new Date('2026-10-21T00:00:00Z'));
+    expect(facts.mrr).toBe(6512.63);
+    expect(facts.mrrFromInvoices).toBeFalsy();
+    expect(facts.seatPriceFromRecurring).toBe(true);
+    expect(facts.perUserMonthly).toBe(Math.round((1760 / 30) * 100) / 100);
+    expect(facts.mrrSource).toBe('recurring_invoices');
+    expect(facts.mrrInvoices).toEqual(['ANP-AYCE']);
+    expect(known).toContainEqual({ text: 'Recurring billing: $6,513 a month, from your Halo recurring invoice (ANP-AYCE).', source: 'Halo recurring invoices' });
+    expect(known.some((k) => k.source === 'Halo contracts')).toBe(false);
+
+    // Variable = invoiced less three months of the recurring invoice, floored by the quarter's labour lines.
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    expect(b.quarterVariable(snap('2026-Q3'))).toBe(r2(20982.03 - 6512.63 * 3)); // 1,444.14 (Remote Support 762.50 is lower)
+    expect(b.quarterVariable(snap('2026-Q3'))).toBe(1444.14);
+    expect(b.quarterVariable(snap('2026-Q2'))).toBe(2006.25); // 1,481.37 floored by Remote Support 2,006.25
+    expect(b.quarterVariable(snap('2026-Q1'))).toBe(r2(30578.12 - 6512.63 * 3)); // 11,040.23 beats labour 10,999.62
+
+    const outlook = computeOutlook(facts, {});
+    const lineOf = (c: string) => outlook.lines.find((l) => l.category === c)!;
+    expect(lineOf('managed_services').expected).toBe(Math.round(6512.63 * 12));
+    expect(lineOf('managed_services').basis.map((x) => x.note)).toEqual(['$6,513 a month, times 12', 'From your Halo recurring invoice (ANP-AYCE)']);
+    expect([lineOf('licensing').low, lineOf('licensing').expected, lineOf('licensing').high]).toEqual([0, 0, 0]);
+    const support = lineOf('support_hours');
+    expect([support.low, support.expected, support.high]).toEqual([
+      Math.round(1444.14 * 4),
+      Math.round(((11040.23 + 2006.25 + 1444.14) / 3) * 4),
+      Math.round(11040.23 * 4),
+    ]);
+    expect([support.low, support.expected, support.high]).toEqual([5777, 19321, 44161]);
+  });
+});

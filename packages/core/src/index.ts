@@ -10,3 +10,4 @@ export * from './scorecard.js';
 export * from './seed.js';
 export * from './protection.js';
 export * from './budget.js';
+export * from './spend.js';
