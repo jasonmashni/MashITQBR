@@ -1,6 +1,9 @@
 import {
   classifyInvoiceLine,
   computeOutlook,
+  isLabourLine,
+  RECURRING_INVOICE_SOURCE,
+  recurringInvoiceSource,
   spendLabelKey,
   fiscalPeriods,
   fiscalYearOf,
@@ -126,6 +129,13 @@ function recurringMatching(s: MetricSnapshot, re: RegExp): number | undefined {
   return rows.length ? rows.reduce((sum, m) => sum + (m.value as number), 0) : undefined;
 }
 
+/** True when a metric's drill-down rows say it was read from Halo recurring invoices. */
+const fromRecurringInvoices = (m: MetricSnapshot['metrics'][number] | undefined): boolean =>
+  !!m?.details?.some((d) => d['source'] === RECURRING_INVOICE_SOURCE);
+
+/** "Recurring Invoice (ANP-AYCE)" reads as "ANP-AYCE"; other names as they are. */
+const invoiceRef = (name: string): string => name.match(/\(([^)]+)\)\s*$/)?.[1]?.trim() || name.trim();
+
 const invoiceLines = (s: MetricSnapshot) =>
   s.metrics.filter((m) => m.key.startsWith('finance.invoiced.') && typeof m.value === 'number');
 
@@ -141,6 +151,15 @@ export function quarterVariable(s: MetricSnapshot | undefined): number | undefin
   if (!s || invoiced === undefined) return undefined;
   const recurringLabels = new Set(s.metrics.filter((m) => m.key.startsWith('finance.recurring.')).map((m) => normLabel(m.label)));
   const lines = invoiceLines(s);
+  const mrr = metricNum(s, 'finance.mrr');
+  // Recurring breakdown from Halo recurring invoices: the posted lines rarely
+  // match it one to one (subscriptions fold into Other), so take the quarter
+  // less three months of MRR, but never less than its labour lines.
+  if (recurringLabels.size > 0 && mrr !== undefined && s.metrics.some((m) => m.key.startsWith('finance.recurring.') && fromRecurringInvoices(m))) {
+    const labour = lines.filter((m) => isLabourLine(m.label)).reduce((sum, m) => sum + (m.value as number), 0);
+    const variable = Math.max(invoiced - Math.min(invoiced, mrr * 3), labour);
+    return Math.round(variable * 100) / 100;
+  }
   let recurring: number;
   if (recurringLabels.size > 0 && lines.length > 0) {
     recurring = lines.filter((m) => recurringLabels.has(normLabel(m.label))).reduce((sum, m) => sum + (m.value as number), 0);
@@ -189,7 +208,15 @@ export async function gatherBudgetFacts(store: DataStore, clientId: string, fisc
   const known: KnownFact[] = [];
   if (latest) {
     const mrr = metricNum(latest, 'finance.mrr');
-    if (mrr !== undefined && mrr > 0) {
+    const mrrMetric = latest.metrics.find((m) => m.key === 'finance.mrr');
+    if (mrr !== undefined && mrr > 0 && fromRecurringInvoices(mrrMetric)) {
+      facts.mrr = mrr;
+      facts.mrrSource = 'recurring_invoices';
+      const refs = [...new Set((mrrMetric?.details ?? []).map((d) => d['invoice']).filter((v): v is string => typeof v === 'string' && v.trim() !== '').map(invoiceRef))];
+      if (refs.length) facts.mrrInvoices = refs;
+      const from = recurringInvoiceSource(refs);
+      known.push({ text: `Recurring billing: ${money(mrr)} a month, ${from.charAt(0).toLowerCase()}${from.slice(1)}.`, source: 'Halo recurring invoices' });
+    } else if (mrr !== undefined && mrr > 0) {
       facts.mrr = mrr;
       known.push({ text: `Recurring agreements: ${money(mrr)} a month.`, source: 'Halo contracts' });
     } else if (mrr === undefined && !latest.metrics.some((m) => m.key.startsWith('finance.recurring.'))) {

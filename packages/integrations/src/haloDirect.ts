@@ -1,4 +1,4 @@
-import { isLabourLine, stripBillingPlaceholders, type MetricValue } from '@mashit/core';
+import { isLabourLine, RECURRING_INVOICE_SOURCE, stripBillingPlaceholders, type MetricValue } from '@mashit/core';
 import { metric, type CollectorContext, type CollectResult, type HttpTransport } from './types.js';
 import { toArray } from './util.js';
 
@@ -836,7 +836,7 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
         const total = read.lines.reduce((sum, l) => sum + l.monthly, 0);
         metrics.push({
           ...spend('finance.mrr', 'Monthly recurring revenue', total),
-          details: [...byInvoice].slice(0, DETAIL_CAP).map(([invoice, monthly]) => ({ invoice, monthly: Math.round(monthly * 100) / 100 })),
+          details: [...byInvoice].slice(0, DETAIL_CAP).map(([invoice, monthly]) => ({ invoice, monthly: Math.round(monthly * 100) / 100, source: RECURRING_INVOICE_SOURCE })),
         });
       }
       if (!metrics.some((m) => m.key.startsWith('finance.recurring.'))) {
@@ -845,7 +845,7 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
         for (const l of read.lines) {
           byLabel.set(l.label, (byLabel.get(l.label) ?? 0) + l.monthly);
           const rows = rowsByLabel.get(l.label) ?? [];
-          rows.push({ item: clip(l.label), monthly: Math.round(l.monthly * 100) / 100, invoice: l.invoice });
+          rows.push({ item: clip(l.label), monthly: Math.round(l.monthly * 100) / 100, invoice: l.invoice, source: RECURRING_INVOICE_SOURCE });
           rowsByLabel.set(l.label, rows);
         }
         emitBreakdown([...byLabel].sort((a, b) => b[1] - a[1]), 'finance.recurring', (n) => `${n} (monthly)`, rowsByLabel);
@@ -1089,7 +1089,10 @@ async function collectHaloForId(ctx: CollectorContext, http: HttpTransport, cfg:
       }
     }
   } catch (e) {
-    recurringInvoiceError = `${tag ? `${tag.trim()} ` : ''}${e instanceof Error ? e.message : 'error'}`;
+    const message = e instanceof Error ? e.message : 'error';
+    // 404: this client is not billed through recurring invoices (or the
+    // instance has no such endpoint). Silent; anything else is a failure.
+    if (!/responded 404\b/.test(message)) recurringInvoiceError = `${tag ? `${tag.trim()} ` : ''}${message}`;
   }
   try {
     // Newest first, so a capped pull drops the oldest invoices (outside the

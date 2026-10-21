@@ -462,6 +462,7 @@ describe('budget facts from a Halo recurring invoice (ANP-AYCE)', () => {
     '2026-Q3': [20982.03, [['Managed Workstation - Windows PC', 9310], ['Managed End User', 5120], ['Compliance Management - Reg', 1350], ['Microsoft 365 Business Premium', 970.2], ['Remote Support', 762.5], ['Networking Monitoring & Management - Small Site', 600], ['Other', 1681.67]]],
   };
   const slug = (l: string) => l.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  const RI = 'Recurring Invoice (ANP-AYCE)';
   const snap = (period: string): MetricSnapshot => {
     const [invoiced, lines] = posted[period]!;
     return {
@@ -469,10 +470,14 @@ describe('budget facts from a Halo recurring invoice (ANP-AYCE)', () => {
       period,
       capturedAt: '2026-10-01T00:00:00Z',
       metrics: [
-        m('finance.mrr', 'Monthly recurring revenue', mrr),
+        // Shaped like the collector's output: rows tagged source recurring_invoice.
+        { ...m('finance.mrr', 'Monthly recurring revenue', mrr), details: [{ invoice: RI, monthly: mrr, source: 'recurring_invoice' }] },
         m('finance.quarter_invoiced', 'Invoiced this quarter (total)', invoiced),
         ...lines.map(([l, v]) => m(`finance.invoiced.${slug(l)}`, l, v)),
-        ...recurringLines.map(([l, v]) => m(`finance.recurring.${slug(l)}`, `${l} (monthly)`, v)),
+        ...recurringLines.map(([l, v]) => ({
+          ...m(`finance.recurring.${slug(l)}`, `${l} (monthly)`, v),
+          details: [{ item: l, monthly: v, invoice: RI, source: 'recurring_invoice' }],
+        })),
         { ...m('licenses.total', 'Paid license seats', 30), source: 'cipp' },
       ],
     };
@@ -493,18 +498,29 @@ describe('budget facts from a Halo recurring invoice (ANP-AYCE)', () => {
     expect(facts.mrrFromInvoices).toBeFalsy();
     expect(facts.seatPriceFromRecurring).toBe(true);
     expect(facts.perUserMonthly).toBe(Math.round((1760 / 30) * 100) / 100);
-    expect(known.some((k) => k.text === 'Recurring agreements: $6,513 a month.')).toBe(true);
+    expect(facts.mrrSource).toBe('recurring_invoices');
+    expect(facts.mrrInvoices).toEqual(['ANP-AYCE']);
+    expect(known).toContainEqual({ text: 'Recurring billing: $6,513 a month, from your Halo recurring invoice (ANP-AYCE).', source: 'Halo recurring invoices' });
+    expect(known.some((k) => k.source === 'Halo contracts')).toBe(false);
 
-    // Posted lines whose label matches a recurring line come off; Remote Support, labour, hardware and Other stay.
-    expect(b.quarterVariable(snap('2026-Q1'))).toBe(Math.round((30578.12 - (6545 + 3770)) * 100) / 100);
-    expect(b.quarterVariable(snap('2026-Q3'))).toBe(Math.round((20982.03 - (9310 + 5120 + 1350 + 970.2 + 600)) * 100) / 100);
+    // Variable = invoiced less three months of the recurring invoice, floored by the quarter's labour lines.
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    expect(b.quarterVariable(snap('2026-Q3'))).toBe(r2(20982.03 - 6512.63 * 3)); // 1,444.14 (Remote Support 762.50 is lower)
+    expect(b.quarterVariable(snap('2026-Q3'))).toBe(1444.14);
+    expect(b.quarterVariable(snap('2026-Q2'))).toBe(2006.25); // 1,481.37 floored by Remote Support 2,006.25
+    expect(b.quarterVariable(snap('2026-Q1'))).toBe(r2(30578.12 - 6512.63 * 3)); // 11,040.23 beats labour 10,999.62
 
     const outlook = computeOutlook(facts, {});
     const lineOf = (c: string) => outlook.lines.find((l) => l.category === c)!;
     expect(lineOf('managed_services').expected).toBe(Math.round(6512.63 * 12));
-    expect(lineOf('managed_services').basis.map((x) => x.note)).toEqual(['$6,513 a month on Halo contracts, times 12']);
+    expect(lineOf('managed_services').basis.map((x) => x.note)).toEqual(['$6,513 a month, times 12', 'From your Halo recurring invoice (ANP-AYCE)']);
     expect([lineOf('licensing').low, lineOf('licensing').expected, lineOf('licensing').high]).toEqual([0, 0, 0]);
     const support = lineOf('support_hours');
-    expect([support.low, support.expected, support.high]).toEqual([14527, 38047, 81052]);
+    expect([support.low, support.expected, support.high]).toEqual([
+      Math.round(1444.14 * 4),
+      Math.round(((11040.23 + 2006.25 + 1444.14) / 3) * 4),
+      Math.round(11040.23 * 4),
+    ]);
+    expect([support.low, support.expected, support.high]).toEqual([5777, 19321, 44161]);
   });
 });

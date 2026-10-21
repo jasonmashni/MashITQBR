@@ -127,6 +127,18 @@ describe('fix round 1 rulings', () => {
   });
 });
 
+describe('managed services basis names the source of MRR', () => {
+  const notes = (f: BudgetFacts) => line(computeOutlook(f, {}).lines, 'managed_services').basis.map((b) => b.note);
+  it('names up to two recurring invoices, else says recurring invoices', () => {
+    expect(notes({ mrr: 1000, mrrSource: 'recurring_invoices', mrrInvoices: ['ANP-AYCE'] })).toEqual(['$1,000 a month, times 12', 'From your Halo recurring invoice (ANP-AYCE)']);
+    expect(notes({ mrr: 1000, mrrSource: 'recurring_invoices', mrrInvoices: ['A', 'B', 'C'] })).toEqual(['$1,000 a month, times 12', 'From your Halo recurring invoices (A, B)']);
+    expect(notes({ mrr: 1000, mrrSource: 'recurring_invoices' })).toEqual(['$1,000 a month, times 12', 'From your Halo recurring invoices']);
+  });
+  it('keeps the contract wording', () => {
+    expect(notes({ mrr: 1000 })).toEqual(['$1,000 a month on Halo contracts, times 12']);
+  });
+});
+
 describe('planVsActual', () => {
   it('compares spend with the pro-rata share', () => {
     const r = planVsActual(118000, [30578, 21019]);

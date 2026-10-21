@@ -9,6 +9,13 @@
  */
 export type InvoiceLineKind = 'recurring' | 'licensing' | 'variable';
 
+/**
+ * Tag on the detail rows of finance.mrr and finance.recurring.* when the
+ * collector read them from Halo recurring invoices, so the budget can name
+ * the source and use the matching support-hours rule.
+ */
+export const RECURRING_INVOICE_SOURCE = 'recurring_invoice';
+
 const LICENSING = /microsoft 365|office 365|\bm365\b|exchange online|copilot|business (premium|standard|basic)/i;
 
 /** Words that make a line recurring even when it also names labour ("Managed Support Agreement"). */

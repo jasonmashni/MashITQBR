@@ -18,6 +18,10 @@ export interface BudgetFacts {
   mrrFromInvoices?: boolean;
   /** Labels of the invoice lines behind a derived `mrr`, largest first. */
   mrrLines?: string[];
+  /** Set to recurring_invoices when `mrr` is the client's Halo recurring invoice total. */
+  mrrSource?: 'recurring_invoices';
+  /** Short references of the recurring invoices behind `mrr` ("ANP-AYCE"). */
+  mrrInvoices?: string[];
   /** Managed End User line over licensed users, monthly. */
   perUserMonthly?: number;
   /** CIPP paid seats. */
@@ -57,6 +61,16 @@ const note = (source: BudgetSource, text: string) => ({ source, note: text });
 
 export const M365_IN_AGREEMENT = 'Base Microsoft 365 seats are billed on your Mash IT agreement and counted in managed services.';
 
+/**
+ * "From your Halo recurring invoice (ANP-AYCE)": names up to two invoice
+ * references, else "From your Halo recurring invoices".
+ */
+export function recurringInvoiceSource(refs: string[]): string {
+  const named = refs.slice(0, 2);
+  if (named.length === 0) return 'From your Halo recurring invoices';
+  return `From your Halo recurring ${refs.length === 1 ? 'invoice' : 'invoices'} (${named.join(', ')})`;
+}
+
 /** Names up to three of the invoice lines behind a derived MRR. */
 function fromInvoicesNote(labels: string[]): string {
   const named = labels.slice(0, 3);
@@ -73,7 +87,9 @@ function managedServices(facts: BudgetFacts, answers: BudgetAnswers, caveats: st
   const base = facts.mrr * 12;
   const basis: Basis = facts.mrrFromInvoices
     ? [note('halo', `${money(facts.mrr)} a month, times 12`), note('halo', fromInvoicesNote(facts.mrrLines ?? []))]
-    : [note('halo', `${money(facts.mrr)} a month on Halo contracts, times 12`)];
+    : facts.mrrSource === 'recurring_invoices'
+      ? [note('halo', `${money(facts.mrr)} a month, times 12`), note('halo', recurringInvoiceSource(facts.mrrInvoices ?? []))]
+      : [note('halo', `${money(facts.mrr)} a month on Halo contracts, times 12`)];
   const hires = Math.max(0, answers.headcountChange ?? 0);
   let high = base;
   if (hires > 0) {

@@ -1212,9 +1212,29 @@ describe('Halo recurring invoices (UNVERIFIED field names, parsed tolerantly)', 
     expect(out.metrics.find((m) => m.key === 'finance.mrr')?.value).toBe(6512.63);
     expect(out.warnings.some((w) => w.includes('recurring invoices could not be read'))).toBe(false);
 
-    const failing = fakeHttp([tokenRoute()]); // RecurringInvoice 404s like everything else
-    const degraded = await collectHaloDirect({ clientId: 'anp', period, externalRef: '35' }, failing.http, { baseUrl: 'https://x.halopsa.com', clientId: 'recur-2', clientSecret: 's' });
-    expect(degraded.metrics.find((m) => m.key === 'finance.mrr')).toBeUndefined();
-    expect(degraded.warnings.some((w) => w.startsWith('Halo recurring invoices could not be read'))).toBe(true);
+    // The figures say where they came from, so the budget can name the invoice.
+    const mrrMetric = out.metrics.find((m) => m.key === 'finance.mrr')!;
+    expect(mrrMetric.details).toEqual([{ invoice: 'Recurring Invoice (ANP-AYCE)', monthly: 6512.63, source: 'recurring_invoice' }]);
+    expect(out.metrics.filter((m) => m.key.startsWith('finance.recurring.')).every((m) => m.details?.every((d) => d['source'] === 'recurring_invoice'))).toBe(true);
+  });
+
+  it('collector: a 404 or an empty list is silent (the client is not billed that way)', async () => {
+    const period = makePeriod(2026, 3);
+    const notFound = fakeHttp([tokenRoute()]); // RecurringInvoice 404s like everything else
+    const a = await collectHaloDirect({ clientId: 'anp', period, externalRef: '35' }, notFound.http, { baseUrl: 'https://x.halopsa.com', clientId: 'recur-2', clientSecret: 's' });
+    expect(a.metrics.find((m) => m.key === 'finance.mrr')).toBeUndefined();
+    expect(a.warnings.filter((w) => /recurring invoice/i.test(w))).toEqual([]);
+
+    const empty = fakeHttp([tokenRoute(), { match: (r) => r.url.includes('/api/RecurringInvoice'), respond: () => ({ status: 200, json: { record_count: 0, invoices: [] } }) }]);
+    const b = await collectHaloDirect({ clientId: 'anp', period, externalRef: '35' }, empty.http, { baseUrl: 'https://x.halopsa.com', clientId: 'recur-3', clientSecret: 's' });
+    expect(b.warnings.filter((w) => /recurring invoice/i.test(w))).toEqual([]);
+  });
+
+  it('collector: any other failure warns', async () => {
+    const period = makePeriod(2026, 3);
+    const broken = fakeHttp([tokenRoute(), { match: (r) => r.url.includes('/api/RecurringInvoice'), respond: () => ({ status: 500, json: { error: 'boom' } }) }]);
+    const out = await collectHaloDirect({ clientId: 'anp', period, externalRef: '35' }, broken.http, { baseUrl: 'https://x.halopsa.com', clientId: 'recur-4', clientSecret: 's' });
+    expect(out.metrics.find((m) => m.key === 'finance.mrr')).toBeUndefined();
+    expect(out.warnings.some((w) => w.startsWith('Halo recurring invoices could not be read (fields seen:') && w.includes('500'))).toBe(true);
   });
 });
