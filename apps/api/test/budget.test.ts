@@ -366,7 +366,7 @@ describe('budget facts when Halo contracts carry no monthly value (ANP)', () => 
       ['Networking Monitoring & Management - Small Site', 600],
       ['Other', 1681.67],
     ],
-    [{ ...m('licenses.total', 'Paid license seats', 7), source: 'cipp' }],
+    [{ ...m('licenses.total', 'Paid license seats', 30), source: 'cipp' }],
   );
 
   beforeAll(async () => {
@@ -412,8 +412,25 @@ describe('budget facts when Halo contracts carry no monthly value (ANP)', () => 
     expect([support.low, support.expected, support.high]).toEqual([14527, 38047, 81052]);
 
     // Licensing is priced from the Microsoft invoice line, outside the derived MRR.
-    expect(facts.seatMonthly).toBe(Math.round((970.2 / 3 / 7) * 100) / 100);
-    expect(lineOf('licensing').expected).toBe(Math.round(7 * facts.seatMonthly! * 12));
+    expect(facts.seatMonthly).toBe(Math.round((970.2 / 3 / 30) * 100) / 100);
+    expect(lineOf('licensing').expected).toBe(Math.round(30 * facts.seatMonthly! * 12));
     expect(lineOf('licensing').basis.map((x) => x.note)).not.toContain('Base Microsoft 365 seats are billed on your Mash IT agreement and counted in managed services.');
+  });
+
+  it('prices new users from the Managed End User invoice line', async () => {
+    const b = await import('../src/budget.js');
+    const { computeOutlook } = await import('@mashit/core');
+    const { facts } = await b.gatherBudgetFacts(await store(), 'anpco', 2027, 1, new Date('2026-10-21T00:00:00Z'));
+    expect(facts.perUserMonthly).toBe(Math.round((5120 / 3 / 30) * 100) / 100);
+    const managed = computeOutlook(facts, { headcountChange: 2 }).lines.find((l) => l.category === 'managed_services')!;
+    expect(managed.expected).toBe(65520);
+    expect(managed.high).toBe(Math.round(65520 + 2 * facts.perUserMonthly! * 12));
+    expect(managed.high).toBe(66885);
+  });
+
+  it('keeps invoiced less three months of MRR when finance.mrr exists without a recurring breakdown', async () => {
+    const b = await import('../src/budget.js');
+    const withMrr: MetricSnapshot = { ...q3, metrics: [...q3.metrics, m('finance.mrr', 'Monthly recurring', 5000)] };
+    expect(b.quarterVariable(withMrr)).toBe(Math.round((20982.03 - 5000 * 3) * 100) / 100);
   });
 });
