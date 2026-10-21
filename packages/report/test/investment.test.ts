@@ -57,6 +57,20 @@ describe('investment model', () => {
     expect(model.breakdown.find((b) => b.label === 'Other')?.recurring).toBe(false);
   });
 
+  it('matches recurring-invoice labels to posted lines through Halo placeholders', () => {
+    const spend = { category: 'spend', source: 'halo', unit: 'USD' } as const;
+    const current = {
+      ...anpQ2,
+      metrics: [
+        ...anpQ2.metrics.filter((m) => !m.key.startsWith('finance.recurring.')),
+        { key: 'finance.recurring.managed_workstations', label: 'Managed workstations $periodStartDate - $PeriodEndDate (monthly)', value: 3230, ...spend },
+      ],
+    };
+    const model = buildReportModel({ ...args, current }).investment!;
+    expect(model.breakdown.find((b) => b.label === 'Managed workstations')?.recurring).toBe(true);
+    expect(model.recurring).toBe(8360);
+  });
+
   it('says what is coming up, pricing the warranty refresh only with a unit cost', () => {
     expect(inv.comingUp.join(' ')).toContain('10 devices past warranty');
     expect(inv.comingUp.join(' ')).not.toContain('$');

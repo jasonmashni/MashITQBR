@@ -8,6 +8,7 @@ import {
   isPlanningPeriod,
   parsePeriod,
   protectionRows,
+  spendLabelKey,
   ticketInsightRecommendations,
   type Brand,
   type BudgetOutlook,
@@ -146,7 +147,7 @@ function buildInvestment(
   const invoiced = num(current, 'finance.quarter_invoiced');
   if (invoiced === undefined && !budget?.outlook && !budget?.planVsActual) return undefined;
 
-  const norm = (label: string) => label.replace(/\s*\(monthly\)\s*$/i, '').trim().toLowerCase();
+  const norm = spendLabelKey;
   const recurringLabels = new Set(
     current.metrics.filter((m) => m.key.startsWith('finance.recurring.')).map((m) => norm(m.label)),
   );

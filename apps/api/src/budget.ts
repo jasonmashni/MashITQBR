@@ -1,6 +1,7 @@
 import {
   classifyInvoiceLine,
   computeOutlook,
+  spendLabelKey,
   fiscalPeriods,
   fiscalYearOf,
   isPlanningPeriod,
@@ -116,7 +117,8 @@ function metricNum(s: MetricSnapshot | undefined, key: string): number | undefin
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 
-const normLabel = (label: string) => label.replace(/\s*\(monthly\)\s*$/i, '').trim().toLowerCase();
+/** Recurring and posted labels match on the same key (placeholders and "(monthly)" stripped). */
+const normLabel = spendLabelKey;
 
 /** Monthly recurring value of the finance.recurring.* lines whose label matches. */
 function recurringMatching(s: MetricSnapshot, re: RegExp): number | undefined {
