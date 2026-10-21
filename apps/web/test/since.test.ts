@@ -71,11 +71,10 @@ describe('clearSinceOverride (Reset)', () => {
 });
 
 describe('overridesForSave', () => {
-  it('drops keys GET since did not return', () => {
+  it('keeps every stored key, including ones GET since did not return; only a reset key is gone', () => {
     const o = { a: { status: 'done' as const, at: 'x', by: 'y' }, stale: { status: 'waiting' as const, at: 'x', by: 'y' } };
-    expect(overridesForSave(o, [row({})])).toEqual({ a: o.a });
-    expect(overridesForSave(undefined, [row({})])).toBeUndefined();
-    // Until GET since answers, send what was loaded.
-    expect(overridesForSave(o, null)).toEqual(o);
+    expect(overridesForSave(o)).toEqual(o);
+    expect(overridesForSave(clearSinceOverride(o, 'a'))).toEqual({ stale: o.stale });
+    expect(overridesForSave(undefined)).toBeUndefined();
   });
 });

@@ -97,15 +97,11 @@ export function clearSinceOverride(overrides: Record<string, SinceOverride> | un
 }
 
 /**
- * What Save sends: only keys GET since returned, so a close-out for an item
- * that left last quarter's agenda never blocks the save. Before the rows load
- * (or when they failed), the loaded map goes back unchanged.
+ * What Save sends: every close-out the tab holds, including keys GET since
+ * did not return (the server prunes keys no longer on last quarter's agenda,
+ * and keeps them when last quarter cannot be read). Only a Reset removes a
+ * key, which clearSinceOverride already did.
  */
-export function overridesForSave(
-  overrides: Record<string, SinceOverride> | undefined,
-  rows: Pick<SinceRow, 'id'>[] | null,
-): Record<string, SinceOverride> | undefined {
-  if (!overrides || !rows) return overrides;
-  const ids = new Set(rows.map((r) => r.id));
-  return Object.fromEntries(Object.entries(overrides).filter(([id]) => ids.has(id)));
+export function overridesForSave(overrides: Record<string, SinceOverride> | undefined): Record<string, SinceOverride> | undefined {
+  return overrides ? { ...overrides } : undefined;
 }

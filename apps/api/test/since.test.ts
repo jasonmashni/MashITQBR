@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -201,5 +201,60 @@ describe('review fixes', () => {
     const { normalizeSinceOverrides } = await import('../src/since.js');
     const r = await normalizeSinceOverrides('anp', '2019-Q4', { 'p-sso': { status: 'done' } }, undefined, 'me', 'now');
     expect(r.ok && Object.getPrototypeOf(r.value)).toBeNull();
+  });
+});
+
+describe('last quarter cannot be read', () => {
+  const UNREADABLE = 'Last quarter could not be read; try again.';
+  async function failingPrevious(prev: string) {
+    const { getDataStore } = await import('../src/store/index.js');
+    const store = getDataStore();
+    const original = store.getDiscussion.bind(store);
+    return vi.spyOn(store, 'getDiscussion').mockImplementation(async (clientId, period) => {
+      if (period === prev) throw new Error('storage unavailable');
+      return original(clientId, period);
+    });
+  }
+
+  it('GET since answers 503', async () => {
+    const h = await import('../src/handlers.js');
+    await seed('anp', '2018-Q1', '2018-Q2');
+    const spy = await failingPrevious('2018-Q1');
+    try {
+      const res = await h.getSince('anp', '2018-Q2');
+      expect(res.status).toBe(503);
+      expect(res.json).toEqual({ error: UNREADABLE });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('PUT keeps stored overrides unpruned, accepts stored keys, and answers 503 for a new key or a new carried item', async () => {
+    const h = await import('../src/handlers.js');
+    const { getDataStore } = await import('../src/store/index.js');
+    const store = getDataStore();
+    await seed('anp', '2018-Q3', '2018-Q4');
+    const kept = { status: 'done' as const, at: '2018-11-01T00:00:00Z', by: 'jason' };
+    await store.putDiscussion({ ...(await store.getDiscussion('anp', '2018-Q4'))!, sinceOverrides: { 'p-sso': kept, gone: kept } });
+    const spy = await failingPrevious('2018-Q3');
+    try {
+      const plain = await h.putDiscussion('anp', '2018-Q4', { items: [{ id: 'c1', topic: 'Firewall refresh' }], knownIds: ['c1'] });
+      expect(plain.status).toBe(200);
+      expect((plain.json as QbrDiscussion).sinceOverrides).toEqual({ 'p-sso': kept, gone: kept });
+
+      const changed = await h.putDiscussion('anp', '2018-Q4', body({ 'p-sso': { status: 'waiting' }, gone: { status: 'done' } }));
+      expect(changed.status).toBe(200);
+      expect((changed.json as QbrDiscussion).sinceOverrides).toMatchObject({ 'p-sso': { status: 'waiting' }, gone: kept });
+
+      const fresh = await h.putDiscussion('anp', '2018-Q4', body({ 'p-sso': { status: 'waiting' }, 'p-wait': { status: 'done' } }));
+      expect(fresh.status).toBe(503);
+      expect(fresh.json).toEqual({ error: UNREADABLE });
+
+      const carried = await h.putDiscussion('anp', '2018-Q4', { items: [{ id: 'n1', topic: 'SSO rollout', source: 'carried', sourceRef: 'p-sso' }] });
+      expect(carried.status).toBe(503);
+      expect(carried.json).toEqual({ error: UNREADABLE });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

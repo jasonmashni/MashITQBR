@@ -208,7 +208,7 @@ export function MeetingTab({
     try {
       // Agenda order is the on-screen order.
       const items = disc.items.map((it, i) => ({ ...it, sortOrder: i }));
-      const sinceOverrides = overridesForSave(disc.sinceOverrides, sinceRows);
+      const sinceOverrides = overridesForSave(disc.sinceOverrides);
       const saved = await api.putDiscussion(clientId, period, { ...disc, items, ...(sinceOverrides ? { sinceOverrides } : {}) }, [...seenIds.current]);
       setDisc({ ...disc, items: saved.items ?? items, sinceOverrides: saved.sinceOverrides });
       setSinceReload((n) => n + 1);

@@ -6,11 +6,17 @@ import { getDataStore, getSecretStore } from './store/index.js';
 /** Longest close-out note, after trimming. */
 export const SINCE_NOTE_MAX = 200;
 
-/** Last quarter's items that can be read (older stored items may lack a topic). */
+/** The answer when last quarter's discussion cannot be read. */
+export const PREVIOUS_UNREADABLE = 'Last quarter could not be read; try again.';
+export const previousUnreadable = (): ApiResult => ({ status: 503, json: { error: PREVIOUS_UNREADABLE } });
+
+/**
+ * Last quarter's items that can be read (older stored items may lack a
+ * topic). A store read failure throws: callers must not mistake it for an
+ * empty agenda and prune or refuse on that basis.
+ */
 export async function previousItems(clientId: string, period: string): Promise<DiscussionItem[]> {
-  const prev = await getDataStore()
-    .getDiscussion(clientId, previousPeriod(period).id)
-    .catch(() => undefined);
+  const prev = await getDataStore().getDiscussion(clientId, previousPeriod(period).id);
   return (prev?.items ?? []).filter((i) => typeof i?.id === 'string' && typeof i?.topic === 'string' && i.topic.trim().length > 0);
 }
 
@@ -23,7 +29,12 @@ export async function previousItems(clientId: string, period: string): Promise<D
  */
 export async function getSince(clientId: string, period: string): Promise<ApiResult> {
   const store = getDataStore();
-  const previous = await previousItems(clientId, period);
+  let previous: DiscussionItem[];
+  try {
+    previous = await previousItems(clientId, period);
+  } catch {
+    return previousUnreadable();
+  }
   const current = await store.getDiscussion(clientId, period);
   let ticketStatuses: Record<string, string> | undefined;
   if (previous.some((i) => i.externalRef?.system === 'halo')) {
@@ -34,7 +45,7 @@ export async function getSince(clientId: string, period: string): Promise<ApiRes
   return { status: 200, json: { rows: sinceLastRows(previous, ticketStatuses, current?.sinceOverrides) } };
 }
 
-type Normalized = { ok: true; value: Record<string, SinceOverride> } | { ok: false; error: string };
+type Normalized = { ok: true; value: Record<string, SinceOverride> } | { ok: false; error: string; status?: 503 };
 
 const own = (o: object | undefined, k: string) => !!o && Object.prototype.hasOwnProperty.call(o, k);
 
@@ -45,7 +56,9 @@ const own = (o: object | undefined, k: string) => !!o && Object.prototype.hasOwn
  * stamped here; an unchanged override keeps its stored stamp. A key that is
  * no longer on last quarter's agenda but matches what is stored (the client
  * echoing a stale entry) is pruned silently; any other unknown key is refused.
- * The result has a null prototype.
+ * The result has a null prototype. With `previous` null (last quarter could
+ * not be read) nothing is pruned: keys already stored are accepted and a new
+ * key is refused with a 503.
  */
 export async function normalizeSinceOverrides(
   clientId: string,
@@ -54,10 +67,11 @@ export async function normalizeSinceOverrides(
   stored: Record<string, SinceOverride> | undefined,
   actor: string,
   now: string,
-  previous?: DiscussionItem[],
+  previous?: DiscussionItem[] | null,
 ): Promise<Normalized> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'sinceOverrides must be an object keyed by last quarter item id.' };
-  const ids = new Set((previous ?? (await previousItems(clientId, period))).map((i) => i.id));
+  const items = previous === undefined ? await previousItems(clientId, period) : previous;
+  const ids = items ? new Set(items.map((i) => i.id)) : undefined;
   const out = Object.create(null) as Record<string, SinceOverride>;
   for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, error: `sinceOverrides.${id} must be an object.` };
@@ -70,7 +84,9 @@ export async function normalizeSinceOverrides(
     const status = r['status'] as SinceOverrideStatus;
     const prior = own(stored, id) ? stored![id] : undefined;
     const unchanged = !!prior && prior.status === status && (prior.note ?? '') === note;
-    if (!ids.has(id)) {
+    if (!ids) {
+      if (!own(stored, id)) return { ok: false, error: PREVIOUS_UNREADABLE, status: 503 };
+    } else if (!ids.has(id)) {
       if (unchanged) continue;
       return { ok: false, error: `sinceOverrides names ${id}, which is not on last quarter's agenda.` };
     }
