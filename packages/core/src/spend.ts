@@ -7,6 +7,8 @@
  * licensing keeps its own kind so it can be priced per seat. Pure and
  * deterministic.
  */
+import type { MetricSnapshot, MetricValue } from './types.js';
+
 export type InvoiceLineKind = 'recurring' | 'licensing' | 'variable';
 
 /**
@@ -15,6 +17,34 @@ export type InvoiceLineKind = 'recurring' | 'licensing' | 'variable';
  * the source and use the matching support-hours rule.
  */
 export const RECURRING_INVOICE_SOURCE = 'recurring_invoice';
+
+/** True when a metric's drill-down rows say it was read from Halo recurring invoices. */
+export function fromRecurringInvoices(m: MetricValue | undefined): boolean {
+  return !!m?.details?.some((d) => d['source'] === RECURRING_INVOICE_SOURCE);
+}
+
+/**
+ * Variable (non-recurring) spend for one quarter when the recurring breakdown
+ * came from Halo recurring invoices: the quarter's invoiced total less three
+ * months of MRR, never less than the quarter's labour lines. Posted lines
+ * rarely match a recurring invoice one to one (small subscriptions fold into
+ * Other), so the total is the safer split. Undefined on any other path. The
+ * budget's support hours and the report's investment page both use this.
+ */
+export function recurringInvoiceVariable(s: MetricSnapshot): number | undefined {
+  const num = (key: string) => {
+    const v = s.metrics.find((m) => m.key === key)?.value;
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  };
+  const invoiced = num('finance.quarter_invoiced');
+  const mrr = num('finance.mrr');
+  if (invoiced === undefined || mrr === undefined) return undefined;
+  if (!s.metrics.some((m) => m.key.startsWith('finance.recurring.') && fromRecurringInvoices(m))) return undefined;
+  const labour = s.metrics
+    .filter((m) => m.key.startsWith('finance.invoiced.') && typeof m.value === 'number' && isLabourLine(m.label))
+    .reduce((sum, m) => sum + (m.value as number), 0);
+  return Math.round(Math.max(invoiced - Math.min(invoiced, mrr * 3), labour) * 100) / 100;
+}
 
 const LICENSING = /microsoft 365|office 365|\bm365\b|exchange online|copilot|business (premium|standard|basic)/i;
 

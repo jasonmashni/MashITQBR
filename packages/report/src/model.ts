@@ -8,6 +8,7 @@ import {
   isPlanningPeriod,
   parsePeriod,
   protectionRows,
+  recurringInvoiceVariable,
   spendLabelKey,
   ticketInsightRecommendations,
   type Brand,
@@ -163,6 +164,7 @@ function buildInvestment(
     .sort((a, b) => b.amount - a.amount);
   const recurring = Math.round(breakdown.filter((b) => b.recurring).reduce((sum, b) => sum + b.amount, 0) * 100) / 100;
   const total = invoiced ?? 0;
+  const fromRecurringInvoice = recurringInvoiceVariable(current);
 
   const comingUp: string[] = [];
   const expired = num(current, 'assets.warranty_expired');
@@ -188,8 +190,10 @@ function buildInvestment(
 
   return {
     invoiced: total,
-    recurring,
-    variable: Math.round((total - recurring) * 100) / 100,
+    // Recurring-invoice path: the same split as the budget's support hours.
+    ...(fromRecurringInvoice !== undefined
+      ? { recurring: Math.round((total - fromRecurringInvoice) * 100) / 100, variable: fromRecurringInvoice }
+      : { recurring, variable: Math.round((total - recurring) * 100) / 100 }),
     ...(num(previous, 'finance.quarter_invoiced') !== undefined ? { previousInvoiced: num(previous, 'finance.quarter_invoiced') } : {}),
     breakdown,
     ...(budget?.planVsActual ? { planVsActual: budget.planVsActual } : {}),

@@ -57,6 +57,34 @@ describe('investment model', () => {
     expect(model.breakdown.find((b) => b.label === 'Other')?.recurring).toBe(false);
   });
 
+  it('splits the quarter like the budget when MRR comes from a recurring invoice (ANP Q3)', () => {
+    const spend = { category: 'spend', source: 'halo', unit: 'USD' } as const;
+    const tag = { invoice: 'Recurring Invoice (ANP-AYCE)', source: 'recurring_invoice' };
+    const posted: Array<[string, number]> = [
+      ['Managed Workstation - Windows PC', 9310],
+      ['Managed End User', 5120],
+      ['Compliance Management - Reg', 1350],
+      ['Microsoft 365 Business Premium', 970.2],
+      ['Remote Support', 762.5],
+      ['Networking Monitoring & Management - Small Site', 600],
+      ['Other', 1681.67],
+    ];
+    const q3 = {
+      ...anpQ2,
+      period: '2026-Q3',
+      metrics: [
+        ...anpQ2.metrics.filter((m) => m.category !== 'spend'),
+        { key: 'finance.mrr', label: 'Monthly recurring revenue', value: 6512.63, ...spend, details: [{ ...tag, monthly: 6512.63 }] },
+        { key: 'finance.quarter_invoiced', label: 'Invoiced this quarter (total)', value: 20982.03, ...spend },
+        ...posted.map(([label, value], i) => ({ key: `finance.invoiced.line_${i}`, label, value, ...spend })),
+        { key: 'finance.recurring.managed_workstation', label: 'Managed Workstation - Windows PC (monthly)', value: 3230, ...spend, details: [{ ...tag, item: 'x', monthly: 3230 }] },
+      ],
+    };
+    const model = buildReportModel({ ...args, current: q3, previous: anpQ2 }).investment!;
+    expect(model.variable).toBe(1444.14);
+    expect(model.recurring).toBe(Math.round((20982.03 - 1444.14) * 100) / 100);
+  });
+
   it('matches recurring-invoice labels to posted lines through Halo placeholders', () => {
     const spend = { category: 'spend', source: 'halo', unit: 'USD' } as const;
     const current = {

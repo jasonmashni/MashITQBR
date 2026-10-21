@@ -1,9 +1,9 @@
 import {
   classifyInvoiceLine,
   computeOutlook,
-  isLabourLine,
-  RECURRING_INVOICE_SOURCE,
+  fromRecurringInvoices,
   recurringInvoiceSource,
+  recurringInvoiceVariable,
   spendLabelKey,
   fiscalPeriods,
   fiscalYearOf,
@@ -129,10 +129,6 @@ function recurringMatching(s: MetricSnapshot, re: RegExp): number | undefined {
   return rows.length ? rows.reduce((sum, m) => sum + (m.value as number), 0) : undefined;
 }
 
-/** True when a metric's drill-down rows say it was read from Halo recurring invoices. */
-const fromRecurringInvoices = (m: MetricSnapshot['metrics'][number] | undefined): boolean =>
-  !!m?.details?.some((d) => d['source'] === RECURRING_INVOICE_SOURCE);
-
 /** "Recurring Invoice (ANP-AYCE)" reads as "ANP-AYCE"; other names as they are. */
 const invoiceRef = (name: string): string => name.match(/\(([^)]+)\)\s*$/)?.[1]?.trim() || name.trim();
 
@@ -151,15 +147,9 @@ export function quarterVariable(s: MetricSnapshot | undefined): number | undefin
   if (!s || invoiced === undefined) return undefined;
   const recurringLabels = new Set(s.metrics.filter((m) => m.key.startsWith('finance.recurring.')).map((m) => normLabel(m.label)));
   const lines = invoiceLines(s);
-  const mrr = metricNum(s, 'finance.mrr');
-  // Recurring breakdown from Halo recurring invoices: the posted lines rarely
-  // match it one to one (subscriptions fold into Other), so take the quarter
-  // less three months of MRR, but never less than its labour lines.
-  if (recurringLabels.size > 0 && mrr !== undefined && s.metrics.some((m) => m.key.startsWith('finance.recurring.') && fromRecurringInvoices(m))) {
-    const labour = lines.filter((m) => isLabourLine(m.label)).reduce((sum, m) => sum + (m.value as number), 0);
-    const variable = Math.max(invoiced - Math.min(invoiced, mrr * 3), labour);
-    return Math.round(variable * 100) / 100;
-  }
+  // Recurring breakdown from Halo recurring invoices: one shared rule with the investment page.
+  const fromRecurringInvoice = recurringInvoiceVariable(s);
+  if (fromRecurringInvoice !== undefined) return fromRecurringInvoice;
   let recurring: number;
   if (recurringLabels.size > 0 && lines.length > 0) {
     recurring = lines.filter((m) => recurringLabels.has(normLabel(m.label))).reduce((sum, m) => sum + (m.value as number), 0);

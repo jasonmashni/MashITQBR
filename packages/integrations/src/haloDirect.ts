@@ -561,8 +561,15 @@ export function recurringInvoiceLines(header: Json): Json[] {
   return [];
 }
 
-/** Marked inactive, disabled or ended (flags or a status word), or ended before the quarter. */
-export function recurringInvoiceInactive(header: Json, periodStartMs: number): boolean {
+/** Most per-header detail fetches made for recurring invoices listed without lines. */
+const RI_DETAIL_CAP = 20;
+const RI_START_DATE_FIELDS =['startdate', 'start_date', 'datestart', 'firstinvoicedate', 'first_invoice_date'];
+
+/**
+ * Not billing in the quarter: marked inactive, disabled or ended (flags or a
+ * status word), ended before the quarter starts, or starting after it ends.
+ */
+export function recurringInvoiceInactive(header: Json, periodStartMs: number, periodEndMs = Number.POSITIVE_INFINITY): boolean {
   const truthy = (k: string) => header[k] === true || header[k] === 1 || header[k] === 'true';
   const falsy = (k: string) => header[k] === false || header[k] === 0 || header[k] === 'false';
   if (['inactive', 'disabled', 'is_disabled', 'isdisabled', 'ended', 'is_ended', 'cancelled'].some(truthy)) return true;
@@ -570,16 +577,37 @@ export function recurringInvoiceInactive(header: Json, periodStartMs: number): b
   const status = firstStr(header, ['status', 'status_name', 'state']);
   if (status && /inactive|disabled|ended|cancel|stopped|expired/i.test(status)) return true;
   const ends = firstDate(header, END_DATE_FIELDS);
-  return ends !== undefined && Date.parse(`${ends}T12:00:00Z`) < periodStartMs;
+  if (ends !== undefined && Date.parse(`${ends}T12:00:00Z`) < periodStartMs) return true;
+  const starts = firstDate(header, RI_START_DATE_FIELDS);
+  return starts !== undefined && Date.parse(`${starts}T12:00:00Z`) > periodEndMs;
 }
 
-/** Months per billing cycle: monthly 1, quarterly 3, yearly 12; undefined when the value is not recognised. */
-function billingMonths(v: unknown): number | undefined {
+/** Bare month counts accepted as a billing cycle. */
+const BARE_MONTHS = new Set([1, 3, 6, 12]);
+
+/**
+ * Months per billing cycle. A number with a unit wins ("12 Months", "Every 2
+ * months", "1 Year"), then words (semi-annual 6, quarter 3, year or annual 12,
+ * month 1, week 12/52), then a bare 1, 3, 6 or 12. Undefined when not
+ * recognised (the caller reads it as monthly and warns). A missing value is
+ * monthly.
+ */
+export function billingMonths(v: unknown): number | undefined {
   if (v === undefined || v === null || v === '') return 1;
   const s = String(v).trim().toLowerCase();
-  if (s === '1' || /month/.test(s)) return 1;
-  if (s === '3' || /quarter/.test(s)) return 3;
-  if (s === '12' || /year|annual/.test(s)) return 12;
+  const withUnit = /(\d+)\s*(month|year|week)s?\b/.exec(s);
+  if (withUnit) {
+    const n = Number(withUnit[1]);
+    if (n <= 0) return undefined;
+    return withUnit[2] === 'year' ? n * 12 : withUnit[2] === 'week' ? (n * 12) / 52 : n;
+  }
+  if (/semi-?\s?annual|bi-?\s?annual|half-?\s?year/.test(s)) return 6;
+  if (/quarter/.test(s)) return 3;
+  if (/year|annual/.test(s)) return 12;
+  if (/month/.test(s)) return 1;
+  if (/bi-?\s?week|fortnight/.test(s)) return undefined; // ambiguous cadence: warn
+  if (/week/.test(s)) return 12 / 52;
+  if (/^\d+$/.test(s) && BARE_MONTHS.has(Number(s))) return Number(s);
   return undefined;
 }
 
@@ -598,15 +626,17 @@ export interface RecurringInvoiceLine {
 export function readRecurringInvoices(
   headers: Json[],
   periodStart: string,
+  periodEnd?: string,
 ): { lines: RecurringInvoiceLine[]; warnings: string[]; unreadable?: string } {
   const periodStartMs = Date.parse(`${periodStart}T00:00:00Z`);
+  const periodEndMs = periodEnd ? Date.parse(`${periodEnd}T23:59:59Z`) : Number.POSITIVE_INFINITY;
   const lines: RecurringInvoiceLine[] = [];
   const warnings: string[] = [];
   let active = 0;
   let readable = 0;
   const seen = new Set<string>();
   for (const h of headers) {
-    if (recurringInvoiceInactive(h, periodStartMs)) continue;
+    if (recurringInvoiceInactive(h, periodStartMs, periodEndMs)) continue;
     active++;
     const name = firstStr(h, RI_NAME_FIELDS) ?? String(h['id'] ?? '');
     const rawPeriod = RI_PERIOD_FIELDS.map((k) => h[k]).find((v) => v !== undefined && v !== null && v !== '');
@@ -821,35 +851,42 @@ export function normalizeHaloFinance(input: HaloFinanceInput): { metrics: Metric
     }
   }
 
-  // ── Recurring invoices: MRR when contracts gave none, and the recurring
-  // breakdown when contracts gave none. Labels match the posted invoice lines
-  // (placeholders stripped; the investment page compares with spendLabelKey).
-  if (input.recurringInvoiceError !== undefined) {
+  // ── Recurring invoices. MRR and the recurring breakdown come from ONE
+  // source as a pair: recurring invoices supply both only when contracts gave
+  // neither a positive MRR nor a breakdown (a contract MRR of 0 counts as
+  // absent and is replaced). Recurring invoices describe CURRENT billing; they
+  // are applied to whichever quarter is being synced. Labels match the posted
+  // invoice lines (placeholders stripped; the investment page compares with
+  // spendLabelKey).
+  const contractsSupply =
+    metrics.some((m) => m.key === 'finance.mrr' && typeof m.value === 'number' && m.value > 0) ||
+    metrics.some((m) => m.key.startsWith('finance.recurring.'));
+  if (contractsSupply) {
+    // Contracts win; recurring invoices are not used at all.
+  } else if (input.recurringInvoiceError !== undefined) {
     warnings.push(`Halo recurring invoices could not be read (fields seen: none): ${input.recurringInvoiceError}`);
   } else if ((input.recurringInvoices ?? []).length > 0) {
-    const read = readRecurringInvoices(input.recurringInvoices ?? [], input.periodStart);
+    const read = readRecurringInvoices(input.recurringInvoices ?? [], input.periodStart, input.periodEnd);
     warnings.push(...read.warnings);
     if (read.lines.length > 0) {
-      if (!metrics.some((m) => m.key === 'finance.mrr')) {
-        const byInvoice = new Map<string, number>();
-        for (const l of read.lines) byInvoice.set(l.invoice, (byInvoice.get(l.invoice) ?? 0) + l.monthly);
-        const total = read.lines.reduce((sum, l) => sum + l.monthly, 0);
-        metrics.push({
-          ...spend('finance.mrr', 'Monthly recurring revenue', total),
-          details: [...byInvoice].slice(0, DETAIL_CAP).map(([invoice, monthly]) => ({ invoice, monthly: Math.round(monthly * 100) / 100, source: RECURRING_INVOICE_SOURCE })),
-        });
+      // Drop a contract MRR of 0 so the pair stays from one source.
+      for (let i = metrics.length - 1; i >= 0; i--) if (metrics[i]!.key === 'finance.mrr') metrics.splice(i, 1);
+      const byInvoice = new Map<string, number>();
+      for (const l of read.lines) byInvoice.set(l.invoice, (byInvoice.get(l.invoice) ?? 0) + l.monthly);
+      const total = read.lines.reduce((sum, l) => sum + l.monthly, 0);
+      metrics.push({
+        ...spend('finance.mrr', 'Monthly recurring revenue', total),
+        details: [...byInvoice].slice(0, DETAIL_CAP).map(([invoice, monthly]) => ({ invoice, monthly: Math.round(monthly * 100) / 100, source: RECURRING_INVOICE_SOURCE })),
+      });
+      const byLabel = new Map<string, number>();
+      const rowsByLabel = new Map<string, DetailRow[]>();
+      for (const l of read.lines) {
+        byLabel.set(l.label, (byLabel.get(l.label) ?? 0) + l.monthly);
+        const rows = rowsByLabel.get(l.label) ?? [];
+        rows.push({ item: clip(l.label), monthly: Math.round(l.monthly * 100) / 100, invoice: l.invoice, source: RECURRING_INVOICE_SOURCE });
+        rowsByLabel.set(l.label, rows);
       }
-      if (!metrics.some((m) => m.key.startsWith('finance.recurring.'))) {
-        const byLabel = new Map<string, number>();
-        const rowsByLabel = new Map<string, DetailRow[]>();
-        for (const l of read.lines) {
-          byLabel.set(l.label, (byLabel.get(l.label) ?? 0) + l.monthly);
-          const rows = rowsByLabel.get(l.label) ?? [];
-          rows.push({ item: clip(l.label), monthly: Math.round(l.monthly * 100) / 100, invoice: l.invoice, source: RECURRING_INVOICE_SOURCE });
-          rowsByLabel.set(l.label, rows);
-        }
-        emitBreakdown([...byLabel].sort((a, b) => b[1] - a[1]), 'finance.recurring', (n) => `${n} (monthly)`, rowsByLabel);
-      }
+      emitBreakdown([...byLabel].sort((a, b) => b[1] - a[1]), 'finance.recurring', (n) => `${n} (monthly)`, rowsByLabel);
     } else if (read.unreadable !== undefined) {
       warnings.push(`Halo recurring invoices could not be read (fields seen: ${read.unreadable}).`);
     }
@@ -1067,17 +1104,37 @@ async function collectHaloForId(ctx: CollectorContext, http: HttpTransport, cfg:
   } catch (e) {
     warnings.push(`Halo${tag} contracts unavailable (MRR skipped): ${e instanceof Error ? e.message : 'error'}`);
   }
-  // Recurring invoices (UNVERIFIED endpoint): headers, with lines fetched per
-  // header when the list leaves them off. Failure is reported by the finance
+  // Recurring invoices (UNVERIFIED endpoint): every header (paged up to the
+  // usual cap), with lines fetched per header when the list leaves them off
+  // (at most RI_DETAIL_CAP fetches). They describe CURRENT billing and are
+  // applied to the quarter being synced. Failure is reported by the finance
   // normalizer, never fatal.
   const recurringInvoices: Json[] = [];
   let recurringInvoiceError: string | undefined;
   try {
     const periodStartMs = Date.parse(`${ctx.period.start}T00:00:00Z`);
-    const pull = await haloPageAll(http, cfg, 'RecurringInvoice', { client_id: haloId, includelines: true }, ['invoices', 'recurringinvoices', 'records'], 3);
-    for (const h of pull.rows.slice(0, 20)) {
+    const periodEndMs = Date.parse(`${ctx.period.end}T23:59:59Z`);
+    const pull = await haloPageAll(http, cfg, 'RecurringInvoice', { client_id: haloId, includelines: true }, ['invoices', 'recurringinvoices', 'records']);
+    if (pull.rows.length < pull.total) {
+      warnings.push(`Halo${tag}: recurring invoices read from the first ${pull.rows.length} of ${pull.total}; MRR may be understated.`);
+    }
+    // If the server ignores client_id, rows that name another client are dropped.
+    const mine = pull.rows.filter((h) => {
+      const cid = h['client_id'] ?? h['clientid'];
+      return cid === undefined || cid === null || cid === '' || String(cid) === String(haloId);
+    });
+    const needDetail = mine.filter(
+      (h) => recurringInvoiceLines(h).length === 0 && h['id'] !== undefined && h['id'] !== null && !recurringInvoiceInactive(h, periodStartMs, periodEndMs),
+    );
+    if (needDetail.length > RI_DETAIL_CAP) {
+      warnings.push(
+        `Halo${tag}: lines fetched for the first ${RI_DETAIL_CAP} of ${needDetail.length} recurring invoices listed without them; the rest are not counted in MRR.`,
+      );
+    }
+    const fetchFor = new Set(needDetail.slice(0, RI_DETAIL_CAP));
+    for (const h of mine) {
       const rid = h['id'];
-      if (recurringInvoiceLines(h).length > 0 || rid === undefined || rid === null || recurringInvoiceInactive(h, periodStartMs)) {
+      if (!fetchFor.has(h)) {
         recurringInvoices.push(h);
         continue;
       }

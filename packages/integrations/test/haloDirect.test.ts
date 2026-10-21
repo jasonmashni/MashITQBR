@@ -1167,10 +1167,48 @@ describe('Halo recurring invoices (UNVERIFIED field names, parsed tolerantly)', 
     expect(out.warnings.some((w) => w.includes('Odd plan') && w.includes('Fortnightly'))).toBe(true);
   });
 
-  it('keeps contract MRR and adds recurring lines only when contracts gave no breakdown', () => {
+  it('reads billing periods: number plus unit first, then words, then bare month counts', () => {
+    const monthly = (period: unknown, amount: number) =>
+      val(
+        normalizeHaloFinance({ contracts: [], invoices: [], recurringInvoices: [{ id: 1, name: 'P', billingperiod: period, lines: [{ description: 'Managed Thing', net_amount: amount }] }], ...quarter }).metrics,
+        'finance.mrr',
+      );
+    expect(monthly('12 Months', 1200)).toBe(100);
+    expect(monthly('Semi-annual', 600)).toBe(100);
+    expect(monthly('Bi-annual', 600)).toBe(100);
+    expect(monthly('Every 2 months', 200)).toBe(100);
+    expect(monthly('6', 600)).toBe(100);
+    expect(monthly(3, 300)).toBe(100);
+    expect(monthly('Yearly', 1200)).toBe(100);
+    expect(monthly('1 Year', 1200)).toBe(100);
+    expect(monthly('Weekly', 12)).toBe(52);
+    const odd = normalizeHaloFinance({ contracts: [], invoices: [], recurringInvoices: [{ id: 1, name: 'P', billingperiod: '7', lines: [{ description: 'Managed Thing', net_amount: 70 }] }], ...quarter });
+    expect(val(odd.metrics, 'finance.mrr')).toBe(70);
+    expect(odd.warnings.some((w) => w.includes('"7"'))).toBe(true);
+  });
+
+  it('skips recurring invoices that start after the quarter and rows for another client', () => {
+    const out = normalizeHaloFinance({
+      contracts: [],
+      invoices: [],
+      recurringInvoices: [
+        { id: 1, name: 'Future', startdate: '2026-10-15', lines: [{ description: 'Managed Thing', net_amount: 500 }] },
+        { id: 2, name: 'Now', startdate: '2026-08-01', lines: [{ description: 'Managed Other Thing', net_amount: 100 }] },
+      ],
+      ...quarter,
+    });
+    expect(val(out.metrics, 'finance.mrr')).toBe(100);
+  });
+
+  it('takes MRR and the breakdown from one source: recurring invoices only when contracts gave neither', () => {
     const withContract = normalizeHaloFinance({ contracts: [{ monthlyvalue: 5000 }], invoices: [], recurringInvoices: [anpRecurring], ...quarter });
     expect(val(withContract.metrics, 'finance.mrr')).toBe(5000);
-    expect(withContract.metrics.filter((m) => m.key.startsWith('finance.recurring.'))).toHaveLength(14);
+    expect(withContract.metrics.filter((m) => m.key.startsWith('finance.recurring.'))).toHaveLength(0);
+
+    // A contract MRR of 0 counts as absent: the recurring invoice supplies both, and no 0 is emitted.
+    const zeroContract = normalizeHaloFinance({ contracts: [{ monthlyvalue: 0 }], invoices: [], recurringInvoices: [anpRecurring], ...quarter });
+    expect(zeroContract.metrics.filter((m) => m.key === 'finance.mrr').map((m) => m.value)).toEqual([6512.63]);
+    expect(zeroContract.metrics.filter((m) => m.key.startsWith('finance.recurring.'))).toHaveLength(14);
 
     const withBreakdown = normalizeHaloFinance({
       contracts: [{ id: 9, monthlyvalue: 5000 }],
@@ -1228,6 +1266,28 @@ describe('Halo recurring invoices (UNVERIFIED field names, parsed tolerantly)', 
     const empty = fakeHttp([tokenRoute(), { match: (r) => r.url.includes('/api/RecurringInvoice'), respond: () => ({ status: 200, json: { record_count: 0, invoices: [] } }) }]);
     const b = await collectHaloDirect({ clientId: 'anp', period, externalRef: '35' }, empty.http, { baseUrl: 'https://x.halopsa.com', clientId: 'recur-3', clientSecret: 's' });
     expect(b.warnings.filter((w) => /recurring invoice/i.test(w))).toEqual([]);
+  });
+
+  it('collector: keeps every header, caps detail fetches at 20 with a warning, and drops rows for another client', async () => {
+    const period = makePeriod(2026, 3);
+    const headers = [
+      ...Array.from({ length: 23 }, (_, i) => ({ id: 1000 + i, client_id: 35, name: `RI ${i}` })),
+      { id: 2000, client_id: 99, name: 'Someone else', lines: [{ description: 'Managed Thing', net_amount: 5000 }] },
+      { id: 2001, name: 'No client field', lines: [{ description: 'Managed Thing', net_amount: 7 }] },
+    ];
+    const { http, requests } = fakeHttp([
+      tokenRoute(),
+      {
+        match: (r) => /\/api\/RecurringInvoice\/\d+/.test(r.url),
+        respond: (r) => ({ status: 200, json: { lines: [{ description: `Managed Line ${/RecurringInvoice\/(\d+)/.exec(r.url)![1]}`, net_amount: 10 }] } }),
+      },
+      { match: (r) => r.url.includes('/api/RecurringInvoice'), respond: () => ({ status: 200, json: { record_count: headers.length, invoices: headers } }) },
+    ]);
+    const out = await collectHaloDirect({ clientId: 'anp', period, externalRef: '35' }, http, { baseUrl: 'https://x.halopsa.com', clientId: 'recur-5', clientSecret: 's' });
+    expect(requests.filter((r) => /\/api\/RecurringInvoice\/\d+/.test(r.url))).toHaveLength(20);
+    // 20 fetched headers x 10 + the row with no client field (7); client 99 is dropped.
+    expect(out.metrics.find((m) => m.key === 'finance.mrr')?.value).toBe(207);
+    expect(out.warnings.some((w) => w.includes('20 of 23') && /recurring invoice/i.test(w))).toBe(true);
   });
 
   it('collector: any other failure warns', async () => {
