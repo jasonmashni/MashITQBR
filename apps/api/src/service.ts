@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { previousPeriod, type Brand, type ClientGoal, type DiscussionItem, type MetricValue, type ReportConfig } from '@mashit/core';
+import { previousPeriod, type Brand, type ClientGoal, type DiscussionItem, type MetricValue, type QbrDiscussion, type ReportConfig } from '@mashit/core';
 import {
   buildAllowedNumbers,
   buildAllowedQuotes,
@@ -143,6 +143,8 @@ export interface BuildQbrOptions {
   notes?: string;
   /** The previous quarter's discussion, for "Since last quarter". */
   previousDiscussion?: DiscussionItem[];
+  /** This quarter's close-outs of last quarter's items (they win over the computed status). */
+  sinceOverrides?: QbrDiscussion['sinceOverrides'];
   /**
    * Live status of a pushed Halo ticket by id. Failures and undefined fall
    * back to the stored status. Injected so tests never reach Halo.
@@ -365,27 +367,15 @@ export async function buildQbrReport(
 
   // Pushed Halo tickets: ask Halo where each one stands now, so "Since last
   // quarter" and the conversations table do not report a stale status.
-  const ticketStatuses: Record<string, string> = {};
-  if (opts.lookupTicketStatus) {
-    const ids = new Set(
-      [...(opts.previousDiscussion ?? []), ...(opts.discussion ?? [])]
-        .filter((d) => d.externalRef?.system === 'halo' && d.externalRef.id)
-        .map((d) => d.externalRef!.id),
-    );
-    await Promise.all(
-      [...ids].map(async (id) => {
-        const status = await opts.lookupTicketStatus!(id).catch(() => undefined);
-        if (status) ticketStatuses[id] = status;
-      }),
-    );
-  }
+  const ticketStatuses = await liveTicketStatuses([...(opts.previousDiscussion ?? []), ...(opts.discussion ?? [])], opts.lookupTicketStatus);
 
   const model = buildReportModel({
     client,
     current,
     previous,
     previousDiscussion: opts.previousDiscussion,
-    ticketStatuses: Object.keys(ticketStatuses).length ? ticketStatuses : undefined,
+    ticketStatuses,
+    ...(opts.sinceOverrides ? { sinceOverrides: opts.sinceOverrides } : {}),
     revisedAt: opts.revisedAt,
     narrative: narrative.output,
     heldBy: opts.heldBy,
@@ -419,6 +409,27 @@ export async function buildQbrReport(
   }
 
   return { clientId, period: periodId, model, narrative, warnings, ...(aiFailure ? { aiFailure } : {}) };
+}
+
+/**
+ * Live Halo status for every pushed ticket among `items`, by ticket id.
+ * Undefined when there is no lookup or nothing answered; a failed lookup
+ * leaves that ticket on its stored status.
+ */
+export async function liveTicketStatuses(
+  items: DiscussionItem[],
+  lookup: ((id: string) => Promise<string | undefined>) | undefined,
+): Promise<Record<string, string> | undefined> {
+  if (!lookup) return undefined;
+  const ids = new Set(items.filter((d) => d.externalRef?.system === 'halo' && d.externalRef.id).map((d) => d.externalRef!.id));
+  const out: Record<string, string> = {};
+  await Promise.all(
+    [...ids].map(async (id) => {
+      const status = await lookup(id).catch(() => undefined);
+      if (status) out[id] = status;
+    }),
+  );
+  return Object.keys(out).length ? out : undefined;
 }
 
 /**

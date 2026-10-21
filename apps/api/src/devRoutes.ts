@@ -52,6 +52,7 @@ export const routes: Route[] = [
   { method: 'DELETE', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/documents\/([^/]+)$/, run: (m) => h.deleteQbrDocument(m[1]!, m[2]!, m[3]!) },
   { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m) => h.getDiscussion(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/discussion$/, run: (m, b) => h.putDiscussion(m[1]!, m[2]!, b) },
+  { method: 'GET', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/since$/, run: (m) => h.getSince(m[1]!, m[2]!) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/agenda$/, run: (m, b) => h.suggestQbrAgenda(m[1]!, m[2]!, undefined, Array.isArray(b['exclude']) ? (b['exclude'] as string[]) : []) },
   { method: 'POST', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/sync$/, run: (m) => h.syncQbr(m[1]!, m[2]!) },
   { method: 'PUT', re: /^\/api\/clients\/([^/]+)\/qbr\/([^/]+)\/status$/, run: (m, b) => h.putStatus(m[1]!, m[2]!, b as { status: unknown; force?: unknown; reason?: unknown }) },

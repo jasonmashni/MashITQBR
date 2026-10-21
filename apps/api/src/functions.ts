@@ -110,6 +110,7 @@ route('getConfig', 'GET', 'api/clients/{clientId}/config', (req) => h.getConfig(
 route('putConfig', 'PUT', 'api/clients/{clientId}/config', async (req) => h.putConfig(req.params['clientId']!, await body(req)));
 route('getDiscussion', 'GET', 'api/clients/{clientId}/qbr/{period}/discussion', (req) => h.getDiscussion(req.params['clientId']!, req.params['period']!));
 route('putDiscussion', 'PUT', 'api/clients/{clientId}/qbr/{period}/discussion', async (req) => h.putDiscussion(req.params['clientId']!, req.params['period']!, await body(req)));
+route('getSince', 'GET', 'api/clients/{clientId}/qbr/{period}/since', (req) => h.getSince(req.params['clientId']!, req.params['period']!));
 route('suggestAgenda', 'POST', 'api/clients/{clientId}/qbr/{period}/agenda', async (req) => {
   const exclude = (await body(req))['exclude'];
   return h.suggestQbrAgenda(req.params['clientId']!, req.params['period']!, undefined, Array.isArray(exclude) ? (exclude as string[]) : []);

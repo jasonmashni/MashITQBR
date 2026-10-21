@@ -408,7 +408,8 @@ export async function pollReportInbox(
         sourceTopic: topic,
       };
       items.push(item);
-      await store.putDiscussion({ clientId: client.id, period, items, ...(existing?.notes !== undefined ? { notes: existing.notes } : {}) });
+      // Spread the stored record so notes and since-last-quarter close-outs survive.
+      await store.putDiscussion({ ...existing, clientId: client.id, period, items });
     }
     agenda++;
     await mark(msg.id, 'QBR: agenda');

@@ -99,6 +99,8 @@ export interface ReportInputs {
   narrativeEdits?: import('./types.js').NarrativeEdits;
   /** The previous quarter's discussion, for "Since last quarter". */
   previousDiscussion?: DiscussionItem[];
+  /** This quarter's close-outs of last quarter's items, keyed by item id. */
+  sinceOverrides?: import('@mashit/core').QbrDiscussion['sinceOverrides'];
   /** Live Halo ticket status lookup, present only when an item was pushed to Halo and a direct connection exists. */
   lookupTicketStatus?: (id: string) => Promise<string | undefined>;
   documents?: Array<{ name: string; source: string; findings?: import('./types.js').DocumentFinding[] }>;
@@ -149,6 +151,7 @@ export async function loadReportInputs(store: DataStore, clientId: string, perio
     narrativeEdits: narrative?.edits,
     documents,
     ...(previous?.items?.length ? { previousDiscussion: previous.items } : {}),
+    ...(d?.sinceOverrides && Object.keys(d.sinceOverrides).length ? { sinceOverrides: d.sinceOverrides } : {}),
     ...(lookupTicketStatus ? { lookupTicketStatus } : {}),
     ...(budget ? { budget } : {}),
     ...(budgetWarning ? { budgetWarning } : {}),
