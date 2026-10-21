@@ -29,6 +29,34 @@ describe('investment model', () => {
     expect(inv.breakdown.map((b) => b.amount)).toEqual([...inv.breakdown.map((b) => b.amount)].sort((a, b) => b - a));
   });
 
+  it('classifies invoice lines by label when Halo contracts carry no monthly value (ANP Q3)', () => {
+    const spend = { category: 'spend', source: 'halo', unit: 'USD' } as const;
+    const lines: Array<[string, number]> = [
+      ['Managed Workstation - Windows PC', 9310],
+      ['Managed End User', 5120],
+      ['Compliance Management - Reg', 1350],
+      ['Microsoft 365 Business Premium', 970.2],
+      ['Remote Support', 762.5],
+      ['Networking Monitoring & Management - Small Site', 600],
+      ['Other', 1681.67],
+    ];
+    const q3 = {
+      ...anpQ2,
+      period: '2026-Q3',
+      metrics: [
+        ...anpQ2.metrics.filter((m) => m.category !== 'spend'),
+        { key: 'finance.quarter_invoiced', label: 'Invoiced this quarter (total)', value: 20982.03, ...spend },
+        ...lines.map(([label, value], i) => ({ key: `finance.invoiced.line_${i}`, label, value, ...spend })),
+      ],
+    };
+    const model = buildReportModel({ ...args, current: q3, previous: anpQ2 }).investment!;
+    expect(model.recurring).toBe(Math.round((9310 + 5120 + 1350 + 970.2 + 600) * 100) / 100);
+    expect(model.variable).toBe(Math.round((20982.03 - model.recurring) * 100) / 100);
+    expect(model.breakdown.find((b) => b.label === 'Microsoft 365 Business Premium')?.recurring).toBe(true);
+    expect(model.breakdown.find((b) => b.label === 'Remote Support')?.recurring).toBe(false);
+    expect(model.breakdown.find((b) => b.label === 'Other')?.recurring).toBe(false);
+  });
+
   it('says what is coming up, pricing the warranty refresh only with a unit cost', () => {
     expect(inv.comingUp.join(' ')).toContain('10 devices past warranty');
     expect(inv.comingUp.join(' ')).not.toContain('$');

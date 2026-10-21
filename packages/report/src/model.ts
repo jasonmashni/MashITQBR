@@ -1,4 +1,5 @@
 import {
+  classifyInvoiceLine,
   computeScorecard,
   computeTicketInsights,
   computeTrends,
@@ -107,7 +108,8 @@ const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : ma
 /**
  * The investment page from the spend metrics plus an optional published
  * budget: recurring is the sum of invoice lines whose category also appears
- * in the recurring breakdown (finance.recurring.*); everything else is
+ * in the recurring breakdown (finance.recurring.*), or, with no breakdown,
+ * lines classifyInvoiceLine calls recurring or licensing; everything else is
  * variable. Undefined when there is nothing to show.
  */
 /** The month each quarter's review is held (the month after the quarter ends). */
@@ -150,7 +152,13 @@ function buildInvestment(
   );
   const breakdown = current.metrics
     .filter((m) => m.key.startsWith('finance.invoiced.') && typeof m.value === 'number' && m.value > 0)
-    .map((m) => ({ label: m.label, amount: m.value as number, recurring: recurringLabels.has(norm(m.label)) }))
+    .map((m) => ({
+      label: m.label,
+      amount: m.value as number,
+      // No recurring breakdown (Halo contracts carry no monthly value): classify
+      // the line by its label. Licensing counts as recurring spend here.
+      recurring: recurringLabels.size > 0 ? recurringLabels.has(norm(m.label)) : classifyInvoiceLine(m.label) !== 'variable',
+    }))
     .sort((a, b) => b.amount - a.amount);
   const recurring = Math.round(breakdown.filter((b) => b.recurring).reduce((sum, b) => sum + b.amount, 0) * 100) / 100;
   const total = invoiced ?? 0;
