@@ -57,8 +57,8 @@ export function statusAtLeast(current: QbrStatus | undefined, target: QbrStatus)
   return rank(current ?? 'draft') >= rank(target);
 }
 
-/** Agenda sources whose topic arrives from outside (suggestions, Halo, the inbox) and may carry PHI. */
-export const HIPAA_REWRITE_SOURCES = ['suggested', 'halo', 'email'] as const;
+/** Agenda sources whose topic arrives from outside (suggestions, Halo, the inbox, last quarter) and may carry PHI. */
+export const HIPAA_REWRITE_SOURCES = ['suggested', 'halo', 'email', 'carried'] as const;
 
 /**
  * True when a HIPAA client's agenda item still reads exactly as it arrived

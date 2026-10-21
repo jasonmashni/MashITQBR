@@ -227,3 +227,45 @@ describe('page structure: deck', () => {
     expect(planning.some((s) => s[0] === 'Planning your FY2027 IT budget')).toBe(true);
   });
 });
+
+describe('since last quarter close-out notes', () => {
+  const noted = {
+    ...model,
+    sinceLastQuarter: [
+      { topic: 'SSO rollout', status: 'done' as const, detail: 'Live for all staff in August' },
+      { topic: 'Old PC', status: 'closed' as const },
+    ],
+  };
+  it('HTML, PDF and deck print the note under the row', async () => {
+    expect(renderReportHtml(noted)).toContain('Live for all staff in August');
+    expect(JSON.stringify(buildPdfDefinition(noted))).toContain('Live for all staff in August');
+    const text = (await slideTexts(await renderDeck(noted))).flat().join(' ');
+    expect(text).toContain('Live for all staff in August');
+    expect(text).toContain('Old PC: Closed');
+  });
+});
+
+describe('since last quarter long details on the deck', () => {
+  it('five rows with 600-character details stay above the footer on page one or its continuation', async () => {
+    const { buildReportModel: build } = await import('@mashit/report');
+    const long = Array.from({ length: 100 }, (_, i) => `detail${i}`).join(' ').slice(0, 600);
+    const prev = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, topic: `Topic ${i}`, status: 'discussed' as const, response: long, sortOrder: i }));
+    const m = build({ ...args, previousDiscussion: prev });
+    expect(m.sinceLastQuarter).toHaveLength(5);
+    const { default: JSZip } = await import('jszip');
+    const zip = await JSZip.loadAsync(await renderDeck(m));
+    const names = Object.keys(zip.files).filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f));
+    let found = 0;
+    for (const name of names) {
+      const xml = await zip.file(name)!.async('string');
+      for (const sp of xml.split('</p:sp>')) {
+        if (!sp.includes('<a:t>Since last quarter</a:t>')) continue;
+        found++;
+        const y = Number(sp.match(/<a:off x="\d+" y="(\d+)"/)![1]);
+        const cy = Number(sp.match(/<a:ext cx="\d+" cy="(\d+)"/)![1]);
+        expect((y + cy) / 914400).toBeLessThanOrEqual(7.08);
+      }
+    }
+    expect(found).toBe(1);
+  });
+});

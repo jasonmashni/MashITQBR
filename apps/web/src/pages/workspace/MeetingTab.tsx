@@ -33,8 +33,10 @@ import {
   IconMessages,
 } from '@tabler/icons-react';
 import { api } from '../../api.js';
-import type { Discussion, DiscussionItem, QbrResponse, SuggestedConversationsResponse } from '../../types.js';
+import type { Discussion, DiscussionItem, QbrResponse, SinceRow, SuggestedConversationsResponse } from '../../types.js';
 import { conversationItem, needsHipaaRewrite, pendingConversations, reportBlocked } from './conversations.js';
+import { carriedItem, clearSinceOverride, overridesForSave, setSinceOverride, SINCE_CHOICES, SINCE_NOTE_MAX, sinceRowsForPanel } from './since.js';
+import { lockNotice } from './nextStep.js';
 import { uid } from '../../ui.js';
 import { toastError } from '../../toast.js';
 import { QBR_STATUS_ORDER, isQbrStatus, qbrStatusLabel, statusAtLeast, type QbrStatus } from '@mashit/core';
@@ -73,6 +75,9 @@ export function MeetingTab({
   const [convosError, setConvosError] = useState<string | null>(null);
   const [convosReload, setConvosReload] = useState(0);
   const finalLocked = Boolean(meta?.locks?.final);
+  const [sinceRows, setSinceRows] = useState<SinceRow[] | null>(null);
+  const [sinceError, setSinceError] = useState<string | null>(null);
+  const [sinceReload, setSinceReload] = useState(0);
 
   // Every item id this tab has seen for the quarter. Sent with the save so the
   // server keeps items added behind our back (a forwarded email) instead of
@@ -103,6 +108,23 @@ export function MeetingTab({
       live = false;
     };
   }, [clientId, period, convosReload]);
+
+  // Last quarter's agenda, to close out from this quarter.
+  useEffect(() => {
+    let live = true;
+    setSinceError(null);
+    api
+      .getSince(clientId, period)
+      .then((r) => live && setSinceRows(r.rows))
+      .catch((e) => {
+        if (!live) return;
+        setSinceRows(null);
+        setSinceError(e instanceof Error ? e.message : 'Could not load last quarter');
+      });
+    return () => {
+      live = false;
+    };
+  }, [clientId, period, sinceReload]);
 
   const pendingConvos = convos ? pendingConversations(convos.items, disc.items) : [];
   const hipaa = convos?.hipaa ?? clientHipaa === true;
@@ -186,8 +208,10 @@ export function MeetingTab({
     try {
       // Agenda order is the on-screen order.
       const items = disc.items.map((it, i) => ({ ...it, sortOrder: i }));
-      const saved = await api.putDiscussion(clientId, period, { ...disc, items }, [...seenIds.current]);
-      setDisc({ ...disc, items: saved.items ?? items });
+      const sinceOverrides = overridesForSave(disc.sinceOverrides);
+      const saved = await api.putDiscussion(clientId, period, { ...disc, items, ...(sinceOverrides ? { sinceOverrides } : {}) }, [...seenIds.current]);
+      setDisc({ ...disc, items: saved.items ?? items, sinceOverrides: saved.sinceOverrides });
+      setSinceReload((n) => n + 1);
       notifications.show({ color: 'good', message: 'Agenda saved, answered items flow onto the final report.' });
       onSavedDiscussion?.();
       onChanged();
@@ -202,6 +226,15 @@ export function MeetingTab({
 
   return (
     <Stack gap="lg" maw={860}>
+      <SinceLastQuarterCard
+        rows={sinceRows}
+        error={sinceError}
+        disc={disc}
+        setDisc={setDisc}
+        hipaa={hipaa}
+        lockedReason={finalLocked ? (lockNotice(meta) ?? 'This quarter is final. Reopen it to change the agenda.') : undefined}
+      />
+
       <Card withBorder radius="md" padding="lg">
         <Group justify="space-between" mb="xs">
           <div>
@@ -388,6 +421,113 @@ export function MeetingTab({
 
       <ScheduleCard clientId={clientId} period={period} meta={meta} onChanged={onChanged} />
     </Stack>
+  );
+}
+
+// ── Since last quarter: close out last quarter's items from this quarter ──────
+function SinceLastQuarterCard({
+  rows,
+  error,
+  disc,
+  setDisc,
+  hipaa,
+  lockedReason,
+}: {
+  rows: SinceRow[] | null;
+  error: string | null;
+  disc: Discussion;
+  setDisc: (d: Discussion) => void;
+  hipaa: boolean;
+  /** The lock sentence when this quarter is final: nothing here can change. */
+  lockedReason?: string;
+}) {
+  const panel = rows ? sinceRowsForPanel(rows, disc.sinceOverrides, disc.items) : [];
+  const locked = Boolean(lockedReason);
+
+  function carry(row: (typeof panel)[number]) {
+    if (locked) return;
+    setDisc({ ...disc, items: [...disc.items, carriedItem(row, hipaa, uid())] });
+    notifications.show({ color: 'good', message: 'Carried onto this agenda, then Save agenda.' });
+  }
+
+  return (
+    <Card withBorder radius="md" padding="lg">
+      <Title order={5}>Since last quarter</Title>
+      <Text size="xs" c="dimmed" mb="sm">
+        Last quarter's agenda as page one of the report shows it. Close each one out here; changes save with the agenda.
+      </Text>
+      {error && <Text size="xs" c="act">{error}</Text>}
+      {rows && panel.length === 0 && <Text size="sm" c="dimmed">Nothing carried over from last quarter.</Text>}
+      <Stack gap="sm">
+        {panel.map((r) => (
+          <div key={r.id} style={{ borderTop: '1px solid var(--mantine-color-gray-2)', paddingTop: 8 }}>
+            <Group justify="space-between" align="flex-start" gap="xs">
+              <Group gap={6} style={{ flex: '1 1 220px', minWidth: 0 }}>
+                <Text size="sm" fw={600} style={{ overflowWrap: 'anywhere' }}>{r.topic}</Text>
+                {r.ticket && (
+                  <Badge size="sm" color="good" variant="light" title={r.ticket.status}>Ticket #{r.ticket.id}</Badge>
+                )}
+              </Group>
+              <Tooltip label={lockedReason} disabled={!locked} multiline w={300}>
+                <span style={{ display: 'inline-block', maxWidth: '100%' }}>
+                  <Select
+                    size="xs"
+                    w={180}
+                    data={SINCE_CHOICES}
+                    value={r.choice}
+                    allowDeselect={false}
+                    disabled={locked}
+                    aria-label={`Status of "${r.topic}"`}
+                    onChange={(v) => v && setDisc({ ...disc, sinceOverrides: setSinceOverride(disc.sinceOverrides, r, { status: v as typeof r.choice }) })}
+                  />
+                </span>
+              </Tooltip>
+            </Group>
+            <Group gap="xs" mt={6} align="flex-start" wrap="wrap">
+              <Tooltip label={lockedReason} disabled={!locked} multiline w={300}>
+                <span style={{ display: 'inline-block', flex: '1 1 240px' }}>
+                  <TextInput
+                    size="xs"
+                    placeholder="Optional note for the report, one line"
+                    maxLength={SINCE_NOTE_MAX}
+                    value={r.note}
+                    disabled={locked}
+                    aria-label={`Note for "${r.topic}"`}
+                    onChange={(e) => setDisc({ ...disc, sinceOverrides: setSinceOverride(disc.sinceOverrides, r, { note: e.currentTarget.value }) })}
+                  />
+                </span>
+              </Tooltip>
+              {r.canCarry && (
+                <Tooltip label={lockedReason} disabled={!locked} multiline w={300}>
+                  <span style={{ display: 'inline-block' }}>
+                    <Button size="compact-sm" variant="light" leftSection={<IconPlus size={14} />} disabled={locked} onClick={() => carry(r)}>
+                      Carry onto this agenda
+                    </Button>
+                  </span>
+                </Tooltip>
+              )}
+              {r.overridden && (
+                <Tooltip label={lockedReason ?? 'Back to the status from the data'} multiline w={300}>
+                  <span style={{ display: 'inline-block' }}>
+                    <Button
+                      size="compact-sm"
+                      variant="subtle"
+                      color="slate"
+                      disabled={locked}
+                      aria-label={`Reset "${r.topic}"`}
+                      onClick={() => setDisc({ ...disc, sinceOverrides: clearSinceOverride(disc.sinceOverrides, r.id) })}
+                    >
+                      Reset
+                    </Button>
+                  </span>
+                </Tooltip>
+              )}
+              {r.carried && <Badge size="sm" variant="light" color="navy">On this agenda</Badge>}
+            </Group>
+          </div>
+        ))}
+      </Stack>
+    </Card>
   );
 }
 

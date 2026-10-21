@@ -77,6 +77,8 @@ import { cleanFindings, createClaudeDocExtractor, pdfSourceSlug, type DocExtract
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 import { computeTriage } from './triage.js';
 import { dataLocked, isFinal, refuseIfLocked } from './locks.js';
+import { normalizeSinceOverrides, previousItems, previousUnreadable, prunedOverrides, sameOverrides } from './since.js';
+export { getSince } from './since.js';
 import { loadPackageFile, loadPackageModel, storePackage, type FrozenDocument, type FrozenInputs, type StoredModel, type StoredPackageJson } from './packages.js';
 
 export interface ApiResult {
@@ -484,7 +486,7 @@ async function seedReportDecisions(clientId: string, period: string, decisions: 
     });
   }
   if (items.length === (existing?.items.length ?? 0)) return;
-  await store.putDiscussion({ clientId, period, items, notes: existing?.notes });
+  await store.putDiscussion({ ...existing, clientId, period, items });
 }
 
 export async function getReportPdf(clientId: string, period: string, ai: string | null): Promise<ApiResult> {
@@ -582,11 +584,14 @@ export async function putConfig(clientId: string, body: Record<string, unknown>)
   audit('config.save', `client:${clientId}`);
   return ok(saved);
 }
+const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 /** The minimum shape of an agenda item a client may save. */
 function isAgendaItemShape(it: unknown): boolean {
   if (!it || typeof it !== 'object' || Array.isArray(it)) return false;
   const r = it as Record<string, unknown>;
   const filled = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+  // An id is used as an object key downstream (overrides, lookups): no prototype names.
+  if (typeof r['id'] === 'string' && RESERVED_IDS.has(r['id'].trim())) return false;
   return filled(r['id']) && filled(r['topic']) && (r['status'] === undefined || r['status'] === 'planned' || r['status'] === 'discussed');
 }
 
@@ -598,16 +603,44 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   if (locked) return locked;
   if (isEmptyBody(body)) return err(400, EMPTY_BODY);
   const store = getDataStore();
-  const raw: unknown[] = Array.isArray(body['items']) ? body['items'] : [];
+  const storedDisc = await store.getDiscussion(clientId, period);
+  const hasOverrides = body['sinceOverrides'] !== undefined;
+  // A body that only closes out last quarter leaves the agenda as stored.
+  const raw: unknown[] = Array.isArray(body['items']) ? body['items'] : hasOverrides && !('items' in body) ? (storedDisc?.items ?? []) : [];
+  // null: last quarter could not be read. Nothing is pruned and nothing new is
+  // checked against it; a write that needs it answers 503.
+  const previous = await previousItems(clientId, period).catch(() => null);
+  // Stored close-outs whose item left last quarter's agenda are pruned, never a reason to refuse.
+  let sinceOverrides = previous ? prunedOverrides(storedDisc?.sinceOverrides, previous) : storedDisc?.sinceOverrides;
+  if (hasOverrides) {
+    const normalized = await normalizeSinceOverrides(
+      clientId,
+      period,
+      body['sinceOverrides'],
+      storedDisc?.sinceOverrides,
+      currentActor(),
+      new Date().toISOString(),
+      previous,
+    );
+    if (!normalized.ok) return err(normalized.status ?? 400, normalized.error);
+    sinceOverrides = normalized.value;
+  }
   // Every item needs a string id and topic (non-empty) and a known status;
   // a malformed item would break lock 1 and the report build later.
   const bad = raw.flatMap((it, i) => (isAgendaItemShape(it) ? [] : [i]));
   if (bad.length) {
     return err(400, `Agenda items at positions ${bad.join(', ')} are malformed. Each needs an id and a topic, and a status of planned or discussed.`);
   }
-  const stored = (await store.getDiscussion(clientId, period))?.items ?? [];
+  const stored = storedDisc?.items ?? [];
   const storedById = new Map(stored.map((i) => [i.id, i]));
   const hipaa = (await storeDataSource(store).getClient(clientId))?.hipaa === true;
+  // A new carried item must name one of last quarter's items; its sourceTopic
+  // is that item's topic, whatever the body says, so the HIPAA rule holds.
+  const previousById = new Map((previous ?? []).map((p) => [p.id, p]));
+  const newCarried = (raw as DiscussionItem[]).filter((i) => !storedById.has(i.id) && i.source === 'carried');
+  if (newCarried.length && !previous) return previousUnreadable();
+  const badCarry = newCarried.filter((i) => !previousById.has(i.sourceRef ?? ''));
+  if (badCarry.length) return err(400, `Carried items must name an item on last quarter's agenda: ${badCarry.map((i) => i.id).join(', ')}.`);
   // HIPAA clients: an item that still reads as it arrived from Halo, a
   // suggestion or the inbox stays off the report. For an item already stored,
   // its source, sourceRef and sourceTopic win over the body, so dropping them
@@ -618,7 +651,8 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
     const origin = prior
       ? { ...rest, ...(prior.source !== undefined ? { source: prior.source } : {}), ...(prior.sourceRef !== undefined ? { sourceRef: prior.sourceRef } : {}) }
       : i;
-    const sourceTopic = prior?.sourceTopic ?? i.sourceTopic;
+    const carriedTopic = !prior && i.source === 'carried' ? previousById.get(i.sourceRef!)?.topic : undefined;
+    const sourceTopic = prior?.sourceTopic ?? carriedTopic ?? i.sourceTopic;
     const item = sourceTopic !== undefined ? { ...origin, sourceTopic } : origin;
     return hipaaTopicUnrewritten(item, hipaa) && item.includeInReport !== false ? { ...item, includeInReport: false } : item;
   });
@@ -630,8 +664,18 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
     const inBody = new Set(items.map((i) => i.id));
     items.push(...stored.filter((i) => !inBody.has(i.id) && !known.has(i.id)));
   }
-  const saved = await store.putDiscussion({ clientId, period, items, notes: body['notes'] as string | undefined });
+  const notes = 'items' in body || !hasOverrides ? (body['notes'] as string | undefined) : storedDisc?.notes;
+  const saved = await store.putDiscussion({
+    clientId,
+    period,
+    items,
+    notes,
+    ...(sinceOverrides && Object.keys(sinceOverrides).length ? { sinceOverrides } : {}),
+  });
   audit('discussion.save', `qbr:${clientId}/${period}`, `${saved.items.length} item(s)`);
+  if (hasOverrides && !sameOverrides(storedDisc?.sinceOverrides, sinceOverrides)) {
+    audit('qbr.since', `qbr:${clientId}/${period}`, `${Object.keys(sinceOverrides ?? {}).length} override(s)`);
+  }
 
   // Any captured non-pending disposition moves the QBR forward to 'dispositioned'.
   const dispositioned = saved.items.some((i) => i.disposition && i.disposition !== 'pending');

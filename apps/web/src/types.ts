@@ -409,7 +409,8 @@ export interface DiscussionItem {
   sortOrder?: number;
   externalRef?: { system: string; id: string; status?: string };
   /** Where the item came from. Undefined means typed by hand. */
-  source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report';
+  source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report' | 'carried';
+  /** For a carried item, last quarter's item id. */
   sourceRef?: string;
   /** The topic as it arrived from the source; a HIPAA client's item stays off the report until the topic differs. */
   sourceTopic?: string;
@@ -430,11 +431,32 @@ export interface SuggestedConversationsResponse {
   /** The client is HIPAA-covered: added items default to off the report. */
   hipaa?: boolean;
 }
+/** A close-out of one of last quarter's items, set on this quarter. The server stamps at and by. */
+export type SinceOverrideStatus = 'done' | 'in_progress' | 'waiting' | 'dropped';
+export interface SinceOverride {
+  status: SinceOverrideStatus;
+  note?: string;
+  at: string;
+  by: string;
+}
+export type SinceStatus = 'done' | 'in_progress' | 'waiting' | 'closed';
+/** One row of GET .../since. */
+export interface SinceRow {
+  id: string;
+  topic: string;
+  computed: SinceStatus;
+  effective: SinceStatus;
+  override?: SinceOverride;
+  note?: string;
+  ticket?: { id: string; status?: string };
+}
 export interface Discussion {
   clientId: string;
   period: string;
   items: DiscussionItem[];
   notes?: string;
+  /** Close-outs of last quarter's items, keyed by last quarter's item id. */
+  sinceOverrides?: Record<string, SinceOverride>;
 }
 
 /** A vendor report / uploaded file attached to a QBR. */
