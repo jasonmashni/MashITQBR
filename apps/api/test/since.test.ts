@@ -152,3 +152,54 @@ describe('frozen packages', () => {
     expect(m2.sinceLastQuarter.find((r) => r.topic === 'SSO rollout')).toEqual({ topic: 'SSO rollout', status: 'closed', detail: 'No longer needed' });
   });
 });
+
+describe('review fixes', () => {
+  it('a stale override never blocks a save: an unchanged unknown key is pruned, a new unknown key is refused', async () => {
+    const h = await import('../src/handlers.js');
+    const { getDataStore } = await import('../src/store/index.js');
+    const store = getDataStore();
+    await seed('anp', '2020-Q1', '2020-Q2');
+    const stale = { status: 'done' as const, note: 'Old', at: '2020-05-01T00:00:00Z', by: 'jason' };
+    await store.putDiscussion({ clientId: 'anp', period: '2020-Q2', items: [{ id: 'c1', topic: 'Firewall refresh', status: 'planned' }], sinceOverrides: { gone: stale } });
+
+    // The web sends back what it loaded, the stale key included.
+    const echoed = await h.putDiscussion('anp', '2020-Q2', body({ gone: { status: 'done', note: 'Old', at: stale.at, by: stale.by }, 'p-sso': { status: 'done' } }));
+    expect(echoed.status).toBe(200);
+    expect(Object.keys((echoed.json as QbrDiscussion).sinceOverrides ?? {})).toEqual(['p-sso']);
+
+    // A plain agenda save prunes it too.
+    await store.putDiscussion({ ...(await store.getDiscussion('anp', '2020-Q2'))!, sinceOverrides: { gone: stale, 'p-sso': stale } });
+    const plain = await h.putDiscussion('anp', '2020-Q2', { items: [{ id: 'c1', topic: 'Firewall refresh' }], knownIds: ['c1'] });
+    expect(plain.status).toBe(200);
+    expect(Object.keys((plain.json as QbrDiscussion).sinceOverrides ?? {})).toEqual(['p-sso']);
+
+    // A changed or new unknown key is still refused.
+    await store.putDiscussion({ ...(await store.getDiscussion('anp', '2020-Q2'))!, sinceOverrides: { gone: stale } });
+    expect((await h.putDiscussion('anp', '2020-Q2', body({ gone: { status: 'waiting', note: 'Old' } }))).status).toBe(400);
+    expect((await h.putDiscussion('anp', '2020-Q2', body({ brandnew: { status: 'done' } }))).status).toBe(400);
+  });
+
+  it('a carried item takes its sourceTopic from last quarter and must name a last quarter item (HIPAA client)', async () => {
+    const h = await import('../src/handlers.js');
+    await seed('mp', '2020-Q3', '2020-Q4');
+    const carried = { id: 'n1', topic: 'SSO rollout', status: 'planned', source: 'carried', sourceRef: 'p-sso', includeInReport: true };
+    const res = await h.putDiscussion('mp', '2020-Q4', { items: [carried] });
+    expect(res.status).toBe(200);
+    expect((res.json as QbrDiscussion).items[0]).toMatchObject({ source: 'carried', sourceRef: 'p-sso', sourceTopic: 'SSO rollout', includeInReport: false });
+    const forged = await h.putDiscussion('mp', '2020-Q4', { items: [{ ...carried, id: 'n2', sourceRef: 'not-last-quarter' }] });
+    expect(forged.status).toBe(400);
+  });
+
+  it('refuses prototype-polluting item ids and keeps overrides on a null-prototype map', async () => {
+    const h = await import('../src/handlers.js');
+    await seed('anp', '2019-Q3', '2019-Q4');
+    for (const id of ['__proto__', 'constructor', 'prototype']) {
+      expect((await h.putDiscussion('anp', '2019-Q4', { items: [{ id, topic: 'x' }] })).status).toBe(400);
+    }
+    const polluted = JSON.parse('{"__proto__": {"status": "done"}}');
+    expect((await h.putDiscussion('anp', '2019-Q4', body(polluted))).status).toBe(400);
+    const { normalizeSinceOverrides } = await import('../src/since.js');
+    const r = await normalizeSinceOverrides('anp', '2019-Q4', { 'p-sso': { status: 'done' } }, undefined, 'me', 'now');
+    expect(r.ok && Object.getPrototypeOf(r.value)).toBeNull();
+  });
+});

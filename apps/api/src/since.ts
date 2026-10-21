@@ -7,7 +7,7 @@ import { getDataStore, getSecretStore } from './store/index.js';
 export const SINCE_NOTE_MAX = 200;
 
 /** Last quarter's items that can be read (older stored items may lack a topic). */
-async function previousItems(clientId: string, period: string): Promise<DiscussionItem[]> {
+export async function previousItems(clientId: string, period: string): Promise<DiscussionItem[]> {
   const prev = await getDataStore()
     .getDiscussion(clientId, previousPeriod(period).id)
     .catch(() => undefined);
@@ -36,11 +36,16 @@ export async function getSince(clientId: string, period: string): Promise<ApiRes
 
 type Normalized = { ok: true; value: Record<string, SinceOverride> } | { ok: false; error: string };
 
+const own = (o: object | undefined, k: string) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+
 /**
  * Validate a body's sinceOverrides against last quarter's item ids. The
  * status must be one of the four close-outs; a note is trimmed, at most
  * SINCE_NOTE_MAX characters, and dropped when empty. `at` and `by` are always
- * stamped here; an unchanged override keeps its stored stamp.
+ * stamped here; an unchanged override keeps its stored stamp. A key that is
+ * no longer on last quarter's agenda but matches what is stored (the client
+ * echoing a stale entry) is pruned silently; any other unknown key is refused.
+ * The result has a null prototype.
  */
 export async function normalizeSinceOverrides(
   clientId: string,
@@ -49,12 +54,12 @@ export async function normalizeSinceOverrides(
   stored: Record<string, SinceOverride> | undefined,
   actor: string,
   now: string,
+  previous?: DiscussionItem[],
 ): Promise<Normalized> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'sinceOverrides must be an object keyed by last quarter item id.' };
-  const ids = new Set((await previousItems(clientId, period)).map((i) => i.id));
-  const out: Record<string, SinceOverride> = {};
+  const ids = new Set((previous ?? (await previousItems(clientId, period))).map((i) => i.id));
+  const out = Object.create(null) as Record<string, SinceOverride>;
   for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (!ids.has(id)) return { ok: false, error: `sinceOverrides names ${id}, which is not on last quarter's agenda.` };
     if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, error: `sinceOverrides.${id} must be an object.` };
     const r = v as Record<string, unknown>;
     if (!(SINCE_OVERRIDE_STATUSES as readonly unknown[]).includes(r['status'])) {
@@ -62,16 +67,26 @@ export async function normalizeSinceOverrides(
     }
     if (r['note'] !== undefined && typeof r['note'] !== 'string') return { ok: false, error: `sinceOverrides.${id}.note must be text.` };
     const note = typeof r['note'] === 'string' ? r['note'].trim() : '';
-    if (note.length > SINCE_NOTE_MAX) return { ok: false, error: `sinceOverrides.${id}.note is longer than ${SINCE_NOTE_MAX} characters.` };
     const status = r['status'] as SinceOverrideStatus;
-    const prior = stored?.[id];
-    if (prior && prior.status === status && (prior.note ?? '') === note) {
-      out[id] = prior;
-      continue;
+    const prior = own(stored, id) ? stored![id] : undefined;
+    const unchanged = !!prior && prior.status === status && (prior.note ?? '') === note;
+    if (!ids.has(id)) {
+      if (unchanged) continue;
+      return { ok: false, error: `sinceOverrides names ${id}, which is not on last quarter's agenda.` };
     }
-    out[id] = { status, ...(note ? { note } : {}), at: now, by: actor };
+    if (note.length > SINCE_NOTE_MAX) return { ok: false, error: `sinceOverrides.${id}.note is longer than ${SINCE_NOTE_MAX} characters.` };
+    out[id] = unchanged ? prior! : { status, ...(note ? { note } : {}), at: now, by: actor };
   }
   return { ok: true, value: out };
+}
+
+/** The stored overrides whose keys are still on last quarter's agenda (null prototype). */
+export function prunedOverrides(stored: Record<string, SinceOverride> | undefined, previous: DiscussionItem[]): Record<string, SinceOverride> | undefined {
+  if (!stored) return undefined;
+  const ids = new Set(previous.map((i) => i.id));
+  const out = Object.create(null) as Record<string, SinceOverride>;
+  for (const [id, v] of Object.entries(stored)) if (ids.has(id)) out[id] = v;
+  return out;
 }
 
 /** True when two override maps say the same thing (stamps included). */

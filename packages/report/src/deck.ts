@@ -395,6 +395,13 @@ export async function renderDeck(model: ReportModel): Promise<Buffer> {
       true,
     );
     y += colH + 0.15;
+    if (model.sinceLastQuarter.length && y + sinceH > FOOTER_Y - 0.15) {
+      // The columns filled this slide: the since block gets its own continuation.
+      notes(s, model.executive.lede ?? '');
+      s = pptx.addSlide({ masterName: 'QBR' });
+      heading(s, `${title} (cont.)`);
+      y = BODY_Y;
+    }
     if (model.sinceLastQuarter.length) {
       s.addShape('rect', { x: CONTENT_X, y, w: CONTENT_W, h: sinceH, fill: { color: hex(SEMANTIC.canvas) }, line: { type: 'none' } });
       s.addShape('rect', { x: CONTENT_X, y, w: 0.06, h: sinceH, fill: { color: PRIMARY }, line: { type: 'none' } });

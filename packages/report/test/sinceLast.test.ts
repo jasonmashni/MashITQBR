@@ -156,3 +156,29 @@ describe('sinceLastRows (the Meeting tab list)', () => {
     ]);
   });
 });
+
+describe('sinceLastQuarter review fixes', () => {
+  it('yields no rows for an empty previous discussion, even with overrides', () => {
+    const rows = buildReportModel({ ...base, previousDiscussion: [], sinceOverrides: { a: { status: 'done', note: 'x', at: 'x', by: 'y' } } }).sinceLastQuarter;
+    expect(rows).toEqual([]);
+  });
+
+  it('cuts a long detail at 160 characters on a word boundary with a single-character ellipsis', () => {
+    const long = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
+    const rows = buildReportModel({
+      ...base,
+      previousDiscussion: [item({ id: 'a', topic: 'A', status: 'discussed', response: long }), item({ id: 'b', topic: 'B', status: 'discussed', response: 'short' })],
+      sinceOverrides: { b: { status: 'done', note: 'n '.repeat(150).trim(), at: 'x', by: 'y' } },
+    }).sinceLastQuarter;
+    for (const r of rows) {
+      expect(r.detail!.length).toBeLessThanOrEqual(160);
+      expect(r.detail!.endsWith('…')).toBe(true);
+      expect(r.detail).not.toMatch(/[–—]/);
+    }
+    // Cut on a word boundary: the text before the ellipsis is a prefix ending at a whole word.
+    const kept = rows[0]!.detail!.slice(0, -1);
+    expect(long.startsWith(kept)).toBe(true);
+    expect(long[kept.length]).toBe(' ');
+    expect(buildReportModel({ ...base, previousDiscussion: [item({ topic: 'C', status: 'discussed', response: 'short one' })] }).sinceLastQuarter[0]!.detail).toBe('short one');
+  });
+});

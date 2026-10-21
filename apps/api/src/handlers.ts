@@ -77,7 +77,7 @@ import { cleanFindings, createClaudeDocExtractor, pdfSourceSlug, type DocExtract
 import { HttpMcpTransport, memoizedMcpTransport } from './mcpClient.js';
 import { computeTriage } from './triage.js';
 import { dataLocked, isFinal, refuseIfLocked } from './locks.js';
-import { normalizeSinceOverrides, sameOverrides } from './since.js';
+import { normalizeSinceOverrides, previousItems, prunedOverrides, sameOverrides } from './since.js';
 export { getSince } from './since.js';
 import { loadPackageFile, loadPackageModel, storePackage, type FrozenDocument, type FrozenInputs, type StoredModel, type StoredPackageJson } from './packages.js';
 
@@ -584,11 +584,14 @@ export async function putConfig(clientId: string, body: Record<string, unknown>)
   audit('config.save', `client:${clientId}`);
   return ok(saved);
 }
+const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 /** The minimum shape of an agenda item a client may save. */
 function isAgendaItemShape(it: unknown): boolean {
   if (!it || typeof it !== 'object' || Array.isArray(it)) return false;
   const r = it as Record<string, unknown>;
   const filled = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+  // An id is used as an object key downstream (overrides, lookups): no prototype names.
+  if (typeof r['id'] === 'string' && RESERVED_IDS.has(r['id'].trim())) return false;
   return filled(r['id']) && filled(r['topic']) && (r['status'] === undefined || r['status'] === 'planned' || r['status'] === 'discussed');
 }
 
@@ -604,9 +607,19 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   const hasOverrides = body['sinceOverrides'] !== undefined;
   // A body that only closes out last quarter leaves the agenda as stored.
   const raw: unknown[] = Array.isArray(body['items']) ? body['items'] : hasOverrides && !('items' in body) ? (storedDisc?.items ?? []) : [];
-  let sinceOverrides = storedDisc?.sinceOverrides;
+  const previous = await previousItems(clientId, period);
+  // Stored close-outs whose item left last quarter's agenda are pruned, never a reason to refuse.
+  let sinceOverrides = prunedOverrides(storedDisc?.sinceOverrides, previous);
   if (hasOverrides) {
-    const normalized = await normalizeSinceOverrides(clientId, period, body['sinceOverrides'], storedDisc?.sinceOverrides, currentActor(), new Date().toISOString());
+    const normalized = await normalizeSinceOverrides(
+      clientId,
+      period,
+      body['sinceOverrides'],
+      storedDisc?.sinceOverrides,
+      currentActor(),
+      new Date().toISOString(),
+      previous,
+    );
     if (!normalized.ok) return err(400, normalized.error);
     sinceOverrides = normalized.value;
   }
@@ -619,6 +632,11 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
   const stored = storedDisc?.items ?? [];
   const storedById = new Map(stored.map((i) => [i.id, i]));
   const hipaa = (await storeDataSource(store).getClient(clientId))?.hipaa === true;
+  // A new carried item must name one of last quarter's items; its sourceTopic
+  // is that item's topic, whatever the body says, so the HIPAA rule holds.
+  const previousById = new Map(previous.map((p) => [p.id, p]));
+  const badCarry = (raw as DiscussionItem[]).filter((i) => !storedById.has(i.id) && i.source === 'carried' && !previousById.has(i.sourceRef ?? ''));
+  if (badCarry.length) return err(400, `Carried items must name an item on last quarter's agenda: ${badCarry.map((i) => i.id).join(', ')}.`);
   // HIPAA clients: an item that still reads as it arrived from Halo, a
   // suggestion or the inbox stays off the report. For an item already stored,
   // its source, sourceRef and sourceTopic win over the body, so dropping them
@@ -629,7 +647,8 @@ export async function putDiscussion(clientId: string, period: string, body: Reco
     const origin = prior
       ? { ...rest, ...(prior.source !== undefined ? { source: prior.source } : {}), ...(prior.sourceRef !== undefined ? { sourceRef: prior.sourceRef } : {}) }
       : i;
-    const sourceTopic = prior?.sourceTopic ?? i.sourceTopic;
+    const carriedTopic = !prior && i.source === 'carried' ? previousById.get(i.sourceRef!)?.topic : undefined;
+    const sourceTopic = prior?.sourceTopic ?? carriedTopic ?? i.sourceTopic;
     const item = sourceTopic !== undefined ? { ...origin, sourceTopic } : origin;
     return hipaaTopicUnrewritten(item, hipaa) && item.includeInReport !== false ? { ...item, includeInReport: false } : item;
   });

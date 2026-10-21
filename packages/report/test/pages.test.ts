@@ -244,3 +244,28 @@ describe('since last quarter close-out notes', () => {
     expect(text).toContain('Old PC: Closed');
   });
 });
+
+describe('since last quarter long details on the deck', () => {
+  it('five rows with 600-character details stay above the footer on page one or its continuation', async () => {
+    const { buildReportModel: build } = await import('@mashit/report');
+    const long = Array.from({ length: 100 }, (_, i) => `detail${i}`).join(' ').slice(0, 600);
+    const prev = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, topic: `Topic ${i}`, status: 'discussed' as const, response: long, sortOrder: i }));
+    const m = build({ ...args, previousDiscussion: prev });
+    expect(m.sinceLastQuarter).toHaveLength(5);
+    const { default: JSZip } = await import('jszip');
+    const zip = await JSZip.loadAsync(await renderDeck(m));
+    const names = Object.keys(zip.files).filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f));
+    let found = 0;
+    for (const name of names) {
+      const xml = await zip.file(name)!.async('string');
+      for (const sp of xml.split('</p:sp>')) {
+        if (!sp.includes('<a:t>Since last quarter</a:t>')) continue;
+        found++;
+        const y = Number(sp.match(/<a:off x="\d+" y="(\d+)"/)![1]);
+        const cy = Number(sp.match(/<a:ext cx="\d+" cy="(\d+)"/)![1]);
+        expect((y + cy) / 914400).toBeLessThanOrEqual(7.08);
+      }
+    }
+    expect(found).toBe(1);
+  });
+});

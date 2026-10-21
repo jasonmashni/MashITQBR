@@ -71,6 +71,8 @@ describe('HIPAA clients: source topics stay off the report until rewritten', () 
 
   it('keeps an item carried from last quarter off the report until rewritten', async () => {
     const h = await import('../src/handlers.js');
+    const { getDataStore } = await import('../src/store/index.js');
+    await getDataStore().putDiscussion({ clientId: 'mp', period: '2024-Q4', items: [{ id: 'prev-1', topic: 'Fax line for intake', status: 'discussed' }] });
     const res = await h.putDiscussion('mp', '2025-Q1', { items: [{ ...sourced('carried', 'Fax line for intake', 'Fax line for intake'), sourceRef: 'prev-1' }] });
     expect(itemsOf(res)[0]).toMatchObject({ includeInReport: false, source: 'carried', sourceRef: 'prev-1' });
   });

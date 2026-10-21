@@ -35,7 +35,7 @@ import {
 import { api } from '../../api.js';
 import type { Discussion, DiscussionItem, QbrResponse, SinceRow, SuggestedConversationsResponse } from '../../types.js';
 import { conversationItem, needsHipaaRewrite, pendingConversations, reportBlocked } from './conversations.js';
-import { carriedItem, setSinceOverride, SINCE_CHOICES, SINCE_NOTE_MAX, sinceRowsForPanel } from './since.js';
+import { carriedItem, clearSinceOverride, overridesForSave, setSinceOverride, SINCE_CHOICES, SINCE_NOTE_MAX, sinceRowsForPanel } from './since.js';
 import { lockNotice } from './nextStep.js';
 import { uid } from '../../ui.js';
 import { toastError } from '../../toast.js';
@@ -208,7 +208,8 @@ export function MeetingTab({
     try {
       // Agenda order is the on-screen order.
       const items = disc.items.map((it, i) => ({ ...it, sortOrder: i }));
-      const saved = await api.putDiscussion(clientId, period, { ...disc, items }, [...seenIds.current]);
+      const sinceOverrides = overridesForSave(disc.sinceOverrides, sinceRows);
+      const saved = await api.putDiscussion(clientId, period, { ...disc, items, ...(sinceOverrides ? { sinceOverrides } : {}) }, [...seenIds.current]);
       setDisc({ ...disc, items: saved.items ?? items, sinceOverrides: saved.sinceOverrides });
       setSinceReload((n) => n + 1);
       notifications.show({ color: 'good', message: 'Agenda saved, answered items flow onto the final report.' });
@@ -501,6 +502,22 @@ function SinceLastQuarterCard({
                   <span style={{ display: 'inline-block' }}>
                     <Button size="compact-sm" variant="light" leftSection={<IconPlus size={14} />} disabled={locked} onClick={() => carry(r)}>
                       Carry onto this agenda
+                    </Button>
+                  </span>
+                </Tooltip>
+              )}
+              {r.overridden && (
+                <Tooltip label={lockedReason ?? 'Back to the status from the data'} multiline w={300}>
+                  <span style={{ display: 'inline-block' }}>
+                    <Button
+                      size="compact-sm"
+                      variant="subtle"
+                      color="slate"
+                      disabled={locked}
+                      aria-label={`Reset "${r.topic}"`}
+                      onClick={() => setDisc({ ...disc, sinceOverrides: clearSinceOverride(disc.sinceOverrides, r.id) })}
+                    >
+                      Reset
                     </Button>
                   </span>
                 </Tooltip>

@@ -90,6 +90,19 @@ function reportable(items: DiscussionItem[]): DiscussionItem[] {
 
 const SINCE_LAST_MAX = 5;
 
+/** Longest since-row detail on the report, so HTML, PDF and deck agree. */
+export const SINCE_DETAIL_MAX = 160;
+
+/** Cut text to `max` characters on a word boundary, ending in a single-character ellipsis. */
+export function clipDetail(text: string, max = SINCE_DETAIL_MAX): string {
+  const t = text.trim();
+  if (t.length <= max) return t;
+  const room = t.slice(0, max - 1);
+  const space = room.lastIndexOf(' ');
+  const cut = (space > 0 ? room.slice(0, space) : room).replace(/[\s,;:.]+$/, '');
+  return `${cut}…`;
+}
+
 /** A since-last-quarter status: the report's row status. */
 export type SinceStatus = SinceLastRow['status'];
 
@@ -424,7 +437,8 @@ export function buildReportModel(args: {
             const byId = new Map((args.previousDiscussion ?? []).map((d) => [d.id, d]));
             return sinceLastRows(args.previousDiscussion ?? [], args.ticketStatuses, args.sinceOverrides).map((r) => {
               const d = byId.get(r.id)!;
-              const detail = r.note || d.response?.trim() || (r.ticket ? `Ticket ${r.ticket.id}` : undefined);
+              const raw = r.note || d.response?.trim() || (r.ticket ? `Ticket ${r.ticket.id}` : undefined);
+              const detail = raw ? clipDetail(raw) : undefined;
               return { topic: r.topic, status: r.effective, ...(detail ? { detail } : {}) };
             });
           })(),

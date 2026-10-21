@@ -28,6 +28,8 @@ export interface SincePanelRow {
   carried: boolean;
   /** Still open (in progress or waiting) and not carried yet. */
   canCarry: boolean;
+  /** A close-out is set (Reset returns the row to the computed status). */
+  overridden: boolean;
 }
 
 /**
@@ -50,6 +52,7 @@ export function sinceRowsForPanel(rows: SinceRow[], overrides: Record<string, Si
       ...(r.ticket ? { ticket: r.ticket } : {}),
       carried: isCarried,
       canCarry: !isCarried && (effective === 'in_progress' || effective === 'waiting'),
+      overridden: Boolean(o),
     };
   });
 }
@@ -85,4 +88,24 @@ export function carriedItem(row: Pick<SinceRow, 'id' | 'topic'>, hipaa: boolean,
     sourceRef: row.id,
     sourceTopic: row.topic,
   };
+}
+
+/** Reset: the override map without this row's key, so the computed status applies again. */
+export function clearSinceOverride(overrides: Record<string, SinceOverride> | undefined, id: string): Record<string, SinceOverride> {
+  const { [id]: _drop, ...rest } = overrides ?? {};
+  return rest;
+}
+
+/**
+ * What Save sends: only keys GET since returned, so a close-out for an item
+ * that left last quarter's agenda never blocks the save. Before the rows load
+ * (or when they failed), the loaded map goes back unchanged.
+ */
+export function overridesForSave(
+  overrides: Record<string, SinceOverride> | undefined,
+  rows: Pick<SinceRow, 'id'>[] | null,
+): Record<string, SinceOverride> | undefined {
+  if (!overrides || !rows) return overrides;
+  const ids = new Set(rows.map((r) => r.id));
+  return Object.fromEntries(Object.entries(overrides).filter(([id]) => ids.has(id)));
 }

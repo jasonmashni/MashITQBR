@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { carriedItem, setSinceOverride, sinceRowsForPanel } from '../src/pages/workspace/since.js';
+import { carriedItem, clearSinceOverride, overridesForSave, setSinceOverride, sinceRowsForPanel } from '../src/pages/workspace/since.js';
 import type { DiscussionItem, SinceRow } from '../src/types.js';
 
 const row = (over: Partial<SinceRow>): SinceRow => ({ id: 'a', topic: 'SSO rollout', computed: 'in_progress', effective: 'in_progress', ...over });
@@ -56,5 +56,26 @@ describe('carriedItem', () => {
   });
   it('keeps a HIPAA client item off the report until rewritten', () => {
     expect(carriedItem(row({}), true, 'n1').includeInReport).toBe(false);
+  });
+});
+
+describe('clearSinceOverride (Reset)', () => {
+  it('deletes the key so the row shows the computed status again', () => {
+    const o = { a: { status: 'done' as const, at: 'x', by: 'y' }, b: { status: 'waiting' as const, at: 'x', by: 'y' } };
+    const next = clearSinceOverride(o, 'a');
+    expect(next).toEqual({ b: o.b });
+    expect(o.a).toBeDefined();
+    expect(sinceRowsForPanel([row({ computed: 'waiting', effective: 'done', override: o.a })], next, [])[0]).toMatchObject({ choice: 'waiting', overridden: false });
+    expect(sinceRowsForPanel([row({})], o, [])[0]!.overridden).toBe(true);
+  });
+});
+
+describe('overridesForSave', () => {
+  it('drops keys GET since did not return', () => {
+    const o = { a: { status: 'done' as const, at: 'x', by: 'y' }, stale: { status: 'waiting' as const, at: 'x', by: 'y' } };
+    expect(overridesForSave(o, [row({})])).toEqual({ a: o.a });
+    expect(overridesForSave(undefined, [row({})])).toBeUndefined();
+    // Until GET since answers, send what was loaded.
+    expect(overridesForSave(o, null)).toEqual(o);
   });
 });
