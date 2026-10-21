@@ -31,10 +31,21 @@ describe('classifyInvoiceLine', () => {
     }
   });
 
-  it('checks labour and one-offs before recurring words', () => {
-    for (const l of ['Managed Services Onsite Labor', 'On-site Support', 'Hourly Consulting', 'Professional Services', 'Firewall Install', 'Backup Project', 'Travel', 'Security Labour (per hour)', 'Hardware - Dell Monitor']) {
+  it('checks labour and one-offs before the weaker recurring words', () => {
+    for (const l of ['On-site Support', 'Hourly Consulting', 'Professional Services', 'Firewall Install', 'Backup Project', 'Travel', 'Security Labour (per hour)', 'Hardware - Dell Monitor', 'Compliance Consulting']) {
       expect(classifyInvoiceLine(l)).toBe('variable');
     }
+  });
+
+  it('lets strong recurring words win over labour words', () => {
+    for (const l of ['Managed Support Agreement', 'Managed Services Onsite Labor', 'Support Subscription', 'Helpdesk Support per user', 'Project Agreement']) {
+      expect(classifyInvoiceLine(l)).toBe('recurring');
+    }
+    expect(classifyInvoiceLine('Remote Support')).toBe('variable');
+    expect(classifyInvoiceLine('Managed End User')).toBe('recurring');
+    expect(classifyInvoiceLine('Consulting (per hr)')).toBe('variable');
+    // Licensing still comes first.
+    expect(classifyInvoiceLine('Microsoft 365 Business Premium subscription')).toBe('licensing');
   });
 
   it('knows recurring service lines', () => {

@@ -10,7 +10,7 @@ export type InvoiceLineKind = 'recurring' | 'licensing' | 'variable';
 
 const LICENSING = /microsoft 365|office 365|\bm365\b|exchange online|copilot|business (premium|standard|basic)/i;
 
-/** Labour and one-off items. Checked before the recurring words. */
+/** Labour and one-off items. Checked after the strong recurring words, before the rest. */
 const VARIABLE: RegExp[] = [
   /\bsupport\b/i,
   /consult/i,
@@ -38,10 +38,15 @@ const VARIABLE: RegExp[] = [
   /^\s*other\s*$/i,
 ];
 
+/** Words that make a line recurring even when it also names labour ("Managed Support Agreement"). */
+const STRONG_RECURRING = /managed|agreement|subscription|\bper\s+(user|device|seat)\b/i;
+
 const RECURRING = /managed|monitoring|management|compliance|backup|security|subscription|maintenance|agreement|\bper\s+(user|device|seat)\b/i;
 
+/** Licensing first, then strong recurring words, then labour and one-offs, then the other recurring words. */
 export function classifyInvoiceLine(label: string): InvoiceLineKind {
   if (LICENSING.test(label)) return 'licensing';
+  if (STRONG_RECURRING.test(label)) return 'recurring';
   if (VARIABLE.some((re) => re.test(label))) return 'variable';
   if (RECURRING.test(label)) return 'recurring';
   return 'variable';
