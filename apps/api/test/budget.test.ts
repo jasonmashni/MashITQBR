@@ -209,6 +209,52 @@ describe('budget API', () => {
   });
 });
 
+describe('budget overrides', () => {
+  beforeAll(seed);
+
+  it('sanitizeAnswers keeps well-formed overrides and drops anything else', async () => {
+    const { sanitizeAnswers } = await import('../src/budget.js');
+    const out = sanitizeAnswers({
+      overrides: {
+        support_hours: { expected: 12000, low: -5, high: Number.NaN, reason: `  ${'x'.repeat(250)}  `, extra: 1 },
+        contingency: { expected: 0 },
+        hardware: { high: 10_000_001, reason: 'too big' },
+        licensing: { low: '500' },
+        bogus: { expected: 100 },
+        projects: 'nope',
+      },
+    });
+    expect(out.overrides).toEqual({
+      support_hours: { expected: 12000, reason: 'x'.repeat(200) },
+      contingency: { expected: 0 },
+    });
+    expect(sanitizeAnswers({ overrides: { hardware: { reason: 'only a reason' } } }).overrides).toBeUndefined();
+    expect(sanitizeAnswers({ overrides: [1, 2] }).overrides).toBeUndefined();
+    expect(sanitizeAnswers({ overrides: { compliance: { low: 10_000_000 } } }).overrides).toEqual({ compliance: { low: 10_000_000 } });
+  });
+
+  it('keeps overrides through save, recompute and publish, and notes them in the audit', async () => {
+    const b = await import('../src/budget.js');
+    const s = await store();
+    const overrides = { support_hours: { expected: 9000, reason: 'Fewer hourly projects' } };
+    await b.putBudget('acme', '2029', { answers: { ...answers, overrides } });
+    const audit = await s.listAudit(10);
+    expect(audit.find((a) => a.action === 'budget.save')?.detail).toBe('FY2029 answers saved, overrides on 1 line');
+
+    const plan = ((await b.recomputeBudget('acme', '2029')).json as { plan: BudgetPlanRecord }).plan;
+    expect(plan.answers.overrides).toEqual(overrides);
+    const support = plan.lines.find((l) => l.category === 'support_hours')!;
+    expect([support.low, support.expected, support.high]).toEqual([8000, 9000, 16000]);
+    expect(support.overridden).toEqual({ expected: 11500 });
+
+    await s.upsertQbr({ clientId: 'acme', period: '2028-Q3', status: 'data_synced', updatedAt: 'x' });
+    const published = ((await b.publishBudget('acme', '2029')).json as { plan: BudgetPlanRecord }).plan;
+    expect(published.answers.overrides).toEqual(overrides);
+    expect(published.published?.lines.find((l) => l.category === 'support_hours')?.expected).toBe(9000);
+    expect(published.published?.totals.expected).toBe(plan.totals.expected);
+  });
+});
+
 describe('budget industry context (internal only)', () => {
   const items = [
     { title: 'Manufacturers spend about 2 to 3 percent of revenue on IT', insight: 'Survey benchmark.', askClient: 'Do you want a revenue comparison?', sourceName: 'Survey', sourceUrl: 'https://example.com/a' },
