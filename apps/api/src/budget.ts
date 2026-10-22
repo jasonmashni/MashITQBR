@@ -1,5 +1,6 @@
 import {
   classifyInvoiceLine,
+  clientBudgetLine,
   computeOutlook,
   fromRecurringInvoices,
   recurringInvoiceSource,
@@ -558,7 +559,8 @@ export async function budgetForPeriod(store: DataStore, clientId: string, period
         fiscalLabel: next.fiscalLabel,
         assumptions: [...snap.assumptions],
         movers: [...snap.movers],
-        lines: snap.lines.map((l) => ({ ...l, basis: l.basis.map((b) => ({ ...b })) })),
+        // Client-safe copies: override reasons and replaced values stay internal.
+        lines: snap.lines.map(clientBudgetLine),
         totals: { ...snap.totals },
         caveats: [...snap.caveats],
       }

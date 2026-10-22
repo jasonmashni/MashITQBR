@@ -308,6 +308,13 @@ export function clientBasisNotes(line: BudgetLine): string[] {
   return line.basis.map((b) => (b.source === 'answer' && b.note.startsWith(OVERRIDE_NOTE_PREFIX) ? CLIENT_OVERRIDE_NOTE : b.note));
 }
 
+/** A copy of the line safe for the report: client basis wording and no record of the replaced values. */
+export function clientBudgetLine(line: BudgetLine): BudgetLine {
+  const { overridden: _overridden, ...rest } = line;
+  const notes = clientBasisNotes(line);
+  return { ...rest, basis: line.basis.map((b, i) => ({ ...b, note: notes[i]! })) };
+}
+
 export function computeOutlook(facts: BudgetFacts, answers: BudgetAnswers): OutlookResult {
   const caveats: string[] = [];
   const overrides = answers.overrides ?? {};

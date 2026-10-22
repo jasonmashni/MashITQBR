@@ -1,4 +1,4 @@
-import type { BudgetLine, BudgetOutlook } from '@mashit/core';
+import { clientBasisNotes, type BudgetLine, type BudgetOutlook } from '@mashit/core';
 import { formatCurrency, formatPercent, ratingWord, SEMANTIC } from './format.js';
 import type { ConversationStatus, InvestmentModel, ReportModel, ReportProtectionRow, SinceLastRow } from './model.js';
 
@@ -174,8 +174,9 @@ export const BUDGET_CATEGORY_LABEL: Record<BudgetLine['category'], string> = {
   contingency: 'Contingency',
 };
 
+/** The client-facing basis: an account manager override reads "Adjusted by your Mash IT account manager", never the internal reason. */
 export function basisText(line: BudgetLine): string {
-  return line.basis.map((b) => b.note).join('; ');
+  return clientBasisNotes(line).join('; ');
 }
 
 export const PLANNING_LEDE =

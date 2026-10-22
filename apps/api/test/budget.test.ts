@@ -252,6 +252,14 @@ describe('budget overrides', () => {
     expect(published.answers.overrides).toEqual(overrides);
     expect(published.published?.lines.find((l) => l.category === 'support_hours')?.expected).toBe(9000);
     expect(published.published?.totals.expected).toBe(plan.totals.expected);
+
+    // The report gets the final numbers with the client wording, never the reason or the replaced value.
+    const report = await b.budgetForPeriod(s, 'acme', '2028-Q3');
+    const line = report?.outlook?.lines.find((l) => l.category === 'support_hours');
+    expect(line?.expected).toBe(9000);
+    expect(line?.overridden).toBeUndefined();
+    expect(JSON.stringify(report)).not.toContain('Fewer hourly projects');
+    expect(line?.basis[0]?.note).toBe('Adjusted by your Mash IT account manager');
   });
 });
 

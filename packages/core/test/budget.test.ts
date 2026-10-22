@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeOutlook, planVsActual, clientBasisNotes, CLIENT_OVERRIDE_NOTE, type BudgetFacts, type BudgetAnswers, type BudgetLine } from '@mashit/core';
+import { computeOutlook, planVsActual, clientBasisNotes, clientBudgetLine, CLIENT_OVERRIDE_NOTE, type BudgetFacts, type BudgetAnswers, type BudgetLine } from '@mashit/core';
 
 const facts: BudgetFacts = {
   mrr: 5460,
@@ -183,7 +183,7 @@ describe('manual overrides', () => {
     });
     expect(support.basis.length).toBe(2);
     const both = line(withOverrides({ support_hours: { low: 7000, high: 15000, reason: '  ' } }).lines, 'support_hours');
-    expect(both.basis[0].note).toBe('You: adjusted low from $8,000 to $7,000, high from $16,000 to $15,000.');
+    expect(both.basis[0]?.note).toBe('You: adjusted low from $8,000 to $7,000, high from $16,000 to $15,000.');
     expect(both.overridden).toEqual({ low: 8000, high: 16000 });
   });
 
@@ -232,5 +232,10 @@ describe('manual overrides', () => {
     expect(notes.join(' ')).not.toContain('Internal only');
     expect(notes.join(' ')).not.toContain('11,500');
     expect(notes.slice(1)).toEqual(support.basis.slice(1).map((b) => b.note));
+    const safe = clientBudgetLine(support);
+    expect(safe.overridden).toBeUndefined();
+    expect('overridden' in safe).toBe(false);
+    expect(safe.basis.map((b) => b.note)).toEqual(notes);
+    expect(safe.expected).toBe(10000);
   });
 });
