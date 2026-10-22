@@ -508,7 +508,7 @@ export function Workspace() {
         </Tabs.Panel>
 
         <Tabs.Panel value="budget">
-          <BudgetTab clientId={clientId} period={period} onPublished={() => setRefresh((n) => n + 1)} />
+          <BudgetTab clientId={clientId} period={period} lockedPeriods={lockedPeriods} onPublished={() => setRefresh((n) => n + 1)} />
         </Tabs.Panel>
 
         <Tabs.Panel value="studio">

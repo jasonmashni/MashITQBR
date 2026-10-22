@@ -1,5 +1,6 @@
 import {
   classifyInvoiceLine,
+  clientBudgetLine,
   computeOutlook,
   fromRecurringInvoices,
   recurringInvoiceSource,
@@ -13,7 +14,9 @@ import {
   planningPeriodFor,
   planVsActual,
   type BudgetAnswers,
+  type BudgetCategory,
   type BudgetFacts,
+  type BudgetOverride,
   type BudgetOutlook,
   type Client,
   type MetricSnapshot,
@@ -61,6 +64,35 @@ const oneOf = <T extends string>(v: unknown, allowed: readonly T[]): T | undefin
   typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : undefined;
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
+const BUDGET_CATEGORIES: readonly BudgetCategory[] = ['managed_services', 'licensing', 'hardware', 'projects', 'support_hours', 'compliance', 'contingency'];
+const OVERRIDE_MAX = 10_000_000;
+const overrideAmount = (v: unknown): number | undefined => {
+  const n = nonNeg(v);
+  return n !== undefined && n <= OVERRIDE_MAX ? n : undefined;
+};
+
+/** Overrides on known categories with at least one amount in 0..10,000,000; a reason alone is dropped. */
+function sanitizeOverrides(raw: unknown): BudgetAnswers['overrides'] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const o = raw as Record<string, unknown>;
+  const out: NonNullable<BudgetAnswers['overrides']> = {};
+  for (const category of BUDGET_CATEGORIES) {
+    const v = o[category];
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+    const r = v as Record<string, unknown>;
+    const entry: BudgetOverride = {};
+    for (const f of ['low', 'expected', 'high'] as const) {
+      const n = overrideAmount(r[f]);
+      if (n !== undefined) entry[f] = n;
+    }
+    if (Object.keys(entry).length === 0) continue;
+    const reason = text(r['reason'], 200);
+    if (reason) entry.reason = reason;
+    out[category] = entry;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Keep only well-formed answers; anything else is dropped, never guessed. */
 export function sanitizeAnswers(raw: unknown): BudgetAnswers {
   const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
@@ -104,6 +136,8 @@ export function sanitizeAnswers(raw: unknown): BudgetAnswers {
   if (appetite) out.appetite = appetite;
   const notes = text(o['notes'], 2000);
   if (notes) out.notes = notes;
+  const overrides = sanitizeOverrides(o['overrides']);
+  if (overrides) out.overrides = overrides;
   return out;
 }
 
@@ -380,7 +414,12 @@ export async function putBudget(clientId: string, fy: string, body: Record<strin
     updatedAt: new Date().toISOString(),
     updatedBy: currentActor(),
   });
-  await audit('budget.save', `client:${clientId}`, `FY${r.label} answers saved`);
+  const overridden = Object.keys(saved.answers.overrides ?? {}).length;
+  await audit(
+    'budget.save',
+    `client:${clientId}`,
+    `FY${r.label} answers saved${overridden ? `, overrides on ${overridden} ${overridden === 1 ? 'line' : 'lines'}` : ''}`,
+  );
   return ok({ plan: saved });
 }
 
@@ -520,7 +559,8 @@ export async function budgetForPeriod(store: DataStore, clientId: string, period
         fiscalLabel: next.fiscalLabel,
         assumptions: [...snap.assumptions],
         movers: [...snap.movers],
-        lines: snap.lines.map((l) => ({ ...l, basis: l.basis.map((b) => ({ ...b })) })),
+        // Client-safe copies: override reasons and replaced values stay internal.
+        lines: snap.lines.map(clientBudgetLine),
         totals: { ...snap.totals },
         caveats: [...snap.caveats],
       }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { BudgetOutlook } from '@mashit/core';
+import { applyOverride, type BudgetOutlook } from '@mashit/core';
 import { buildPdfDefinition, buildReportModel, renderDeck, renderReportHtml } from '@mashit/report';
 import { anpClient, anpQ1Discussion, anpQ1Shape, anpQ2, anpQ2Discussion, anpQ2Documents, anpQ2Narrative } from './fixtures/anpQ2.js';
 import { h1Titles, slideTexts, textOf, walk } from './pageTools.js';
@@ -267,5 +267,41 @@ describe('since last quarter long details on the deck', () => {
       }
     }
     expect(found).toBe(1);
+  });
+});
+
+describe('planning page with account manager overrides', () => {
+  const support = applyOverride(
+    { category: 'support_hours', low: 8000, expected: 34808, high: 40000, basis: [{ source: 'halo', note: 'Non-recurring invoiced over the last 4 quarters' }] },
+    { expected: 12000, reason: 'Internal reason the client never sees' },
+  );
+  const adjusted: BudgetOutlook = {
+    ...outlook,
+    lines: [...outlook.lines, support],
+    totals: { low: 94500, expected: 102300, high: 137500 },
+  };
+  const planning = buildReportModel({ ...args, budget: { outlook: adjusted } });
+
+  const check = (text: string) => {
+    expect(text).toContain('$12,000');
+    expect(text).not.toContain('$34,808');
+    expect(text).toContain('Adjusted by your Mash IT account manager');
+    expect(text).not.toContain('Internal reason');
+    expect(text).not.toContain('You: adjusted');
+    expect(text).not.toMatch(/\bwas \$/);
+    expect(text).toContain('Non-recurring invoiced over the last 4 quarters');
+  };
+
+  it('prints the final numbers and the client-safe basis in the PDF', () => {
+    check(JSON.stringify(buildPdfDefinition(planning)));
+  });
+
+  it('prints the final numbers and the client-safe basis in the HTML', () => {
+    check(renderReportHtml(planning));
+  });
+
+  it('prints the final numbers and the client-safe basis on the deck', async () => {
+    const slides = await slideTexts(await renderDeck(planning));
+    check(JSON.stringify(slides.find((s) => s[0] === 'Planning your FY2027 IT budget')));
   });
 });

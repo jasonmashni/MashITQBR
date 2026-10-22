@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeOutlook, planVsActual, type BudgetFacts, type BudgetAnswers, type BudgetLine } from '@mashit/core';
+import { computeOutlook, planVsActual, clientBasisNotes, clientBudgetLine, CLIENT_OVERRIDE_NOTE, type BudgetFacts, type BudgetAnswers, type BudgetLine } from '@mashit/core';
 
 const facts: BudgetFacts = {
   mrr: 5460,
@@ -150,5 +150,92 @@ describe('planVsActual', () => {
     expect(planVsActual(100000, [24000]).note.startsWith('On plan')).toBe(true);
     expect(planVsActual(100000, [22000]).note.startsWith('Under plan')).toBe(true);
     expect(planVsActual(100000, [28000]).note.startsWith('Over plan')).toBe(true);
+  });
+});
+
+describe('manual overrides', () => {
+  const withOverrides = (overrides: BudgetAnswers['overrides']) => computeOutlook(facts, { ...answers, overrides });
+
+  it('changes nothing when there are no overrides', () => {
+    const plain = computeOutlook(facts, answers);
+    expect(withOverrides(undefined)).toEqual(plain);
+    expect(withOverrides({})).toEqual(plain);
+    for (const l of plain.lines) expect(l.overridden).toBeUndefined();
+  });
+
+  it('replaces only the provided fields and records the computed value', () => {
+    const out = withOverrides({ support_hours: { expected: 10000 } });
+    const support = line(out.lines, 'support_hours');
+    expect(triple(support)).toEqual([8000, 10000, 16000]);
+    expect(support.overridden).toEqual({ expected: 11500 });
+  });
+
+  it('rounds overrides to whole dollars', () => {
+    const support = line(withOverrides({ support_hours: { expected: 10000.6 } }).lines, 'support_hours');
+    expect(support.expected).toBe(10001);
+  });
+
+  it('prepends a basis note naming each changed field and the reason', () => {
+    const support = line(withOverrides({ support_hours: { expected: 10000, reason: 'Fewer projects billed hourly' } }).lines, 'support_hours');
+    expect(support.basis[0]).toEqual({
+      source: 'answer',
+      note: 'You: adjusted expected from $11,500 to $10,000. Reason: Fewer projects billed hourly',
+    });
+    expect(support.basis.length).toBe(2);
+    const both = line(withOverrides({ support_hours: { low: 7000, high: 15000, reason: '  ' } }).lines, 'support_hours');
+    expect(both.basis[0]?.note).toBe('You: adjusted low from $8,000 to $7,000, high from $16,000 to $15,000.');
+    expect(both.overridden).toEqual({ low: 8000, high: 16000 });
+  });
+
+  it('clamps the computed neighbours to keep low <= expected <= high', () => {
+    // Expected below the computed low pulls low down.
+    expect(triple(line(withOverrides({ support_hours: { expected: 5000 } }).lines, 'support_hours'))).toEqual([5000, 5000, 16000]);
+    // Expected above the computed high pushes high up.
+    expect(triple(line(withOverrides({ support_hours: { expected: 20000 } }).lines, 'support_hours'))).toEqual([8000, 20000, 20000]);
+    // Low above the computed expected and high pushes both up.
+    expect(triple(line(withOverrides({ support_hours: { low: 18000 } }).lines, 'support_hours'))).toEqual([18000, 18000, 18000]);
+    // High below the computed low and expected pulls both down.
+    expect(triple(line(withOverrides({ support_hours: { high: 6000 } }).lines, 'support_hours'))).toEqual([6000, 6000, 6000]);
+    // The overridden value never moves; only the neighbours do.
+    const s = line(withOverrides({ support_hours: { low: 3000, high: 9000 } }).lines, 'support_hours');
+    expect(triple(s)).toEqual([3000, 9000, 9000]);
+  });
+
+  it('computes contingency from the expected sum after overrides', () => {
+    const out = withOverrides({ support_hours: { expected: 1500 } });
+    const others = out.lines.filter((l) => l.category !== 'contingency');
+    const sum = others.reduce((s, l) => s + l.expected, 0);
+    expect(line(out.lines, 'contingency').expected).toBe(Math.round(sum * 0.1));
+    expect(line(out.lines, 'contingency').expected).toBe(line(computeOutlook(facts, answers).lines, 'contingency').expected - 1000);
+  });
+
+  it('lets contingency itself be overridden', () => {
+    const out = withOverrides({ support_hours: { expected: 1500 }, contingency: { expected: 5000, high: 5000 } });
+    const c = line(out.lines, 'contingency');
+    expect(triple(c)).toEqual([0, 5000, 5000]);
+    expect(c.overridden?.expected).toBe(line(withOverrides({ support_hours: { expected: 1500 } }).lines, 'contingency').expected);
+  });
+
+  it('sums the final lines into the totals', () => {
+    const out = withOverrides({ support_hours: { expected: 1500 }, hardware: { low: 20000, high: 30000 } });
+    expect(out.totals.low).toBe(out.lines.reduce((s, l) => s + l.low, 0));
+    expect(out.totals.expected).toBe(out.lines.reduce((s, l) => s + l.expected, 0));
+    expect(out.totals.high).toBe(out.lines.reduce((s, l) => s + l.high, 0));
+    expect(line(out.lines, 'hardware').high).toBe(30000);
+  });
+
+  it('gives the client wording in place of the internal reason', () => {
+    const support = line(withOverrides({ support_hours: { expected: 10000, reason: 'Internal only' } }).lines, 'support_hours');
+    const notes = clientBasisNotes(support);
+    expect(notes[0]).toBe(CLIENT_OVERRIDE_NOTE);
+    expect(CLIENT_OVERRIDE_NOTE).toBe('Adjusted by your Mash IT account manager');
+    expect(notes.join(' ')).not.toContain('Internal only');
+    expect(notes.join(' ')).not.toContain('11,500');
+    expect(notes.slice(1)).toEqual(support.basis.slice(1).map((b) => b.note));
+    const safe = clientBudgetLine(support);
+    expect(safe.overridden).toBeUndefined();
+    expect('overridden' in safe).toBe(false);
+    expect(safe.basis.map((b) => b.note)).toEqual(notes);
+    expect(safe.expected).toBe(10000);
   });
 });

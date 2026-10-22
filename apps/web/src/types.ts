@@ -307,6 +307,16 @@ export interface BudgetLine {
   expected: number;
   high: number;
   basis: Array<{ source: BudgetSource; note: string }>;
+  /** Computed values an account manager override replaced (internal; shown as "was $34,808"). */
+  overridden?: Partial<Record<BudgetOverrideField, number>>;
+}
+export type BudgetOverrideField = 'low' | 'expected' | 'high';
+export interface BudgetOverride {
+  low?: number;
+  expected?: number;
+  high?: number;
+  /** Internal; the client page says "Adjusted by your Mash IT account manager". */
+  reason?: string;
 }
 export interface BudgetAnswers {
   headcountChange?: number;
@@ -319,6 +329,7 @@ export interface BudgetAnswers {
   copilotSeatPrice?: number;
   appetite?: 'lean' | 'balanced' | 'cautious';
   notes?: string;
+  overrides?: Partial<Record<BudgetCategory, BudgetOverride>>;
 }
 export interface BudgetContextItem {
   title: string;
