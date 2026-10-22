@@ -13,6 +13,7 @@ import {
   List,
   Loader,
   NumberInput,
+  Popover,
   SegmentedControl,
   Select,
   SimpleGrid,
@@ -22,25 +23,30 @@ import {
   Textarea,
   TextInput,
   Title,
+  Tooltip,
   UnstyledButton,
 } from '@mantine/core';
 import { IconPlus, IconTrash } from '@tabler/icons-react';
 import { api, ApiError } from '../../api.js';
-import type { BudgetAnswers, BudgetPlanRecord } from '../../types.js';
+import type { BudgetAnswers, BudgetCategory, BudgetLine, BudgetOverrideField, BudgetPlanRecord } from '../../types.js';
 import { toastError, toastOk } from '../../toast.js';
 import {
   BUDGET_STEPS,
   CATEGORY_LABEL,
   MONTHS,
   SOURCE_LABEL,
+  cellEditLabel,
   hasUnpublishedChanges,
   linesToSentences,
   money,
+  overrideCell,
   plannerYear,
   pvaTone,
   quarterLabel,
+  removeOverride,
   reviewLabel,
   sentencesToLines,
+  setCellOverride,
   stepDone,
   type BudgetKnownFact,
   type BudgetPlanVsActual,
@@ -68,7 +74,120 @@ function Question({ label, hint, children }: { label: string; hint: string; chil
   );
 }
 
-export function BudgetTab({ clientId, period, onPublished }: { clientId: string; period: string; onPublished?: () => void }) {
+const NUM_STYLE = { fontVariantNumeric: 'tabular-nums' } as const;
+
+/**
+ * One Low, Expected or High cell of the outlook. Clicking opens a small
+ * editor; an overridden value is bold with the computed value it replaced
+ * underneath ("was $34,808", internal only).
+ */
+function OutlookCell({
+  line,
+  field,
+  reason,
+  lock,
+  busy,
+  onSave,
+}: {
+  line: BudgetLine;
+  field: BudgetOverrideField;
+  reason: string;
+  lock: string | undefined;
+  busy: boolean;
+  onSave: (value: number, reason: string) => Promise<boolean>;
+}) {
+  const cell = overrideCell(line, field);
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState<number | ''>(cell.value);
+  const [why, setWhy] = useState(reason);
+  const label = cellEditLabel(field, line.category);
+
+  function start() {
+    setValue(cell.value);
+    setWhy(reason);
+    setOpen(true);
+  }
+
+  async function submit() {
+    if (value === '' || value < 0) return;
+    if (await onSave(value, why)) setOpen(false);
+  }
+
+  return (
+    <Table.Td ta="right" style={NUM_STYLE}>
+      <Popover opened={open} onChange={setOpen} position="bottom-end" withArrow shadow="md" trapFocus>
+        <Popover.Target>
+          <Tooltip label={lock} disabled={!lock} multiline w={300}>
+            <UnstyledButton
+              aria-label={label}
+              aria-disabled={lock ? true : undefined}
+              onClick={() => {
+                if (lock || busy) return;
+                if (open) setOpen(false);
+                else start();
+              }}
+              style={{
+                textAlign: 'right',
+                cursor: lock ? 'not-allowed' : 'pointer',
+                borderBottom: lock ? undefined : '1px dashed var(--mantine-color-gray-4)',
+              }}
+            >
+              <Text span size="sm" fw={cell.was !== undefined ? 700 : undefined} c={lock ? 'dimmed' : undefined} style={NUM_STYLE}>
+                {money(cell.value)}
+              </Text>
+            </UnstyledButton>
+          </Tooltip>
+        </Popover.Target>
+        <Popover.Dropdown>
+          <Stack gap="xs" w={240}>
+            <Text size="sm" fw={600}>{label}</Text>
+            <NumberInput
+              aria-label="Amount"
+              value={value}
+              onChange={(v) => setValue(typeof v === 'number' && Number.isFinite(v) ? v : '')}
+              prefix="$"
+              min={0}
+              max={10_000_000}
+              allowNegative={false}
+              allowDecimal={false}
+              thousandSeparator=","
+              data-autofocus
+            />
+            <TextInput
+              aria-label="Reason"
+              placeholder="Reason (internal, optional)"
+              maxLength={200}
+              value={why}
+              onChange={(e) => setWhy(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void submit();
+              }}
+            />
+            <Text size="xs" c="dimmed">The client page shows the new number and says it was adjusted by your account manager. The reason stays internal.</Text>
+            <Group gap="xs" justify="flex-end">
+              <Button variant="default" size="xs" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button size="xs" loading={busy} disabled={value === ''} onClick={() => void submit()}>Save</Button>
+            </Group>
+          </Stack>
+        </Popover.Dropdown>
+      </Popover>
+      {cell.caption && <Text size="xs" c="dimmed" style={NUM_STYLE}>{cell.caption}</Text>}
+    </Table.Td>
+  );
+}
+
+export function BudgetTab({
+  clientId,
+  period,
+  lockedPeriods,
+  onPublished,
+}: {
+  clientId: string;
+  period: string;
+  /** Lock sentence per locked quarter; the planning quarter's one disables overrides. */
+  lockedPeriods?: Record<string, string>;
+  onPublished?: () => void;
+}) {
   const [loading, setLoading] = useState(true);
   const [startMonth, setStartMonth] = useState(1);
   const [known, setKnown] = useState<BudgetKnownFact[]>([]);
@@ -141,10 +260,10 @@ export function BudgetTab({ clientId, period, onPublished }: { clientId: string;
 
   const set = (patch: Partial<BudgetAnswers>) => setAnswers((a) => ({ ...a, ...patch }));
 
-  async function save(): Promise<boolean> {
+  async function save(next: BudgetAnswers = answers): Promise<boolean> {
     if (fy === null) return false;
     try {
-      const r = await api.putBudget(clientId, fy, { answers, assumptions: linesToSentences(assumptions), movers: linesToSentences(movers) });
+      const r = await api.putBudget(clientId, fy, { answers: next, assumptions: linesToSentences(assumptions), movers: linesToSentences(movers) });
       adopt(r.plan);
       return true;
     } catch (e) {
@@ -187,10 +306,30 @@ export function BudgetTab({ clientId, period, onPublished }: { clientId: string;
     }
   }
 
+  /** Saves answers with an override change, then re-runs the outlook so totals and contingency follow. */
+  async function applyOverrides(next: BudgetAnswers, done: string): Promise<boolean> {
+    if (fy === null) return false;
+    setBusy('outlook');
+    try {
+      if (!(await save(next))) return false;
+      adopt((await api.recomputeBudget(clientId, fy)).plan);
+      toastOk(done);
+      return true;
+    } catch (e) {
+      toastError('Could not update the outlook', e);
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }
+
   if (loading || fy === null) return <Center h={160}><Loader /></Center>;
 
   const fyPlanningPeriod = planningPeriodFor(fy, startMonth);
   const publishLabel = `Put on the ${quarterLabel(fyPlanningPeriod)} report`;
+  const planLock = lockedPeriods?.[fyPlanningPeriod];
+  const saveCell = (category: BudgetCategory, field: BudgetOverrideField) => (value: number, reason: string) =>
+    applyOverrides(setCellOverride(answers, category, field, value, reason), `${CATEGORY_LABEL[category]} ${field} set to ${money(value)}.`);
   const fyOptions = [year.currentLabel, year.currentLabel + 1].map((l) => ({ value: String(l), label: `FY${l}` }));
 
   return (
@@ -448,10 +587,39 @@ export function BudgetTab({ clientId, period, onPublished }: { clientId: string;
                 <Table.Tbody>
                   {plan.lines.map((l) => (
                     <Table.Tr key={l.category}>
-                      <Table.Td>{CATEGORY_LABEL[l.category]}</Table.Td>
-                      <Table.Td ta="right" style={{ fontVariantNumeric: 'tabular-nums' }}>{money(l.low)}</Table.Td>
-                      <Table.Td ta="right" style={{ fontVariantNumeric: 'tabular-nums' }}>{money(l.expected)}</Table.Td>
-                      <Table.Td ta="right" style={{ fontVariantNumeric: 'tabular-nums' }}>{money(l.high)}</Table.Td>
+                      <Table.Td>
+                        <Text size="sm">{CATEGORY_LABEL[l.category]}</Text>
+                        {answers.overrides?.[l.category] && (
+                          <Tooltip label={planLock} disabled={!planLock} multiline w={300}>
+                            <Anchor
+                              component="button"
+                              type="button"
+                              size="xs"
+                              aria-label={`Reset ${CATEGORY_LABEL[l.category]} to the computed figures`}
+                              aria-disabled={planLock ? true : undefined}
+                              c={planLock ? 'dimmed' : undefined}
+                              style={planLock ? { cursor: 'not-allowed' } : undefined}
+                              onClick={() => {
+                                if (planLock || busy !== null) return;
+                                void applyOverrides(removeOverride(answers, l.category), `${CATEGORY_LABEL[l.category]} is back to the computed figures.`);
+                              }}
+                            >
+                              Reset
+                            </Anchor>
+                          </Tooltip>
+                        )}
+                      </Table.Td>
+                      {(['low', 'expected', 'high'] as const).map((f) => (
+                        <OutlookCell
+                          key={f}
+                          line={l}
+                          field={f}
+                          reason={answers.overrides?.[l.category]?.reason ?? ''}
+                          lock={planLock}
+                          busy={busy !== null}
+                          onSave={saveCell(l.category, f)}
+                        />
+                      ))}
                       <Table.Td>
                         <Stack gap={2}>
                           {l.basis.map((b, i) => (

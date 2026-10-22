@@ -1,6 +1,6 @@
 // Pure helpers for the Budget tab (kept out of the component so they test in node).
 import { fiscalYearOf, isPlanningPeriod, parsePeriod, planningPeriodFor } from '@mashit/core';
-import type { BudgetAnswers, BudgetCategory, BudgetContextItem, BudgetPlanRecord, BudgetSource } from '../../types.js';
+import type { BudgetAnswers, BudgetCategory, BudgetContextItem, BudgetLine, BudgetOverrideField, BudgetPlanRecord, BudgetSource } from '../../types.js';
 
 export const MONTHS = [
   'January',
@@ -149,4 +149,36 @@ export function hasUnpublishedChanges(plan: BudgetPlanRecord): boolean {
   const working = JSON.stringify([plan.lines, plan.totals, plan.assumptions, plan.movers, plan.caveats, plan.answers.workstationUnitCost ?? null]);
   const onReport = JSON.stringify([snap.lines, snap.totals, snap.assumptions, snap.movers, snap.caveats, snap.unitCost ?? null]);
   return working !== onReport;
+}
+
+// ── Outlook cell overrides ───────────────────────────────────────────────────
+
+/** "Edit expected for Support hours" */
+export const cellEditLabel = (field: BudgetOverrideField, category: BudgetCategory): string => `Edit ${field} for ${CATEGORY_LABEL[category]}`;
+
+/**
+ * Answers with one outlook cell overridden. The reason replaces the
+ * category's reason (trimmed; blank removes it). A negative or non-finite
+ * value leaves the answers unchanged.
+ */
+export function setCellOverride(answers: BudgetAnswers, category: BudgetCategory, field: BudgetOverrideField, value: number, reason?: string): BudgetAnswers {
+  if (!Number.isFinite(value) || value < 0) return answers;
+  const { reason: _old, ...current } = answers.overrides?.[category] ?? {};
+  const why = reason?.trim();
+  const next = { ...current, [field]: Math.round(value), ...(why ? { reason: why } : {}) };
+  return { ...answers, overrides: { ...answers.overrides, [category]: next } };
+}
+
+/** Answers without the category's override; the overrides map goes away when it empties. */
+export function removeOverride(answers: BudgetAnswers, category: BudgetCategory): BudgetAnswers {
+  if (!answers.overrides || !(category in answers.overrides)) return answers;
+  const { [category]: _removed, ...rest } = answers.overrides;
+  const { overrides: _all, ...others } = answers;
+  return Object.keys(rest).length ? { ...others, overrides: rest } : others;
+}
+
+/** What an outlook cell shows: the final value, plus the computed one an override replaced. */
+export function overrideCell(line: BudgetLine, field: BudgetOverrideField): { value: number; was?: number; caption?: string } {
+  const was = line.overridden?.[field];
+  return was === undefined ? { value: line[field] } : { value: line[field], was, caption: `was ${money(was)}` };
 }

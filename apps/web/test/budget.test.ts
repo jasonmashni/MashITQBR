@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { hasUnpublishedChanges, linesToSentences, quarterLabel, plannerYear, sentencesToLines, stepDone, pvaTone, FISCAL_MONTH_OPTIONS, money } from '../src/pages/workspace/budget.js';
+import { cellEditLabel, overrideCell, removeOverride, setCellOverride, hasUnpublishedChanges, linesToSentences, quarterLabel, plannerYear, sentencesToLines, stepDone, pvaTone, FISCAL_MONTH_OPTIONS, money } from '../src/pages/workspace/budget.js';
+import type { BudgetAnswers, BudgetLine } from '../src/types.js';
 
 describe('budget planner helpers', () => {
   it('plans next fiscal year in the planning quarter and the current one otherwise', () => {
@@ -63,5 +64,50 @@ describe('unpublished changes', () => {
     expect(hasUnpublishedChanges({ ...base, totals: { low: 1, expected: 5, high: 9 } })).toBe(true);
     expect(hasUnpublishedChanges({ ...base, movers: ['B.'] })).toBe(true);
     expect(hasUnpublishedChanges({ ...base, answers: { workstationUnitCost: 2000 } })).toBe(true);
+  });
+});
+
+describe('outlook cell overrides', () => {
+  const base: BudgetAnswers = { appetite: 'lean', overrides: { hardware: { high: 30000, reason: 'Quote in hand' } } };
+
+  it('sets one field on a category and keeps the other answers and overrides', () => {
+    const next = setCellOverride(base, 'support_hours', 'expected', 12000, 'Fewer hourly projects');
+    expect(next).toEqual({
+      appetite: 'lean',
+      overrides: { hardware: { high: 30000, reason: 'Quote in hand' }, support_hours: { expected: 12000, reason: 'Fewer hourly projects' } },
+    });
+    expect(base.overrides?.support_hours).toBeUndefined();
+  });
+
+  it('adds a field to an existing override, trims the reason and drops an empty one', () => {
+    expect(setCellOverride(base, 'hardware', 'low', 20000, '  New quote  ').overrides?.hardware).toEqual({ high: 30000, low: 20000, reason: 'New quote' });
+    expect(setCellOverride(base, 'hardware', 'low', 20000, '   ').overrides?.hardware).toEqual({ high: 30000, low: 20000 });
+    expect(setCellOverride({}, 'contingency', 'expected', 0).overrides).toEqual({ contingency: { expected: 0 } });
+  });
+
+  it('rounds to whole dollars and refuses negative or non-finite values', () => {
+    expect(setCellOverride({}, 'projects', 'high', 1234.56).overrides?.projects).toEqual({ high: 1235 });
+    expect(setCellOverride(base, 'projects', 'high', -1)).toBe(base);
+    expect(setCellOverride(base, 'projects', 'high', Number.NaN)).toBe(base);
+  });
+
+  it('removes a category override and drops the map when it empties', () => {
+    const two = setCellOverride(base, 'support_hours', 'expected', 12000);
+    expect(removeOverride(two, 'hardware').overrides).toEqual({ support_hours: { expected: 12000 } });
+    expect(removeOverride(base, 'hardware')).toEqual({ appetite: 'lean' });
+    expect('overrides' in removeOverride(base, 'hardware')).toBe(false);
+    expect(removeOverride({ appetite: 'lean' }, 'hardware')).toEqual({ appetite: 'lean' });
+  });
+
+  it('reads what a cell shows: the final value and the computed one it replaced', () => {
+    const line: BudgetLine = { category: 'support_hours', low: 8000, expected: 12000, high: 16000, basis: [], overridden: { expected: 34808 } };
+    expect(overrideCell(line, 'expected')).toEqual({ value: 12000, was: 34808, caption: 'was $34,808' });
+    expect(overrideCell(line, 'low')).toEqual({ value: 8000 });
+    expect(overrideCell({ ...line, overridden: undefined }, 'expected')).toEqual({ value: 12000 });
+  });
+
+  it('names the cell for assistive tech', () => {
+    expect(cellEditLabel('expected', 'support_hours')).toBe('Edit expected for Support hours');
+    expect(cellEditLabel('low', 'managed_services')).toBe('Edit low for Managed services');
   });
 });
