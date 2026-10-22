@@ -625,7 +625,7 @@ export function BudgetTab({
                           {l.basis.map((b, i) => (
                             <Text key={i} size="xs" c="dimmed">
                               <Badge size="xs" variant="light" color="slate" mr={4} style={{ textTransform: 'none' }}>{SOURCE_LABEL[b.source]}</Badge>
-                              {b.note}
+                              {b.source === 'answer' ? b.note.replace(/^You: /, '') : b.note}
                             </Text>
                           ))}
                         </Stack>
