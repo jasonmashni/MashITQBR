@@ -396,6 +396,22 @@ export interface BudgetLine {
   expected: number;
   high: number;
   basis: Array<{ source: BudgetSource; note: string }>;
+  /**
+   * The computed values an account manager override replaced, by field
+   * (internal only: the workspace shows "was $34,808"; the report never does).
+   */
+  overridden?: Partial<Record<BudgetOverrideField, number>>;
+}
+
+export type BudgetOverrideField = 'low' | 'expected' | 'high';
+
+/** An account manager's adjustment to one outlook line. Only the provided fields replace the computed ones. */
+export interface BudgetOverride {
+  low?: number;
+  expected?: number;
+  high?: number;
+  /** Internal reason; the client sees "Adjusted by your Mash IT account manager" instead. */
+  reason?: string;
 }
 
 /** What only the client or the account manager can tell us. */
@@ -410,6 +426,8 @@ export interface BudgetAnswers {
   copilotSeatPrice?: number;
   appetite?: 'lean' | 'balanced' | 'cautious';
   notes?: string;
+  /** Account manager adjustments to computed lines, applied after the math. */
+  overrides?: Partial<Record<BudgetCategory, BudgetOverride>>;
 }
 
 /** The client-facing part of a budget plan (what the report prints). */

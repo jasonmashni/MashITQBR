@@ -1,4 +1,4 @@
-import type { BudgetAnswers, BudgetCategory, BudgetLine, BudgetSource } from './types.js';
+import type { BudgetAnswers, BudgetCategory, BudgetLine, BudgetOverride, BudgetOverrideField, BudgetSource } from './types.js';
 
 /**
  * Deterministic twelve-month IT budget outlook. Every number traces to a data
@@ -259,8 +259,58 @@ function contingency(expectedSum: number, answers: BudgetAnswers): BudgetLine {
   ]);
 }
 
+/** Starts the internal basis note an override adds; the client sees CLIENT_OVERRIDE_NOTE instead. */
+export const OVERRIDE_NOTE_PREFIX = 'You: adjusted ';
+export const CLIENT_OVERRIDE_NOTE = 'Adjusted by your Mash IT account manager';
+
+const OVERRIDE_FIELDS: BudgetOverrideField[] = ['low', 'expected', 'high'];
+
+const isAmount = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+
+/**
+ * Applies an account manager override to a computed line. Provided fields
+ * replace the computed ones; the computed neighbours are clamped so low <=
+ * expected <= high. An overridden value never moves for a computed one. When
+ * overrides contradict each other, expected wins over low and high, and high
+ * wins over low.
+ */
+export function applyOverride(computed: BudgetLine, override: BudgetOverride | undefined): BudgetLine {
+  if (!override) return computed;
+  const given: Partial<Record<BudgetOverrideField, number>> = {};
+  for (const f of OVERRIDE_FIELDS) {
+    const v = override[f];
+    if (isAmount(v)) given[f] = Math.round(v);
+  }
+  if (Object.keys(given).length === 0) return computed;
+  let low = given.low ?? computed.low;
+  let expected = given.expected ?? computed.expected;
+  let high = given.high ?? computed.high;
+  if (given.expected === undefined) {
+    if (given.low !== undefined) expected = Math.max(expected, low);
+    if (given.high !== undefined) expected = Math.min(expected, high);
+  }
+  low = Math.min(low, expected);
+  high = Math.max(high, expected);
+  const overridden: Partial<Record<BudgetOverrideField, number>> = {};
+  const changes: string[] = [];
+  for (const f of OVERRIDE_FIELDS) {
+    if (given[f] === undefined) continue;
+    overridden[f] = computed[f];
+    changes.push(`${f} from ${money(computed[f])} to ${money(given[f])}`);
+  }
+  const reason = (override.reason ?? '').trim();
+  const text = `${OVERRIDE_NOTE_PREFIX}${changes.join(', ')}.${reason ? ` Reason: ${reason}` : ''}`;
+  return { ...computed, low, expected, high, basis: [note('answer', text), ...computed.basis], overridden };
+}
+
+/** Basis notes safe for the client: an override's internal note becomes CLIENT_OVERRIDE_NOTE. */
+export function clientBasisNotes(line: BudgetLine): string[] {
+  return line.basis.map((b) => (b.source === 'answer' && b.note.startsWith(OVERRIDE_NOTE_PREFIX) ? CLIENT_OVERRIDE_NOTE : b.note));
+}
+
 export function computeOutlook(facts: BudgetFacts, answers: BudgetAnswers): OutlookResult {
   const caveats: string[] = [];
+  const overrides = answers.overrides ?? {};
   const lines: BudgetLine[] = [
     managedServices(facts, answers, caveats),
     licensing(facts, answers, caveats),
@@ -268,9 +318,9 @@ export function computeOutlook(facts: BudgetFacts, answers: BudgetAnswers): Outl
     projects(facts, answers),
     supportHours(facts, caveats),
     compliance(answers),
-  ];
+  ].map((l) => applyOverride(l, overrides[l.category]));
   const expectedSum = lines.reduce((s, l) => s + l.expected, 0);
-  lines.push(contingency(expectedSum, answers));
+  lines.push(applyOverride(contingency(expectedSum, answers), overrides.contingency));
   const totals = {
     low: lines.reduce((s, l) => s + l.low, 0),
     expected: lines.reduce((s, l) => s + l.expected, 0),
