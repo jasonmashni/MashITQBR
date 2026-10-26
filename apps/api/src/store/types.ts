@@ -94,6 +94,8 @@ export interface QbrRecord {
   dueRemindedAt?: string;
   /** The last sync that was refused because every collector failed (shown on the Data tab). */
   lastSyncAttempt?: { at: string; warnings: string[] };
+  /** The quarter's QBR ticket in Halo; tickets pushed from this QBR are its children. */
+  haloParentTicket?: { id: string; createdAt: string };
   updatedAt: string;
 }
 

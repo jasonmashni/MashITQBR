@@ -63,13 +63,39 @@ export async function haloToken(http: HttpTransport, cfg: HaloCfg): Promise<stri
   return token;
 }
 
+/**
+ * Halo's own reason for a failed call, so the error names the bad field
+ * instead of just the status. Halo answers with a JSON string, a
+ * `{ message }`-style object or plain text depending on the failure.
+ */
+export function haloErrorDetail(json: unknown): string {
+  let detail = '';
+  if (typeof json === 'string') detail = json;
+  else if (json && typeof json === 'object') {
+    const o = json as Json;
+    for (const k of ['message', 'Message', 'error_description', 'error', 'title', 'detail']) {
+      if (typeof o[k] === 'string' && o[k]) {
+        detail = o[k] as string;
+        break;
+      }
+    }
+  }
+  detail = detail.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return detail.length > 300 ? `${detail.slice(0, 299)}…` : detail;
+}
+
+function haloError(status: number, path: string, json: unknown): Error {
+  const detail = haloErrorDetail(json);
+  return new Error(`Halo responded ${status} for /api/${path}${detail ? `: ${detail}` : ''}`);
+}
+
 /** Authenticated GET against `{baseUrl}/api/{path}` with query params. */
 export async function haloGet(http: HttpTransport, cfg: HaloCfg, path: string, params: Record<string, string | number | boolean> = {}): Promise<unknown> {
   const token = await haloToken(http, cfg);
   const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)]))).toString();
   const url = `${cfg.baseUrl.replace(/\/+$/, '')}/api/${path}${qs ? `?${qs}` : ''}`;
   const res = await http.request({ method: 'GET', url, headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
-  if (res.status < 200 || res.status >= 300) throw new Error(`Halo responded ${res.status} for /api/${path}`);
+  if (res.status < 200 || res.status >= 300) throw haloError(res.status, path, res.json);
   return res.json;
 }
 
@@ -83,7 +109,7 @@ export async function haloPost(http: HttpTransport, cfg: HaloCfg, path: string, 
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(payload),
   });
-  if (res.status < 200 || res.status >= 300) throw new Error(`Halo responded ${res.status} for /api/${path}`);
+  if (res.status < 200 || res.status >= 300) throw haloError(res.status, path, res.json);
   return res.json;
 }
 
@@ -1465,6 +1491,8 @@ export interface HaloTicketInput {
   agentId?: string;
   team?: string;
   priorityId?: string;
+  /** Halo ticket id to file this ticket under as a child (`parent_id`). */
+  parentId?: string;
 }
 
 /** Create a Halo ticket with full field control. POST /api/Tickets takes an array. */
@@ -1475,13 +1503,50 @@ export async function createHaloTicket(http: HttpTransport, cfg: HaloCfg, input:
   if (input.agentId) ticket['agent_id'] = Number(input.agentId);
   if (input.team) ticket['team'] = input.team;
   if (input.priorityId) ticket['priority_id'] = Number(input.priorityId);
+  if (input.parentId) ticket['parent_id'] = Number(input.parentId);
 
-  const json = await haloPost(http, cfg, 'Tickets', [ticket]);
+  return createdRef(await haloPost(http, cfg, 'Tickets', [ticket]), 'ticket');
+}
+
+/** The id and status of the record a Halo array POST created. */
+function createdRef(json: unknown, what: string): { id: string; status?: string } {
   const created = Array.isArray(json) ? (json[0] as Json | undefined) : (json as Json | null) ?? undefined;
   const id = created?.['id'];
-  if (id === undefined || id === null) throw new Error('Halo ticket creation returned no id.');
+  if (id === undefined || id === null) throw new Error(`Halo ${what} creation returned no id.`);
   const status = firstStr(created!, ['status_name', 'status']) ?? (num(created!['status_id']) !== undefined ? `status ${String(created!['status_id'])}` : undefined);
   return { id: String(id), status };
+}
+
+export interface HaloOpportunityInput {
+  summary: string;
+  details: string;
+  clientId?: string;
+  /** Estimated value in whole currency units. */
+  value?: number;
+  valueKind?: 'recurring' | 'one_time';
+}
+
+/** Create a Halo opportunity. POST /api/Opportunities takes the same array of ticket records as /api/Tickets. */
+export async function createHaloOpportunity(http: HttpTransport, cfg: HaloCfg, input: HaloOpportunityInput): Promise<{ id: string; status?: string }> {
+  const opp: Json = { summary: input.summary, details: input.details };
+  if (input.clientId) opp['client_id'] = Number.isFinite(Number(input.clientId)) ? Number(input.clientId) : input.clientId;
+  if (input.value !== undefined && Number.isFinite(input.value)) opp[input.valueKind === 'recurring' ? 'oppvalue_monthly' : 'oppvalue_oneoff'] = input.value;
+
+  return createdRef(await haloPost(http, cfg, 'Opportunities', [opp]), 'opportunity');
+}
+
+/**
+ * Whether a Halo ticket can still take children: false when Halo no longer
+ * has it (404) or reports it deleted. Any other failure counts as usable, so a
+ * Halo hiccup never spawns a duplicate parent.
+ */
+export async function haloTicketUsable(http: HttpTransport, cfg: HaloCfg, id: string): Promise<boolean> {
+  try {
+    const t = (await haloGet(http, cfg, `Tickets/${encodeURIComponent(id)}`)) as Json | null;
+    return !(t && (t['deleted'] === true || t['deleted'] === 1));
+  } catch (e) {
+    return !(e instanceof Error && /^Halo responded 404\b/.test(e.message));
+  }
 }
 
 // ── Suggested conversations (workstream E) ─────────────────────────────────

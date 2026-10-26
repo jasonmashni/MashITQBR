@@ -54,7 +54,7 @@ import { audit } from './audit.js';
 import type { HeaderGet, Principal } from './auth.js';
 import { graphPost, graphTokenFrom, validEmails, type FetchLike } from './graph.js';
 import { directHaloConn, importHaloClients, listOrgs, syncClientMetrics, testConnection, type Integrations } from './integrationsService.js';
-import { pushAction, type PushInput } from './actions.js';
+import { ensureQbrParentTicket, pushAction, type PushInput } from './actions.js';
 import { buildEmailDraft, qbrEmailBody, qbrEmailSubject } from './emailDraft.js';
 import { clientInboxAddress, inboxConfigFromEnv, pollReportInbox } from './reportInbox.js';
 import {
@@ -1240,6 +1240,42 @@ export async function deleteOpportunity(clientId: string, id: string): Promise<A
   return ok({ deleted: id });
 }
 
+/**
+ * The quarter's QBR ticket for a Halo ticket push: created on first use and
+ * remembered on the QBR record. Undefined when only the legacy MCP path is
+ * configured. A failure stops the push, so no ticket lands outside its QBR.
+ */
+async function qbrParentFor(
+  intg: Integrations,
+  clientId: string,
+  period: string,
+  clientName: string,
+  haloRef: string | undefined,
+  fields: { ticketTypeId?: string; agentId?: string; team?: string },
+): Promise<string | undefined> {
+  const existing = await getDataStore().getQbr(clientId, period);
+  let parent: { id: string; created: boolean } | undefined;
+  try {
+    parent = await ensureQbrParentTicket(intg, {
+      existingId: existing?.haloParentTicket?.id,
+      clientName,
+      periodLabel: parsePeriod(period).label,
+      externalClientRef: haloRef,
+      ticketTypeId: fields.ticketTypeId,
+      agentId: fields.agentId,
+      team: fields.team,
+    });
+  } catch (e) {
+    throw new Error(`Could not create the QBR ticket in Halo, so nothing was pushed. ${e instanceof Error ? e.message : ''}`.trim());
+  }
+  if (!parent) return undefined;
+  if (parent.id !== existing?.haloParentTicket?.id) {
+    await patchQbr(clientId, period, { haloParentTicket: { id: parent.id, createdAt: new Date().toISOString() } });
+    audit('qbr.halo_parent', `qbr:${clientId}/${period}`, `halo #${parent.id}`);
+  }
+  return parent.id;
+}
+
 /** Push a board card to Halo (opportunity or ticket) and mark it pushed. */
 export async function pushOpportunity(
   clientId: string,
@@ -1253,7 +1289,13 @@ export async function pushOpportunity(
   const refs = (client?.integrationRefs ?? {}) as Record<string, string>;
   const target = body.target ?? 'halo_opportunity';
   try {
-    const result = await pushAction(await buildIntegrations(), {
+    const intg = await buildIntegrations();
+    // A ticket from a card raised in a QBR files under that quarter's QBR ticket.
+    const parentTicketId =
+      target === 'halo_ticket' && record.sourcePeriod && /^\d{4}-Q[1-4]$/.test(record.sourcePeriod)
+        ? await qbrParentFor(intg, clientId, record.sourcePeriod, client?.name ?? clientId, refs['halo'], body)
+        : undefined;
+    const result = await pushAction(intg, {
       target,
       title: record.title,
       detail: record.detail ?? (record.sourcePeriod ? `Raised in the ${record.sourcePeriod} QBR.` : ''),
@@ -1262,6 +1304,9 @@ export async function pushOpportunity(
       agentId: body.agentId,
       team: body.team,
       priorityId: body.priorityId,
+      parentTicketId,
+      value: record.value,
+      valueKind: record.valueKind,
     });
     const updated: OpportunityRecord = { ...record, status: 'pushed', updatedAt: new Date().toISOString(), externalRef: result.id, externalKind: target };
     await store.putOpportunity(updated);
@@ -1807,7 +1852,10 @@ export async function pushQbrAction(
     const refs = (client?.integrationRefs ?? {}) as Record<string, string>;
     const externalClientRef = body.target.startsWith('halo') ? refs['halo'] : refs['zomentum'];
 
-    const result = await pushAction(await buildIntegrations(), {
+    const intg = await buildIntegrations();
+    const parentTicketId =
+      body.target === 'halo_ticket' ? await qbrParentFor(intg, clientId, period, client?.name ?? clientId, refs['halo'], body) : undefined;
+    const result = await pushAction(intg, {
       target: body.target,
       title: body.title ?? item?.topic ?? 'QBR action',
       detail: body.detail ?? item?.response ?? '',
@@ -1816,10 +1864,11 @@ export async function pushQbrAction(
       agentId: body.agentId,
       team: body.team,
       priorityId: body.priorityId,
+      parentTicketId,
     });
 
     if (disc && item) {
-      item.externalRef = { system: result.system, id: result.id, status: result.status };
+      item.externalRef = { system: result.system, id: result.id, status: result.status, ...(result.parentId ? { parentId: result.parentId } : {}) };
       await store.putDiscussion(disc);
     }
 

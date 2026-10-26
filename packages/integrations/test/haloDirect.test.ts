@@ -3,9 +3,12 @@ import { makePeriod } from '@mashit/core';
 import {
   classifyTicketType,
   collectHaloDirect,
+  createHaloOpportunity,
   createHaloTicket,
   fetchTicketTypeMap,
   fetchHaloMeta,
+  haloErrorDetail,
+  haloGet,
   haloToken,
   listHaloClients,
   listHaloConversations,
@@ -831,6 +834,45 @@ describe('listHaloClients / fetchHaloMeta / createHaloTicket', () => {
     expect(posted).toEqual([
       { summary: 'Replace LAP-006', details: 'Warranty expired', client_id: 35, tickettype_id: 1, agent_id: 7, team: 'Service Desk', priority_id: 4 },
     ]);
+  });
+});
+
+describe('Halo write bodies and error detail', () => {
+  it('sends parent_id when a ticket is filed under a parent', async () => {
+    let posted: unknown;
+    const { http } = fakeHttp([
+      tokenRoute(),
+      { match: (r) => r.method === 'POST' && r.url.includes('/api/Tickets'), respond: (r) => ((posted = JSON.parse(r.body ?? '[]')), { status: 201, json: { id: 70001 } }) },
+    ]);
+    const out = await createHaloTicket(http, { baseUrl: 'https://x.halopsa.com', clientId: 'child-1', clientSecret: 's' }, { summary: 'Replace firewall', details: '', parentId: '69000' });
+    expect(out.id).toBe('70001');
+    expect(posted).toEqual([{ summary: 'Replace firewall', details: '', parent_id: 69000 }]);
+  });
+
+  it('creates an opportunity with its value in the monthly or one-off field', async () => {
+    const posted: unknown[] = [];
+    const { http } = fakeHttp([
+      tokenRoute(),
+      { match: (r) => r.method === 'POST' && r.url.includes('/api/Opportunities'), respond: (r) => (posted.push(JSON.parse(r.body ?? '[]')), { status: 201, json: { id: 801, status_name: 'Open' } }) },
+    ]);
+    const cfg = { baseUrl: 'https://x.halopsa.com', clientId: 'opp-1', clientSecret: 's' };
+    expect(await createHaloOpportunity(http, cfg, { summary: 'Managed backup', details: 'd', clientId: '35', value: 450, valueKind: 'recurring' })).toEqual({ id: '801', status: 'Open' });
+    await createHaloOpportunity(http, cfg, { summary: 'Laptops', details: '' });
+    expect(posted).toEqual([
+      [{ summary: 'Managed backup', details: 'd', client_id: 35, oppvalue_monthly: 450 }],
+      [{ summary: 'Laptops', details: '' }],
+    ]);
+  });
+
+  it("puts Halo's own reason in the error", async () => {
+    const { http } = fakeHttp([tokenRoute(), { match: (r) => r.url.includes('/api/Tickets'), respond: () => ({ status: 400, json: '<p>Client  is inactive</p>' }) }]);
+    await expect(haloGet(http, { baseUrl: 'https://x.halopsa.com', clientId: 'err-1', clientSecret: 's' }, 'Tickets')).rejects.toThrow(
+      'Halo responded 400 for /api/Tickets: Client is inactive',
+    );
+    expect(haloErrorDetail({ message: 'Bad field' })).toBe('Bad field');
+    expect(haloErrorDetail({ errors: {} })).toBe('');
+    expect(haloErrorDetail(null)).toBe('');
+    expect(haloErrorDetail('x'.repeat(400))).toHaveLength(300);
   });
 });
 
