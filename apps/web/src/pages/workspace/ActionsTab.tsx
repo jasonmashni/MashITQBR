@@ -56,6 +56,7 @@ export function ActionsTab({
         <Title order={5} mb="md">Push actions</Title>
         <Text c="dimmed" size="sm" mb="md">
           Turn discussion outcomes into work: Halo tickets open a form where you set the type, agent, team and priority before pushing.
+          Each ticket is filed as a child of this quarter's QBR ticket, which the first push creates.
         </Text>
         {items.length === 0 ? (
           <Text size="sm" c="dimmed">No discussion items, capture them on the Meeting tab first.</Text>
@@ -79,7 +80,8 @@ export function ActionsTab({
                 {it.externalRef ? (
                   // Already pushed: a second push would create a duplicate ticket or opportunity.
                   <Text size="xs" c="dimmed">
-                    Pushed to {it.externalRef.system} as #{it.externalRef.id}. Follow it up there; this item will not be pushed again.
+                    Pushed to {it.externalRef.system} as #{it.externalRef.id}
+                    {it.externalRef.parentId ? `, under QBR ticket #${it.externalRef.parentId}` : ''}. Follow it up there; this item will not be pushed again.
                   </Text>
                 ) : (
                   <Group gap="xs">
@@ -186,7 +188,7 @@ function HaloTicketModal({
         team: halo.team ?? undefined,
         priorityId: halo.priorityId ?? undefined,
       });
-      notifications.show({ color: 'good', title: 'Ticket created', message: `Halo #${r.id}${r.status ? `, ${r.status}` : ''}` });
+      notifications.show({ color: 'good', title: 'Ticket created', message: `Halo #${r.id}${r.status ? `, ${r.status}` : ''}${r.parentId ? `, under QBR ticket #${r.parentId}` : ''}` });
       onPushed();
     } catch (e) {
       toastError('Push failed', e);

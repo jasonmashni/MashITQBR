@@ -418,7 +418,7 @@ export interface DiscussionItem {
   includeInReport?: boolean;
   /** Agenda order (lower first). */
   sortOrder?: number;
-  externalRef?: { system: string; id: string; status?: string };
+  externalRef?: { system: string; id: string; status?: string; parentId?: string };
   /** Where the item came from. Undefined means typed by hand. */
   source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report' | 'carried';
   /** For a carried item, last quarter's item id. */

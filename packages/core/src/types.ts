@@ -287,8 +287,8 @@ export interface DiscussionItem {
   includeInReport?: boolean;
   /** Manual ordering for the meeting agenda (lower first). */
   sortOrder?: number;
-  /** Set once pushed to an external system (Halo ticket / Zomentum opportunity). */
-  externalRef?: { system: 'halo' | 'zomentum'; id: string; status?: string };
+  /** Set once pushed to an external system (Halo ticket / Zomentum opportunity). `parentId` is the QBR ticket a Halo ticket was filed under. */
+  externalRef?: { system: 'halo' | 'zomentum'; id: string; status?: string; parentId?: string };
   /** Where the item came from. Undefined means typed by hand. */
   source?: 'manual' | 'email' | 'halo' | 'suggested' | 'report' | 'carried';
   /** Message id, Halo id, previous-quarter item id, or other external reference for the source. */

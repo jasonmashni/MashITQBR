@@ -373,7 +373,7 @@ function OpportunityPushModal({
         team: halo.team ?? undefined,
         priorityId: halo.priorityId ?? undefined,
       });
-      notifications.show({ color: 'good', message: `${r.pushed.system} #${r.pushed.id} created.` });
+      notifications.show({ color: 'good', message: `${r.pushed.system} #${r.pushed.id} created${r.pushed.parentId ? ` under QBR ticket #${r.pushed.parentId}` : ''}.` });
       await onPushed();
     } catch (e) {
       notifications.show({ color: 'act', title: 'Push failed', message: e instanceof Error ? e.message : 'Unknown error', autoClose: 10000 });

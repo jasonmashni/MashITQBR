@@ -1,4 +1,12 @@
-import { createHaloTicket, FetchHttpTransport, unwrapMcp, type HttpTransport } from '@mashit/integrations';
+import {
+  createHaloOpportunity,
+  createHaloTicket,
+  FetchHttpTransport,
+  haloTicketUsable,
+  unwrapMcp,
+  type HaloCfg,
+  type HttpTransport,
+} from '@mashit/integrations';
 import { resolveSecret } from './connections.js';
 import { directHaloConn, type Integrations } from './integrationsService.js';
 
@@ -15,12 +23,78 @@ export interface PushInput {
   agentId?: string;
   team?: string;
   priorityId?: string;
+  /** Halo ticket to file a pushed ticket under (the quarter's QBR ticket). */
+  parentTicketId?: string;
+  /** Opportunity value, carried to Halo opportunities. */
+  value?: number;
+  valueKind?: 'recurring' | 'one_time';
 }
 
 export interface PushResult {
   system: 'halo' | 'zomentum';
   id: string;
   status?: string;
+  /** The QBR ticket a pushed Halo ticket was filed under. */
+  parentId?: string;
+}
+
+/** Direct HaloPSA credentials, or undefined when only the legacy MCP path exists. */
+async function directHaloCfg(intg: Integrations): Promise<HaloCfg | undefined> {
+  const halo = await directHaloConn(intg.store);
+  if (!halo) return undefined;
+  return {
+    baseUrl: halo.config['baseUrl'] ?? '',
+    clientId: halo.config['clientId'] ?? '',
+    clientSecret: (await resolveSecret(intg.secrets, halo, 'clientSecret')) ?? '',
+    tenant: halo.config['tenant'] || undefined,
+  };
+}
+
+export interface QbrParentInput {
+  /** The id stored for this quarter, if one was created before. */
+  existingId?: string;
+  clientName: string;
+  periodLabel: string;
+  externalClientRef?: string;
+  /** Routing for a new parent, taken from the first ticket pushed under it. */
+  ticketTypeId?: string;
+  agentId?: string;
+  team?: string;
+}
+
+// One parent per client and quarter even when two pushes race in this worker:
+// pushes queue per key, and a queued push sees the id the one before it made.
+const parentQueue = new Map<string, Promise<unknown>>();
+const parentMade = new Map<string, string>();
+
+/**
+ * The quarter's QBR ticket in Halo, which every ticket pushed from that QBR is
+ * filed under. Reuses the stored id while Halo still has it, otherwise creates
+ * "QBR - {client} - {quarter}". Undefined when only the legacy MCP path is
+ * configured, since it cannot set a parent.
+ */
+export async function ensureQbrParentTicket(intg: Integrations, input: QbrParentInput): Promise<{ id: string; created: boolean } | undefined> {
+  const cfg = await directHaloCfg(intg);
+  if (!cfg) return undefined;
+  const http: HttpTransport = intg.http ?? new FetchHttpTransport();
+  const key = `${input.externalClientRef ?? input.clientName}|${input.periodLabel}`;
+  const prior = parentQueue.get(key) ?? Promise.resolve();
+  const run = prior.catch(() => undefined).then(async () => {
+    const existingId = input.existingId ?? parentMade.get(key);
+    if (existingId && (await haloTicketUsable(http, cfg, existingId))) return { id: existingId, created: false };
+    const created = await createHaloTicket(http, cfg, {
+      summary: `QBR - ${input.clientName} - ${input.periodLabel}`,
+      details: `Quarterly business review for ${input.periodLabel}. Work agreed in this review is filed as child tickets under this one.`,
+      clientId: input.externalClientRef,
+      ticketTypeId: input.ticketTypeId,
+      agentId: input.agentId,
+      team: input.team,
+    });
+    parentMade.set(key, created.id);
+    return { id: created.id, created: true };
+  });
+  parentQueue.set(key, run);
+  return run;
 }
 
 function idFrom(obj: unknown, keys: string[]): string {
@@ -43,14 +117,8 @@ export async function pushAction(intg: Integrations, input: PushInput): Promise<
   const http: HttpTransport = intg.http ?? new FetchHttpTransport();
 
   if (input.target === 'halo_ticket' || input.target === 'halo_opportunity') {
-    const halo = await directHaloConn(intg.store);
-    if (halo && input.target === 'halo_ticket') {
-      const cfg = {
-        baseUrl: halo.config['baseUrl'] ?? '',
-        clientId: halo.config['clientId'] ?? '',
-        clientSecret: (await resolveSecret(intg.secrets, halo, 'clientSecret')) ?? '',
-        tenant: halo.config['tenant'] || undefined,
-      };
+    const cfg = await directHaloCfg(intg);
+    if (cfg && input.target === 'halo_ticket') {
       const created = await createHaloTicket(http, cfg, {
         summary: input.title,
         details: input.detail,
@@ -59,6 +127,17 @@ export async function pushAction(intg: Integrations, input: PushInput): Promise<
         agentId: input.agentId,
         team: input.team,
         priorityId: input.priorityId,
+        parentId: input.parentTicketId,
+      });
+      return { system: 'halo', id: created.id, status: created.status, ...(input.parentTicketId ? { parentId: input.parentTicketId } : {}) };
+    }
+    if (cfg) {
+      const created = await createHaloOpportunity(http, cfg, {
+        summary: input.title,
+        details: input.detail,
+        clientId: input.externalClientRef,
+        value: input.value,
+        valueKind: input.valueKind,
       });
       return { system: 'halo', id: created.id, status: created.status };
     }

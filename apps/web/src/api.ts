@@ -283,7 +283,7 @@ export const api = {
     send('POST', `/api/clients/${clientId}/opportunities`, body).then(json<{ opportunity: Opportunity }>),
   deleteOpportunity: (clientId: string, id: string) => send('DELETE', `/api/clients/${clientId}/opportunities/${id}`).then(json<unknown>),
   pushOpportunity: (clientId: string, id: string, body: { target: string; ticketTypeId?: string; agentId?: string; team?: string; priorityId?: string }) =>
-    send('POST', `/api/clients/${clientId}/opportunities/${id}/push`, body).then(json<{ opportunity: Opportunity; pushed: { system: string; id: string } }>),
+    send('POST', `/api/clients/${clientId}/opportunities/${id}/push`, body).then(json<{ opportunity: Opportunity; pushed: { system: string; id: string; parentId?: string } }>),
 
   haloMeta: (connectionId?: string) =>
     send('GET', `/api/integrations/halo/meta${connectionId ? `?connectionId=${encodeURIComponent(connectionId)}` : ''}`).then(json<HaloMeta>),
@@ -304,7 +304,7 @@ export const api = {
       team?: string;
       priorityId?: string;
     },
-  ) => send('POST', `/api/clients/${clientId}/qbr/${period}/actions/push`, body).then(json<{ system: string; id: string; status?: string }>),
+  ) => send('POST', `/api/clients/${clientId}/qbr/${period}/actions/push`, body).then(json<{ system: string; id: string; status?: string; parentId?: string }>),
 
   // Microsoft 365 (delegated Graph via Easy Auth; token refreshed transparently)
   emailQbr: (clientId: string, period: string, payload: { to: string[]; subject?: string; bodyHtml?: string; attachDeck?: boolean }) =>
