@@ -157,7 +157,10 @@ export interface GuardInput {
   verificationOk: boolean;
   status?: string;
   confidence?: Confidence;
-  /** The quarter is data-locked: the narrative can only change after a Reopen. */
+  /**
+   * The quarter is locked: the narrative can only change after a Reopen, and
+   * every deliverable is the stored package rather than a fresh build.
+   */
   locked?: boolean;
 }
 
@@ -172,16 +175,18 @@ export interface Guard {
 /**
  * May the client-facing deliverables go out? Locked until there is data and
  * an approved, verified narrative. Low security-data coverage is a warning,
- * not a lock: the report itself says "Not scored" in that case.
+ * not a lock: the report itself says "Not scored" in that case. A locked
+ * quarter serves the package it stored, so its files stay downloadable; a
+ * failed verification there is a warning, since fixing it means a Reopen.
  */
 export function deliverableGuard(i: GuardInput): Guard {
   if (!i.hasQbr) return { ok: false, reason: 'Sync data first' };
-  if (!i.verificationOk) {
-    return {
-      ok: false,
-      reason: i.locked ? 'Figures failed verification. Reopen the quarter to fix the narrative.' : 'Figures failed verification. Edit or regenerate the narrative.',
-    };
+  if (i.locked) {
+    return i.verificationOk
+      ? { ok: true }
+      : { ok: true, warning: 'These are the stored files, and their figures failed verification. Reopen the quarter to fix the narrative.' };
   }
+  if (!i.verificationOk) return { ok: false, reason: 'Figures failed verification. Edit or regenerate the narrative.' };
   if (!statusAtLeast(asStatus(i.status), 'narrative_approved')) return { ok: false, reason: 'Approve the narrative first' };
   if (i.confidence === 'low') return { ok: true, warning: 'Not enough security data for a score; the report says so.' };
   return { ok: true };
